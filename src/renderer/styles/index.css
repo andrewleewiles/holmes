@@ -1,0 +1,150 @@
+@import "tailwindcss";
+@plugin "@tailwindcss/typography";
+
+@theme {
+  --color-holmes-bg: #20201e;
+  --color-holmes-surface: #2a2a27;
+  --color-holmes-primary: #47a08f;
+  --color-holmes-primary-dark: #31786b;
+  --color-holmes-primary-light: #5bbaa8;
+  --color-holmes-error: #dc2626;
+  --color-holmes-error-bg: rgba(220, 38, 38, 0.15);
+  --color-holmes-error-border: rgba(220, 38, 38, 0.3);
+}
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen,
+    Ubuntu, Cantarell, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+#root {
+  height: 100vh;
+  overflow: hidden;
+}
+
+.window-drag {
+  -webkit-app-region: drag;
+}
+
+.window-no-drag {
+  -webkit-app-region: no-drag;
+}
+
+@font-face {
+  font-family: 'EB Garamond';
+  font-style: normal;
+  font-weight: 400 800;
+  font-display: swap;
+  src: url('../assets/fonts/EBGaramond-Variable.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'EB Garamond';
+  font-style: italic;
+  font-weight: 400 800;
+  font-display: swap;
+  src: url('../assets/fonts/EBGaramond-Italic-Variable.woff2') format('woff2');
+}
+
+.font-serif-display {
+  font-family: 'EB Garamond', 'Minion Variable Concept', 'Minion Pro', Palatino, 'Palatino Linotype', Georgia, 'Times New Roman', serif;
+}
+
+.scrollbar-thin::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.scrollbar-thin::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.scrollbar-thin::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 3px;
+}
+
+.scrollbar-thin::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.25);
+}
+
+/* Global themed scrollbars (no track bg, grey thumb) */
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 5px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.2);
+  background-clip: padding-box;
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.15) transparent;
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+.no-scrollbar {
+  scrollbar-width: none;
+}
+
+/* --- animated assistant mark --------------------------------------------- */
+/*
+ * The thinking/talking clips ship as one-row sprite strips of alpha masks (see
+ * anim/build-mark-anim.sh), so the mark is painted here in the brand colour
+ * rather than baked into the frames — #47a08f lives only in --color-holmes-primary.
+ *
+ * AnimatedMark sets mask-size to (frames x 100%) 100%. With the strip that much
+ * wider than the box, mask-position 0% -> 100% sweeps exactly frame 0 -> frame
+ * N-1, and steps(N, jump-none) is the timing variant that lands on all N frames
+ * with both ends inclusive.
+ */
+.holmes-mark {
+  display: inline-block;
+  background-color: var(--color-holmes-primary);
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  -webkit-mask-position: 0% 0%;
+  mask-position: 0% 0%;
+}
+
+.holmes-mark--animated {
+  animation-name: holmes-mark-sprite;
+  animation-iteration-count: infinite;
+}
+
+@keyframes holmes-mark-sprite {
+  from {
+    -webkit-mask-position: 0% 0%;
+    mask-position: 0% 0%;
+  }
+  to {
+    -webkit-mask-position: 100% 0%;
+    mask-position: 100% 0%;
+  }
+}
+
+/* Holding on frame 0 still reads as the logo, so reduced motion just stops it. */
+@media (prefers-reduced-motion: reduce) {
+  .holmes-mark--animated {
+    animation: none;
+  }
+}

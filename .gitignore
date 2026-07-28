@@ -1,0 +1,30 @@
+node_modules/
+out/
+release/
+dist/
+*.log
+.DS_Store
+node_modules/.holmes/
+
+# macOS AppleDouble sidecars (this volume isn't APFS, so every file gets a ._ twin)
+._*
+.AppleDouble
+
+# Stray editor temp files
+~ai-*.tmp
+
+# Swift sidecar build output
+.build/
+
+# Animation working set — sources and the build script are tracked, renders are not.
+# The app consumes the finished sprite strips in assets/anim/, not these.
+anim/work/
+anim/frames_src/
+anim/thinking/
+anim/talking/
+anim/Adobe After Effects Auto-Save/
+anim/*.mp4
+
+# Large design source files (kept locally, too big for git)
+*.psd
+holmesLogo.ai

@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key>
+    <string>com.holmes.sidecar</string>
+    <key>CFBundleName</key>
+    <string>Holmes Sidecar</string>
+    <key>CFBundleVersion</key>
+    <string>1.0</string>
+    <key>NSHealthShareUsageDescription</key>
+    <string>Holmes reads your step counts and other Health data to provide health insights.</string>
+    <key>NSHealthUpdateUsageDescription</key>
+    <string>Holmes does not write to Apple Health.</string>
+    <key>NSPhotoLibraryUsageDescription</key>
+    <string>Holmes reads photo metadata (dates, locations) to build your activity timeline.</string>
+    <key>NSLocationWhenInUseUsageDescription</key>
+    <string>Holmes uses your location to fetch local weather history.</string>
+</dict>
+</plist>

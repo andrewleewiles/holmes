@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key>
+    <string>com.holmes.healthkit-sidecar</string>
+    <key>CFBundleName</key>
+    <string>Holmes HealthKit Sidecar</string>
+    <key>CFBundleVersion</key>
+    <string>1.0</string>
+    <key>NSHealthShareUsageDescription</key>
+    <string>Holmes reads your Apple Health data to maintain a personal health knowledge base on your Mac.</string>
+    <key>NSHealthUpdateUsageDescription</key>
+    <string>Holmes does not write to Apple Health.</string>
+</dict>
+</plist>

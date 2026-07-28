@@ -1,0 +1,43 @@
+appId: com.holmes.app
+productName: Holmes
+directories:
+  buildResources: assets
+  output: release
+files:
+  - '!**/.vscode/*'
+  - '!src/*'
+  - '!electron.vite.config.{js,ts,mjs,cjs}'
+  - '!{.eslintignore,.eslintrc,.prettierignore,.prettierrc}'
+  - '!{tsconfig.json,tsconfig.electron.json,tsconfig.web.json}'
+extraResources:
+  - from: prompts
+    to: prompts
+    filter: ['**/*.txt']
+  - from: node_modules/.holmes/healthkit-sidecar.app
+    to: healthkit-sidecar.app
+  - from: node_modules/.holmes/holmes-sidecar.app
+    to: holmes-sidecar.app
+mac:
+  extendInfo:
+    NSPhotoLibraryUsageDescription: Holmes reads photo metadata (dates, locations) to build your activity timeline.
+    NSLocationWhenInUseUsageDescription: Holmes uses your location to fetch local weather history.
+  target:
+    - dmg
+    - zip
+  artifactName: ${name}-${version}-mac-${arch}.${ext}
+  icon: assets/icon.png
+win:
+  target:
+    - nsis
+    - zip
+  artifactName: ${name}-${version}-win-${arch}.${ext}
+  icon: assets/icon.png
+linux:
+  target:
+    - AppImage
+    - deb
+  artifactName: ${name}-${version}-linux-${arch}.${ext}
+  icon: assets/icon.png
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true

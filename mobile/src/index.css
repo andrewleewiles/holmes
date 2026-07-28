@@ -1,0 +1,26 @@
+@import "tailwindcss";
+
+@theme {
+  --color-holmes-bg: #0d0f12;
+  --color-holmes-surface: #14171c;
+  --color-holmes-primary: #38bdf8;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  overscroll-behavior: none;
+}
+
+body {
+  margin: 0;
+  background: var(--color-holmes-bg);
+  color: #fff;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+.font-serif-display {
+  font-family: "New York", Georgia, serif;
+}
