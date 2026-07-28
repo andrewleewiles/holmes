@@ -3,8 +3,16 @@
   "version": "0.1.0",
   "description": "Desktop AI harness for non-coding AI usage. Connect to OpenRouter and more.",
   "main": "./out/main/main.js",
-  "author": "Holmes",
-  "license": "MIT",
+  "author": "Wiles Creative",
+  "license": "AGPL-3.0-or-later",
+  "homepage": "https://github.com/andrewleewiles/holmes",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/andrewleewiles/holmes.git"
+  },
+  "bugs": {
+    "url": "https://github.com/andrewleewiles/holmes/issues"
+  },
   "scripts": {
     "dev": "electron-vite dev",
     "build": "electron-vite build",

@@ -1,6 +1,6 @@
 # Third-Party Assessment Notices
 
-Holmes application code may be distributed under its package license, but the standardized assessment names, item text, scoring keys, and related notices below retain their respective terms. They are not relicensed under MIT by inclusion in this repository.
+Holmes application code is distributed under the GNU Affero General Public License v3.0 or later, but the standardized assessment names, item text, scoring keys, and related notices below retain their respective terms. They are not relicensed under the AGPL by inclusion in this repository.
 
 This Holmes deployment is intended for noncommercial use. The instruments are self-report screening or descriptive tools and do not provide diagnoses.
 
