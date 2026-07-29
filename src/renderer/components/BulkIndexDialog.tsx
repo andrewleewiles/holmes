@@ -1,7 +1,7 @@
 import { type FC, useEffect, useMemo, useState } from 'react'
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
 import { faPause, faPlay, faStop, faXmark } from '@fortawesome/free-solid-svg-icons'
-import type { DocumentContextProgress, IndexEstimate, ModelTier, Project } from '@shared/types'
+import type { DocumentContextProgress, IndexEstimate, IndexGranularity, ModelTier, Project } from '@shared/types'
 import { IndexEstimateBar } from './IndexEstimateBar'
 import { ProjectIcon } from './ProjectIcon'
 import { useDocumentIndexState, useDocumentIndexProgress } from '../hooks/useDocumentIndex'
@@ -21,6 +21,7 @@ const CONTROL =
 export const BulkIndexDialog: FC<BulkIndexDialogProps> = ({ projects, enabled, defaultTier, onClose, onIndexed }) => {
   const [selected, setSelected] = useState<Set<string>>(() => new Set(projects.map((p) => p.id)))
   const [tier, setTier] = useState<ModelTier>(defaultTier)
+  const [granularity, setGranularity] = useState<IndexGranularity>('full')
   const [force, setForce] = useState(false)
   const [estimate, setEstimate] = useState<IndexEstimate | null>(null)
   const [estimating, setEstimating] = useState(false)
@@ -54,14 +55,14 @@ export const BulkIndexDialog: FC<BulkIndexDialogProps> = ({ projects, enabled, d
   useEffect(() => {
     setEstimate(null)
     setEstimateError(null)
-  }, [tier, force, selectedIds.join(',')])
+  }, [tier, granularity, force, selectedIds.join(',')])
 
   const handleEstimate = async () => {
     if (!enabled || selectedIds.length === 0 || estimating) return
     setEstimating(true)
     setEstimateError(null)
     try {
-      setEstimate(await window.electronAPI.documents.estimateAll(tier, { projectIds: selectedIds, force }))
+      setEstimate(await window.electronAPI.documents.estimateAll(tier, { projectIds: selectedIds, force, granularity }))
     } catch (err) {
       setEstimateError(err instanceof Error ? err.message : 'Estimate failed')
     } finally {
@@ -77,6 +78,7 @@ export const BulkIndexDialog: FC<BulkIndexDialogProps> = ({ projects, enabled, d
       await window.electronAPI.documents.generateAll({
         ...(resume ? { resume: true } : {}),
         tier,
+        granularity,
         projectIds: selectedIds,
         ...(force ? { force: true } : {}),
       })
@@ -181,6 +183,8 @@ export const BulkIndexDialog: FC<BulkIndexDialogProps> = ({ projects, enabled, d
                 loading={estimating}
                 tier={tier}
                 onTierChange={setTier}
+                granularity={granularity}
+                onGranularityChange={setGranularity}
                 onEstimate={() => void handleEstimate()}
                 disabled={!enabled || runActive || starting || selectedIds.length === 0}
                 error={estimateError}

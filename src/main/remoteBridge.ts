@@ -1,5 +1,6 @@
 import { BrowserWindow } from 'electron'
 import { isRemoteEvent } from '../shared/remote'
+import type { RemoteScope } from '../shared/remote'
 
 export interface CallerSender {
   id: number
@@ -12,7 +13,7 @@ export interface CallerSender {
 export interface CallerEvent {
   sender: CallerSender
   senderFrame?: { url: string } | null
-  remote?: { deviceId: string } | null
+  remote?: { deviceId: string; scope: RemoteScope } | null
 }
 
 export type IpcHandler = (event: CallerEvent, ...args: any[]) => unknown
@@ -41,8 +42,10 @@ export function setRemoteForwarder(fn: Forwarder | null): void {
 
 /**
  * Replaces `win.webContents.send` at every broadcast site. A paired device only
- * receives channels named in REMOTE_EVENT_CHANNELS, so adding a broadcast does
- * not silently start shipping it off the machine.
+ * receives channels named in the event set for its own scope, so adding a
+ * broadcast does not silently start shipping it off the machine. The owner set
+ * is a superset, so it is the right filter here; the forwarder narrows again
+ * per session.
  */
 export function broadcast(channel: string, ...args: unknown[]): void {
   for (const win of BrowserWindow.getAllWindows()) {
@@ -51,5 +54,5 @@ export function broadcast(channel: string, ...args: unknown[]): void {
       win.webContents.send(channel, ...args)
     } catch { /* A window closing mid-broadcast is not an error. */ }
   }
-  if (forwarder && isRemoteEvent(channel)) forwarder(channel, args)
+  if (forwarder && isRemoteEvent(channel, 'owner')) forwarder(channel, args)
 }

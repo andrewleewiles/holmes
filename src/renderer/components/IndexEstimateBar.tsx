@@ -1,14 +1,16 @@
 import { type FC } from 'react'
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
 import { faCoins, faTriangleExclamation, faCalculator, faSpinner } from '@fortawesome/free-solid-svg-icons'
-import type { IndexEstimate, ModelTier } from '@shared/types'
-import { MODEL_TIERS } from '@shared/types'
+import type { IndexEstimate, IndexGranularity, ModelTier } from '@shared/types'
+import { INDEX_GRANULARITIES, MODEL_TIERS } from '@shared/types'
 
 interface IndexEstimateBarProps {
   estimate: IndexEstimate | null
   loading: boolean
   tier: ModelTier
   onTierChange: (tier: ModelTier) => void
+  granularity: IndexGranularity
+  onGranularityChange: (granularity: IndexGranularity) => void
   onEstimate: () => void
   disabled?: boolean
   error?: string | null
@@ -18,6 +20,20 @@ const TIER_LABELS: Record<ModelTier, string> = {
   budget: 'Budget',
   mid: 'Mid',
   frontier: 'Frontier',
+}
+
+const GRANULARITY_LABELS: Record<IndexGranularity, string> = {
+  low: 'Low',
+  medium: 'Medium',
+  full: 'Full',
+}
+
+// Mirrors GRANULARITY_PHOTO_RATE in the main process — a UI hint, not the
+// authority; the estimate's sampledOutFiles carries the real number.
+const GRANULARITY_HINTS: Record<IndexGranularity, string> = {
+  low: 'Sample roughly 1 in 16 photos per folder. Documents are always indexed in full.',
+  medium: 'Sample roughly 1 in 4 photos per folder. Documents are always indexed in full.',
+  full: 'Index every photo individually.',
 }
 
 export function formatEstimateCost(value: number | null): string {
@@ -40,7 +56,7 @@ function formatCount(value: number): string {
   return value.toLocaleString()
 }
 
-export const IndexEstimateBar: FC<IndexEstimateBarProps> = ({ estimate, loading, tier, onTierChange, onEstimate, disabled, error }) => {
+export const IndexEstimateBar: FC<IndexEstimateBarProps> = ({ estimate, loading, tier, onTierChange, granularity, onGranularityChange, onEstimate, disabled, error }) => {
   const nothingToDo = estimate !== null && estimate.textFiles === 0 && estimate.imageFiles === 0
 
   return (
@@ -60,6 +76,25 @@ export const IndexEstimateBar: FC<IndexEstimateBarProps> = ({ estimate, loading,
               }`}
             >
               {TIER_LABELS[option]}
+            </button>
+          ))}
+        </div>
+
+        <span className="text-[10px] uppercase tracking-wider text-white/35 shrink-0 ml-2" title="How many photos the run reads. Tier picks which model looks; granularity picks how much it looks at.">Granularity</span>
+        <div className="flex gap-1">
+          {INDEX_GRANULARITIES.map((option) => (
+            <button
+              key={option}
+              onClick={() => onGranularityChange(option)}
+              disabled={disabled}
+              title={GRANULARITY_HINTS[option]}
+              className={`px-2 py-0.5 rounded text-[10px] transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-default ${
+                granularity === option
+                  ? 'bg-cyan-400/20 text-cyan-100 border border-cyan-400/30'
+                  : 'bg-white/[0.04] text-white/50 border border-transparent hover:text-white/75'
+              }`}
+            >
+              {GRANULARITY_LABELS[option]}
             </button>
           ))}
         </div>
@@ -98,7 +133,10 @@ export const IndexEstimateBar: FC<IndexEstimateBarProps> = ({ estimate, loading,
         <div className="text-[10px] leading-relaxed text-white/35">
           {nothingToDo ? (
             <span>
-              Nothing to index — all {formatCount(estimate.cachedFiles)} item{estimate.cachedFiles === 1 ? '' : 's'} are already summarized and unchanged.
+              Nothing to index — {estimate.cachedFiles > 0
+                ? `all ${formatCount(estimate.cachedFiles)} item${estimate.cachedFiles === 1 ? '' : 's'} are already summarized and unchanged`
+                : 'no items to summarize'}
+              {estimate.sampledOutFiles > 0 && <>; {formatCount(estimate.sampledOutFiles)} photo{estimate.sampledOutFiles === 1 ? '' : 's'} sampled out at {GRANULARITY_LABELS[estimate.granularity].toLowerCase()} granularity</>}.
             </span>
           ) : (
             <span>
@@ -111,6 +149,7 @@ export const IndexEstimateBar: FC<IndexEstimateBarProps> = ({ estimate, loading,
               )}
               {estimate.folders > 0 && <> · {formatCount(estimate.folders)} folder synthes{estimate.folders === 1 ? 'is' : 'es'}</>}
               {estimate.cachedFiles > 0 && <> · {formatCount(estimate.cachedFiles)} cached, skipped</>}
+              {estimate.sampledOutFiles > 0 && <> · {formatCount(estimate.sampledOutFiles)} photo{estimate.sampledOutFiles === 1 ? '' : 's'} sampled out, not billed</>}
             </span>
           )}
         </div>

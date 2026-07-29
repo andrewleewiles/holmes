@@ -1,15 +1,22 @@
 import assert from 'node:assert/strict'
 import {
+  allocateGroundingBudget,
   buildLocalRecallExpansions,
   buildRecallCandidateTerms,
   buildRecallConversationSystemPrompt,
+  buildSpotlightQueries,
+  contentDensityScore,
   createRecallSnippet,
+  isNoiseRecallPath,
+  looksLikeListQuestion,
   parseSpotlightTextContent,
   parseRecallSearchRequest,
   rankRecallConversations,
+  scoreRecallFileCandidate,
   scoreRecallText,
   selectBalancedResults,
   shouldAnswerRecallQuery,
+  tokenVariants,
 } from './src/main/recall.ts'
 
 const request = parseRecallSearchRequest({
@@ -110,5 +117,98 @@ const balanced = selectBalancedResults(
   10
 )
 assert.equal(balanced.filter((result) => result.source === 'file').length, 3)
+
+// --- Spotlight query construction --------------------------------------------
+// mdfind ANDs every word of a plain query, so a question handed over verbatim
+// demands the file contain "what", "are", "my" and "favorite". A list of movie
+// ratings contains none of them, which is how the whole feature missed it.
+const movieQueries = buildSpotlightQueries('What are my favorite movies?', ['movies', 'film ratings'])
+assert.ok(movieQueries.every((query) => !/\b(what|are|my)\b/.test(query.text)))
+assert.ok(movieQueries.some((query) => query.text.trim() === 'favorite movies'))
+// The question words are stripped, but the topic word must still be reachable
+// on its own, because no list of films describes itself as "favorite".
+assert.ok(movieQueries.some((query) => query.text.includes('kMDItemTextContent == "movies"')))
+// A ranking question is asked of a table, so ask Spotlight for the topic and
+// the shape of the answer together.
+assert.ok(movieQueries.some((query) => (
+  query.text.includes('kMDItemContentTypeTree == "public.spreadsheet"') && query.text.includes('"movies"')
+)))
+assert.ok(movieQueries.length <= 10)
+
+const plainQueries = buildSpotlightQueries('notes about moving home', [])
+assert.ok(!plainQueries.some((query) => query.text.includes('public.spreadsheet')))
+
+assert.equal(looksLikeListQuestion('What are my favorite movies?'), true)
+assert.equal(looksLikeListQuestion('Which book did I rate highest?'), true)
+assert.equal(looksLikeListQuestion('When did I move to Denver?'), false)
+
+assert.ok(buildLocalRecallExpansions('What are my favorite movies?').includes('movies'))
+assert.ok(buildLocalRecallExpansions('What books have I read?').includes('reading list'))
+
+// --- Candidate filtering ------------------------------------------------------
+// mdfind returns matches in index order with no relevance ranking, so machine
+// state consumes the result cap ahead of the user's own documents.
+assert.equal(isNoiseRecallPath('/Users/ada/Library/Caches/com.apple.Safari/index.db'), true)
+assert.equal(isNoiseRecallPath('/Users/ada/projects/app/node_modules/pkg/readme.md'), true)
+assert.equal(isNoiseRecallPath('/System/Library/Fonts/Helvetica.ttc'), true)
+assert.equal(isNoiseRecallPath('/Users/ada/.cache/pip/notes.txt'), true)
+assert.equal(isNoiseRecallPath('/Users/ada/Documents/Media.xlsx'), false)
+assert.equal(isNoiseRecallPath('/Volumes/archive/media/Media.xlsx'), false)
+// iCloud Drive and Mail live under Library but are the user's own content.
+assert.equal(isNoiseRecallPath('/Users/ada/Library/Mobile Documents/com~apple~CloudDocs/taxes.pdf'), false)
+assert.equal(isNoiseRecallPath('/Users/ada/Library/Mail/V10/message.emlx'), false)
+
+// --- Candidate scoring --------------------------------------------------------
+const ratingsQuery = 'What are my favorite movies?'
+const ratingsExpansions = buildLocalRecallExpansions(ratingsQuery)
+const sheetScore = scoreRecallFileCandidate('/Volumes/archive/media/Media.xlsx', 1, ratingsQuery, ratingsExpansions)
+const jsonScore = scoreRecallFileCandidate('/Volumes/archive/dump/events.json', 1, ratingsQuery, ratingsExpansions)
+// A ranking question is answered by a table, not by a log of events.
+assert.ok(sheetScore > jsonScore, `${sheetScore} vs ${jsonScore}`)
+// A file on a secondary drive is as much the user's as one in the home folder;
+// scoring only the home directory hid every external archive.
+assert.equal(
+  scoreRecallFileCandidate('/Volumes/archive/media/Media.xlsx', 1, ratingsQuery, ratingsExpansions),
+  scoreRecallFileCandidate(`${process.env.HOME}/media/Media.xlsx`, 1, ratingsQuery, ratingsExpansions)
+)
+
+// A question says "movies" where the column heading says "Movie".
+assert.deepEqual(tokenVariants('movies').sort(), ['movie', 'movies'])
+assert.deepEqual(tokenVariants('film').sort(), ['film', 'films'])
+
+// Presence alone cannot tell a template that lists "Movies" as a category once
+// from a log of every film watched, and only one of them answers the question.
+const densityTerms = buildRecallCandidateTerms(ratingsQuery, ratingsExpansions)
+const logDensity = contentDensityScore(`Movie\tRating\n${'Some Film\t9\n'.repeat(200)}`, densityTerms)
+const mentionDensity = contentDensityScore('Category list: Movies, Books, Tools', densityTerms)
+assert.ok(logDensity > mentionDensity, `${logDensity} vs ${mentionDensity}`)
+assert.ok(contentDensityScore('unrelated text about gardening', densityTerms) === 0)
+
+// --- Grounding budget ---------------------------------------------------------
+// What a short source does not use is handed back, so one long record survives
+// intact instead of every source being cut to the same fixed slice.
+assert.deepEqual(allocateGroundingBudget([500, 40_000, 40_000], 60_000), [500, 29_750, 29_750])
+assert.deepEqual(allocateGroundingBudget([100, 200], 60_000), [100, 200])
+assert.deepEqual(allocateGroundingBudget([], 60_000), [])
+
+// --- Reading a reasoning model's reply ----------------------------------------
+// A model told to "return only JSON" thinks out loud first and puts the JSON
+// last. Matching the first "{" to the final "}" swallows any braces in the
+// prose, so the object is found by scanning for balanced braces.
+const { extractJsonObject } = await import('./src/main/provider.ts')
+
+assert.deepEqual(extractJsonObject('{"answer":"hi","sourceIds":["source-1"]}'), { answer: 'hi', sourceIds: ['source-1'] })
+assert.deepEqual(extractJsonObject('```json\n{"queries":["a"]}\n```'), { queries: ['a'] })
+assert.deepEqual(
+  extractJsonObject('Movies rated 10:\n- Puss in Boots {great}\n\n{"answer":"Puss in Boots.","sourceIds":["source-2"]}'),
+  { answer: 'Puss in Boots.', sourceIds: ['source-2'] }
+)
+assert.deepEqual(extractJsonObject('Consider {a: 1} then answer.\n{"queries":["films"]}'), { queries: ['films'] })
+// Braces inside a string must not close the object early.
+assert.deepEqual(extractJsonObject('note\n{"answer":"uses { and } chars","sourceIds":[]}'), { answer: 'uses { and } chars', sourceIds: [] })
+// Cut off mid-JSON: no balanced object, so nothing is returned rather than a
+// half-parsed one.
+assert.equal(extractJsonObject('thinking...\n{"answer":"half writ'), undefined)
+assert.equal(extractJsonObject('no json here at all'), undefined)
 
 console.log('Recall request, question detection, extraction, snippet, and ranking checks passed')

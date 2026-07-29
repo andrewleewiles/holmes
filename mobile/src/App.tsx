@@ -1,8 +1,10 @@
 import { useEffect, useState } from 'react'
-import type { Conversation } from '@shared/types'
+import type { Conversation, LibraryBook } from '@shared/types'
 import { remoteClient, type ConnectionState } from './transport/client'
 import { api } from './transport/api'
 import { PairScreen } from './screens/PairScreen'
+import { LibraryScreen } from './screens/LibraryScreen'
+import { ReaderScreen } from './screens/ReaderScreen'
 import { ConversationsScreen } from './screens/ConversationsScreen'
 import { ChatScreen } from './screens/ChatScreen'
 import { DataScreen } from './screens/DataScreen'
@@ -14,7 +16,9 @@ export function App(): React.ReactElement {
   const [error, setError] = useState<string | null>(null)
   const [tab, setTab] = useState<Tab>('chats')
   const [conversation, setConversation] = useState<Conversation | null>(null)
+  const [book, setBook] = useState<LibraryBook | null>(null)
   const [model, setModel] = useState('')
+  const scope = remoteClient.getScope()
 
   useEffect(() => {
     const unsubscribe = remoteClient.onState((next, nextError) => {
@@ -26,9 +30,9 @@ export function App(): React.ReactElement {
   }, [])
 
   // The desktop decides which model a new chat starts on; the phone should not
-  // invent its own default.
+  // invent its own default. A guest has no chat, and no right to read settings.
   useEffect(() => {
-    if (state !== 'connected' || model) return
+    if (state !== 'connected' || model || scope !== 'owner') return
     void api.clientSettings()
       .then((settings) => setModel(settings.defaultModel))
       .catch(() => { /* The chat screen surfaces the failure when sending. */ })
@@ -54,7 +58,11 @@ export function App(): React.ReactElement {
       )}
 
       <div className="min-h-0 flex-1">
-        {conversation ? (
+        {scope === 'media' ? (
+          book
+            ? <ReaderScreen entry={book} onBack={() => setBook(null)} />
+            : <LibraryScreen onOpen={setBook} />
+        ) : conversation ? (
           <ChatScreen conversation={conversation} model={model} onBack={() => setConversation(null)} />
         ) : tab === 'chats' ? (
           <ConversationsScreen model={model} onOpen={setConversation} />
@@ -63,7 +71,7 @@ export function App(): React.ReactElement {
         )}
       </div>
 
-      {!conversation && (
+      {scope === 'owner' && !conversation && (
         <nav className="flex border-t border-white/[0.07] pb-[env(safe-area-inset-bottom)]">
           {(['chats', 'data'] as Tab[]).map((entry) => (
             <button

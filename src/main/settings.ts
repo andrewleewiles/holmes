@@ -17,6 +17,7 @@ const store = new Store<{
   assistantName?: string
   assistantIcon?: string
   welcomeLines?: string[]
+  boilEffectEnabled?: boolean
   defaultModel: string
   defaultEffort: ReasoningEffort
   systemModel?: string
@@ -69,6 +70,7 @@ const store = new Store<{
     assistantName: DEFAULT_ASSISTANT_NAME,
     assistantIcon: '',
     welcomeLines: [],
+    boilEffectEnabled: true,
     defaultModel: '',
     defaultEffort: 'medium',
     systemModel: '',
@@ -156,6 +158,7 @@ export function getSettings(): AppSettings {
     assistantName: getAssistantName(),
     assistantIcon: getAssistantIcon(),
     welcomeLines: getWelcomeLines(),
+    boilEffectEnabled: store.get('boilEffectEnabled') ?? true,
     defaultModel: store.get('defaultModel'),
     defaultEffort: store.get('defaultEffort'),
     modelTiers: getModelTiers(),
@@ -193,6 +196,7 @@ export function setSettings(partial: Partial<AppSettings>): void {
   if (partial.assistantName !== undefined) setStoredAssistantName(partial.assistantName)
   if (partial.assistantIcon !== undefined) store.set('assistantIcon', normalizeAssistantIcon(partial.assistantIcon))
   if (partial.welcomeLines !== undefined) store.set('welcomeLines', normalizeWelcomeLines(partial.welcomeLines))
+  if (partial.boilEffectEnabled !== undefined) store.set('boilEffectEnabled', partial.boilEffectEnabled)
   if (partial.defaultModel !== undefined) store.set('defaultModel', partial.defaultModel)
   if (partial.defaultEffort !== undefined) store.set('defaultEffort', partial.defaultEffort)
   if (partial.modelTiers !== undefined) store.set('modelTiers', normalizeModelTiers(partial.modelTiers))

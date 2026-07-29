@@ -12,6 +12,7 @@ node_modules/.holmes/
 
 # Stray editor temp files
 ~ai-*.tmp
+*.tmp.mjs
 
 # Swift sidecar build output
 .build/
@@ -28,3 +29,8 @@ anim/*.mp4
 # Large design source files (kept locally, too big for git)
 *.psd
 holmesLogo.ai
+
+# Boiling-letter type pipeline — local-only. ~670 MB of i2i/aligned renders plus
+# the licensed Minion source face. The app consumes the finished woff2 set in
+# src/renderer/assets/fonts/boil/, not any of this.
+type-experiment/

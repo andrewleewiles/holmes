@@ -4,9 +4,9 @@ import { faArrowRotateRight, faPause, faPlay, faReceipt, faTrash, faTriangleExcl
 import type { ProviderCall, ProviderCallStats, ProviderCallSummary } from '@shared/types'
 import { formatCallCost, formatTotalCost, renderMessageContent } from '@shared/callHistory'
 import { useSettings } from '../hooks/useSettings'
+import { PageHeader, PAGE_HEADER_ICON } from './PageHeader'
 
 interface CallHistoryPageProps {
-  onBack: () => void
 }
 
 const PAGE_SIZE = 100
@@ -102,7 +102,7 @@ const ROLE_STYLE: Record<string, string> = {
  * every indexer, and the bookkeeping calls alike — not only the subsystems that
  * remembered to report themselves.
  */
-export const CallHistoryPage: FC<CallHistoryPageProps> = ({ onBack }) => {
+export const CallHistoryPage: FC<CallHistoryPageProps> = () => {
   // The switch lives here rather than in Settings because this is the page that
   // shows what the automated passes actually cost — the number that makes
   // someone want to stop them.
@@ -222,22 +222,11 @@ export const CallHistoryPage: FC<CallHistoryPageProps> = ({ onBack }) => {
 
   return (
     <div className="flex-1 flex flex-col overflow-y-auto bg-holmes-bg">
-      <div className="sticky top-0 z-10 border-b border-white/10 bg-holmes-bg/95 px-6 py-3 backdrop-blur">
-        <div className="flex items-center justify-between gap-3">
-          <div className="flex items-center gap-3">
-            <button
-              onClick={onBack}
-              className="text-sm text-white/40 hover:text-white/80 transition-colors cursor-pointer"
-            >
-              ← Back
-            </button>
-            <span className="text-white/15">/</span>
-            <div className="flex items-center gap-2">
-              <FontAwesomeIcon icon={faReceipt} className="text-amber-300/80 text-sm" />
-              <h1 className="text-xl font-medium text-white/85 font-serif-display">Call History</h1>
-            </div>
-          </div>
-          <div className="flex items-center gap-2">
+      <PageHeader
+        icon={<FontAwesomeIcon icon={faReceipt} className={PAGE_HEADER_ICON} />}
+        title="Call History"
+        actions={
+          <>
             <button
               onClick={() => void updateSettings({ automationPaused: !automationPaused })}
               title={
@@ -269,72 +258,75 @@ export const CallHistoryPage: FC<CallHistoryPageProps> = ({ onBack }) => {
               <FontAwesomeIcon icon={faTrash} className="text-[10px]" />
               Clear
             </button>
-          </div>
-        </div>
+          </>
+        }
+        below={
+          <>
+            <div className="flex flex-wrap items-center gap-2">
+              <input
+                type="text"
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') setAppliedSearch(search.trim())
+                  if (event.key === 'Escape') {
+                    setSearch('')
+                    setAppliedSearch('')
+                  }
+                }}
+                onBlur={() => setAppliedSearch(search.trim())}
+                placeholder="Search model, feature, prompt or response…"
+                className="w-72 rounded-md border border-white/10 bg-white/[0.04] px-2.5 py-1 text-[12px] text-white/70 outline-none focus:border-amber-300/40 placeholder:text-white/25"
+              />
+              <button
+                onClick={() => setCompletionsOnly((value) => !value)}
+                title="Model calls only — hides the model-list lookups the app makes to price them"
+                className={`rounded-md border px-2.5 py-1 text-[11px] transition-colors cursor-pointer ${
+                  completionsOnly
+                    ? 'border-amber-300/40 bg-amber-300/10 text-amber-100/80'
+                    : 'border-white/10 text-white/40 hover:border-white/25'
+                }`}
+              >
+                Model calls only
+              </button>
+              <button
+                onClick={() => setFailedOnly((value) => !value)}
+                className={`rounded-md border px-2.5 py-1 text-[11px] transition-colors cursor-pointer ${
+                  failedOnly
+                    ? 'border-red-400/40 bg-red-400/10 text-red-100/80'
+                    : 'border-white/10 text-white/40 hover:border-white/25'
+                }`}
+              >
+                Failures only
+              </button>
+            </div>
 
-        <div className="mt-3 flex flex-wrap items-center gap-2">
-          <input
-            type="text"
-            value={search}
-            onChange={(event) => setSearch(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter') setAppliedSearch(search.trim())
-              if (event.key === 'Escape') {
-                setSearch('')
-                setAppliedSearch('')
-              }
-            }}
-            onBlur={() => setAppliedSearch(search.trim())}
-            placeholder="Search model, feature, prompt or response…"
-            className="w-72 rounded-md border border-white/10 bg-white/[0.04] px-2.5 py-1 text-[12px] text-white/70 outline-none focus:border-amber-300/40 placeholder:text-white/25"
-          />
-          <button
-            onClick={() => setCompletionsOnly((value) => !value)}
-            title="Model calls only — hides the model-list lookups the app makes to price them"
-            className={`rounded-md border px-2.5 py-1 text-[11px] transition-colors cursor-pointer ${
-              completionsOnly
-                ? 'border-amber-300/40 bg-amber-300/10 text-amber-100/80'
-                : 'border-white/10 text-white/40 hover:border-white/25'
-            }`}
-          >
-            Model calls only
-          </button>
-          <button
-            onClick={() => setFailedOnly((value) => !value)}
-            className={`rounded-md border px-2.5 py-1 text-[11px] transition-colors cursor-pointer ${
-              failedOnly
-                ? 'border-red-400/40 bg-red-400/10 text-red-100/80'
-                : 'border-white/10 text-white/40 hover:border-white/25'
-            }`}
-          >
-            Failures only
-          </button>
-        </div>
-
-        {stats && (
-          <div className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-1 text-[11px] text-white/40">
-            <span>
-              <span className="text-white/70 tabular-nums">{stats.calls.toLocaleString()}</span> calls
-            </span>
-            <span>
-              <span className="text-white/70 tabular-nums">{formatTotalCost(stats.costUsd)}</span> total
-              {stats.pricedCalls < stats.calls && (
-                <span className="text-white/25"> ({(stats.calls - stats.pricedCalls).toLocaleString()} unpriced)</span>
-              )}
-            </span>
-            <span>
-              <span className="text-white/70 tabular-nums">{stats.inputTokens.toLocaleString()}</span> in ·{' '}
-              <span className="text-white/70 tabular-nums">{stats.outputTokens.toLocaleString()}</span> out
-            </span>
-            {stats.failedCalls > 0 && (
-              <span className="text-red-200/60">{stats.failedCalls.toLocaleString()} failed</span>
+            {stats && (
+              <div className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-1 text-[11px] text-white/40">
+                <span>
+                  <span className="text-white/70 tabular-nums">{stats.calls.toLocaleString()}</span> calls
+                </span>
+                <span>
+                  <span className="text-white/70 tabular-nums">{formatTotalCost(stats.costUsd)}</span> total
+                  {stats.pricedCalls < stats.calls && (
+                    <span className="text-white/25"> ({(stats.calls - stats.pricedCalls).toLocaleString()} unpriced)</span>
+                  )}
+                </span>
+                <span>
+                  <span className="text-white/70 tabular-nums">{stats.inputTokens.toLocaleString()}</span> in ·{' '}
+                  <span className="text-white/70 tabular-nums">{stats.outputTokens.toLocaleString()}</span> out
+                </span>
+                {stats.failedCalls > 0 && (
+                  <span className="text-red-200/60">{stats.failedCalls.toLocaleString()} failed</span>
+                )}
+                {stats.firstCallAt && (
+                  <span className="text-white/25">since {new Date(stats.firstCallAt).toLocaleString()}</span>
+                )}
+              </div>
             )}
-            {stats.firstCallAt && (
-              <span className="text-white/25">since {new Date(stats.firstCallAt).toLocaleString()}</span>
-            )}
-          </div>
-        )}
-      </div>
+          </>
+        }
+      />
 
       <div className="px-6 py-4">
         {error && (

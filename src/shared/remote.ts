@@ -1,7 +1,7 @@
 import { IPC } from '../main/ipcChannels'
 import type { ModelTier, ModelTierConfig, ReasoningEffort } from './types'
 
-export const REMOTE_PROTOCOL_VERSION = 1
+export const REMOTE_PROTOCOL_VERSION = 2
 export const REMOTE_DEFAULT_PORT = 8787
 export const REMOTE_WS_PATH = '/holmes'
 export const REMOTE_PAIRING_CODE_TTL_MS = 5 * 60 * 1000
@@ -19,20 +19,64 @@ export type RemoteErrorCode =
   | 'channel-denied'
   | 'handler-error'
   | 'too-large'
+  | 'pair-not-offered'
+  | 'pair-untrusted'
 
+/**
+ * What a paired device is allowed to be. `owner` is the user's own phone;
+ * `media` is a guest device that may browse and read the Library and nothing
+ * else. The scope is fixed at pairing time and enforced on every call.
+ */
+export type RemoteScope = 'owner' | 'media'
+
+export const REMOTE_SCOPES: readonly RemoteScope[] = ['owner', 'media']
+
+export function isRemoteScope(value: unknown): value is RemoteScope {
+  return value === 'owner' || value === 'media'
+}
+
+/** Step 1. Carries no secret: the client has nothing to protect yet. */
+export interface RemotePairHelloFrame {
+  t: 'pair-hello'
+  v: number
+  clientEphemeralPub: string
+}
+
+/**
+ * Step 2. `tag` binds `serverStaticPub` to the pairing code on the Mac's
+ * screen. The client MUST verify it before sealing anything to that key —
+ * skipping the check is exactly the substitution attack the tag exists to stop.
+ */
+export interface RemotePairOfferFrame {
+  t: 'pair-offer'
+  serverStaticPub: string
+  tag: string
+}
+
+/** Step 3. `d` seals RemotePairPayload; the code never crosses in the clear. */
 export interface RemotePairFrame {
   t: 'pair'
   v: number
+  d: string
+}
+
+export interface RemotePairPayload {
   code: string
   clientStaticPub: string
   deviceName: string
   platform: string
 }
 
+/** Step 4. Sealed, so the device id and scope cannot be rewritten on the path. */
 export interface RemotePairedFrame {
   t: 'paired'
+  d: string
+}
+
+export interface RemotePairedPayload {
   deviceId: string
   serverStaticPub: string
+  scope: RemoteScope
 }
 
 export interface RemoteHelloFrame {
@@ -60,6 +104,8 @@ export interface RemoteSealedFrame {
 }
 
 export type RemoteFrame =
+  | RemotePairHelloFrame
+  | RemotePairOfferFrame
   | RemotePairFrame
   | RemotePairedFrame
   | RemoteHelloFrame
@@ -116,6 +162,7 @@ export interface RemoteDevice {
   name: string
   platform: string
   publicKey: string
+  scope: RemoteScope
   createdAt: number
   lastSeenAt: number | null
 }
@@ -126,6 +173,8 @@ export interface RemotePairingOffer {
   host: string
   port: number
   serverStaticPub: string
+  /** Chosen before the code is shown: the device that redeems it gets this. */
+  scope: RemoteScope
 }
 
 export interface RemoteServerStatus {
@@ -160,12 +209,46 @@ export interface RemoteClientSettings {
 }
 
 /**
- * Every channel a paired device may invoke. Absent means denied — see
+ * What a `media`-scoped guest device may invoke: browse the shelf and read a
+ * book. Everything here is read-only and returns nothing derived from the
+ * owner's life — no Memory, health, timeline, people, conversations or
+ * settings. A channel belongs here only if handing it to a stranger is
+ * uninteresting.
+ *
+ * Deliberately absent: the reading-record writers (`set-reading-state`,
+ * `set-progress`, `record-session`), because a guest's reading would be filed
+ * as the owner's and reaches the life timeline; every `generate`/`estimate`
+ * channel, because they spend the owner's provider credit; and
+ * `remote:client-settings`, whose welcome lines, assistant name and model tiers
+ * are the owner's.
+ */
+export const MEDIA_CALLABLE_CHANNELS: ReadonlySet<string> = new Set<string>([
+  IPC.LIBRARY.GET_STATE,
+  IPC.LIBRARY.LIST_BOOKS,
+  IPC.LIBRARY.GET_BOOK,
+  IPC.LIBRARY.GET_CHAPTER,
+  IPC.LIBRARY.GET_RESOURCE,
+  IPC.LIBRARY.LIST_AUDIOBOOKS,
+  IPC.LIBRARY.GET_AUDIOBOOK,
+  // Writes the GUEST's own position, never the owner's row — the handler
+  // branches on scope. Without this a shared book restarts from page one every
+  // session, which is the difference between safe and usable.
+  IPC.LIBRARY.SET_PROGRESS,
+  // Mints a short-lived, signed URL for ONE already-permitted resource. It hands
+  // out no new right: the handler binds the token to the calling device and to
+  // the id it was asked for, and the HTTP endpoint refuses anything else.
+  IPC.LIBRARY.GET_MEDIA_URL,
+])
+
+/**
+ * Every channel an `owner`-scoped device may invoke. Absent means denied — see
  * docs/ios-app.md. Nothing that writes to the filesystem, changes the file
  * access scope, reads or sets credentials, spawns a sidecar, or starts a paid
  * bulk run belongs in this set.
  */
-export const REMOTE_CALLABLE_CHANNELS: ReadonlySet<string> = new Set<string>([
+export const OWNER_CALLABLE_CHANNELS: ReadonlySet<string> = new Set<string>([
+  ...MEDIA_CALLABLE_CHANNELS,
+
   IPC.REMOTE.CLIENT_SETTINGS,
 
   IPC.CONVERSATIONS.LIST,
@@ -235,17 +318,25 @@ export const REMOTE_CALLABLE_CHANNELS: ReadonlySet<string> = new Set<string>([
   IPC.ROLES.GET_SESSION_NOTE,
   IPC.ROLES.LIST_SESSION_NOTES,
 
-  IPC.LIBRARY.LIST_BOOKS,
-  IPC.LIBRARY.GET_STATE,
-
   IPC.PROVIDER_CREDIT.GET,
 
   IPC.CALL_HISTORY.LIST,
   IPC.CALL_HISTORY.STATS,
 ])
 
-/** Broadcast channels forwarded to connected devices. */
-export const REMOTE_EVENT_CHANNELS: ReadonlySet<string> = new Set<string>([
+/**
+ * Broadcast channels forwarded to a `media` device. Events fan out to every
+ * connected device, so a guest would otherwise receive the owner's chat stream
+ * as it is generated.
+ */
+export const MEDIA_EVENT_CHANNELS: ReadonlySet<string> = new Set<string>([
+  IPC.LIBRARY.STATE,
+])
+
+/** Broadcast channels forwarded to an `owner` device. */
+export const OWNER_EVENT_CHANNELS: ReadonlySet<string> = new Set<string>([
+  ...MEDIA_EVENT_CHANNELS,
+
   IPC.CHAT.STREAM_CHUNK,
   IPC.CHAT.STREAM_DONE,
   IPC.CHAT.STREAM_ERROR,
@@ -260,12 +351,16 @@ export const REMOTE_EVENT_CHANNELS: ReadonlySet<string> = new Set<string>([
   IPC.ROLES.SESSION_NOTE_ADDED,
 ])
 
-export function isRemoteCallable(channel: string): boolean {
-  return REMOTE_CALLABLE_CHANNELS.has(channel)
+/**
+ * The scope is a required argument on purpose: an omitted one would default to
+ * the widest set, which is the failure this split exists to prevent.
+ */
+export function isRemoteCallable(channel: string, scope: RemoteScope): boolean {
+  return scope === 'owner' ? OWNER_CALLABLE_CHANNELS.has(channel) : MEDIA_CALLABLE_CHANNELS.has(channel)
 }
 
-export function isRemoteEvent(channel: string): boolean {
-  return REMOTE_EVENT_CHANNELS.has(channel)
+export function isRemoteEvent(channel: string, scope: RemoteScope): boolean {
+  return scope === 'owner' ? OWNER_EVENT_CHANNELS.has(channel) : MEDIA_EVENT_CHANNELS.has(channel)
 }
 
 /**

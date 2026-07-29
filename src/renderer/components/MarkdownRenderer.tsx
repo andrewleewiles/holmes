@@ -5,11 +5,21 @@ import rehypeHighlight from 'rehype-highlight'
 
 interface MarkdownRendererProps {
   content: string
+  /**
+   * Extra classes for the prose root. Size modifiers (`prose-lg`) have to land
+   * here rather than on a parent: `.prose` sets its own font-size, so a size set
+   * further up never reaches the paragraphs.
+   */
+  className?: string
 }
 
-export const MarkdownRenderer: FC<MarkdownRendererProps> = ({ content }) => {
+export const MarkdownRenderer: FC<MarkdownRendererProps> = ({ content, className }) => {
   return (
-    <div className="prose prose-invert max-w-none prose-headings:text-white prose-a:text-holmes-primary-light prose-code:text-holmes-primary prose-pre:bg-black/40 prose-pre:border prose-pre:border-white/10">
+    <div
+      className={`prose prose-invert max-w-none prose-headings:text-white prose-a:text-holmes-primary-light prose-code:text-holmes-primary prose-pre:bg-black/40 prose-pre:border prose-pre:border-white/10${
+        className ? ` ${className}` : ''
+      }`}
+    >
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         rehypePlugins={[rehypeHighlight]}

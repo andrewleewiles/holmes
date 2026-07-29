@@ -1,7 +1,8 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { IPC } from '../main/ipcChannels'
-import type { ChatAttachment, ElectronAPI, StreamChunk, AppSettings, ProviderConfig, Conversation, Message, ModelInfo, SearchResult, ReasoningEffort, Project, PsychologyAnalysis, HealthAnalysis, HealthRecord, HealthObservation, HealthSummary, HealthIngestProgress, HealthLiveStatus, HealthLiveSyncProgress, HealthSyncResult, DirectoryScanResult, PsychologicalTestId, PsychologicalTestResult, ProductSearchRequest, ProductSearchResult, WebSearchRequest, WebSearchResult, RecallSearchRequest, RecallSearchResponse, MemoryField, MemoryValue, MemoryUpdateRequest, MemoryCreateFieldRequest, MemorySuggestion, MemoryExtractionRequest, MemoryExtractionResult, MemorySuggestionReviewRequest, ClaudeImportOptions, ClaudeImportResult, ClaudeImportProgress, MemoryMode, ContextSelection, FsReadResult, FsWriteRequest, FsWriteResult, FsListItem, SystemPromptEntry, ActivityRecord, ActivitySourceType, ActivityIngestProgress, ActivityEventsBySource, ActivitySummary, ActivityLiveStatus, ActivitySyncResult, ActivityAccount, ActivityAccountUpdate, ActivityAccountSyncResult, ActivityAnalysisEstimate, ActivityRunState, DocumentContextResult, DocumentContextTree, DocumentContextProgress, DocumentIndexAllResult, DocumentIndexState, ProvenanceChain, SourceExcerpt, UserSuperContext, ModelTier, IndexEstimate, ProjectSource, ProjectInput, ProjectIndexSummary, TimelineEvent, TimelineEventInput, TimelineFilter, TimelineSummary, TimelineYearContext, TimelineYearsView, TimelineRunState, TimelineRebuildResult, TimelineRebuildProgress, ContextVersion, ContextVersionSummary, ContextVersionFilter, RoleSummary, RoleSessionNote, RoleSessionNoteFilter, RoleSessionNoteResult, CreditBreakerState, ProviderCall, ProviderCallFilter, ProviderCallStats, ProviderCallSummary, Person, PersonMention, PersonRelation, PeopleFilter, PeopleRebuildProgress, PeopleRebuildResult, PeopleRunState, Book, BookChapter, BookChapterContent, BookReadingSession, BookReadingState, BookReadingStatus, BookResource, LibraryBook, LibraryRunState, LibraryScanProgress, LibraryScanResult, LibrarySnapshotResult, BookAnnotation, BookAnnotationRun, AnnotationRunSummary, BookLesson, BookLessonAttempt, BookConversationLink, BookDiscussionScope, LessonRunSummary, Audiobook, AudiobookChapter, AudiobookEstimate, AudiobookProgress, SpeechProviderId, SpeechProviderInfo, SpeechModel, SpeechVoice, SpeechKeyResult, OrganizePlan, OrganizeResult } from '../shared/types'
-import type { RemoteDevice, RemotePairingOffer, RemoteServerStatus } from '../shared/remote'
+import type { ChatAttachment, ElectronAPI, StreamChunk, AppSettings, ProviderConfig, Conversation, Message, ModelInfo, SearchResult, ReasoningEffort, Project, PsychologyAnalysis, HealthAnalysis, HealthRecord, HealthObservation, HealthSummary, HealthIngestProgress, HealthLiveStatus, HealthLiveSyncProgress, HealthSyncResult, DirectoryScanResult, PsychologicalTestId, PsychologicalTestResult, ProductSearchRequest, ProductSearchResult, WebSearchRequest, WebSearchResult, RecallSearchRequest, RecallSearchResponse, RecallHistoryEntry, MemoryField, MemoryValue, MemoryUpdateRequest, MemoryCreateFieldRequest, MemorySuggestion, MemoryExtractionRequest, MemoryExtractionResult, MemorySuggestionReviewRequest, ClaudeImportOptions, ClaudeImportResult, ClaudeImportProgress, MemoryMode, ContextSelection, FsReadResult, FsWriteRequest, FsWriteResult, FsListItem, SystemPromptEntry, ActivityRecord, ActivitySourceType, ActivityIngestProgress, ActivityEventsBySource, ActivitySummary, ActivityLiveStatus, ActivitySyncResult, ActivityAccount, ActivityAccountUpdate, ActivityAccountSyncResult, ActivityAnalysisEstimate, ActivityRunState, DocumentContextResult, DocumentContextTree, DocumentContextProgress, DocumentIndexAllResult, DocumentIndexState, ProvenanceChain, SourceExcerpt, UserSuperContext, ModelTier, IndexGranularity, IndexEstimate, ProjectSource, ProjectInput, ProjectIndexSummary, TimelineEvent, TimelineEventInput, TimelineFilter, TimelineSummary, TimelineYearContext, TimelineYearsView, TimelineRunState, TimelineRebuildResult, TimelineRebuildProgress, ContextVersion, ContextVersionSummary, ContextVersionFilter, RoleSummary, RoleSessionNote, RoleSessionNoteFilter, RoleSessionNoteResult, CreditBreakerState, HomeIdeasResult, ProviderCall, ProviderCallFilter, ProviderCallStats, ProviderCallSummary, Person, PersonMention, PersonRelation, PeopleFilter, PeopleRebuildProgress, PeopleRebuildResult, PeopleRunState, Book, BookChapter, BookChapterContent, BookReadingSession, BookReadingState, BookReadingStatus, BookResource, LibraryBook, LibraryRunState, LibraryScanProgress, LibraryScanResult, LibrarySnapshotResult, BookAnnotation, BookAnnotationRun, AnnotationRunSummary, BookLesson, BookLessonAttempt, BookConversationLink, BookDiscussionScope, LessonRunSummary, Audiobook, AudiobookChapter, AudiobookEstimate, AudiobookProgress, SpeechProviderId, SpeechProviderInfo, SpeechModel, SpeechVoice, SpeechKeyResult, OrganizePlan, OrganizeResult } from '../shared/types'
+import type { RemoteDevice, RemotePairingOffer, RemoteScope, RemoteServerStatus } from '../shared/remote'
+import type { RemoteMediaKind, RemoteMediaTicket } from '../shared/remoteMedia'
 
 const api: ElectronAPI = {
   conversations: {
@@ -33,8 +34,8 @@ const api: ElectronAPI = {
     setActiveBranch: (messageId: string) =>
       ipcRenderer.invoke(IPC.CHAT.SET_ACTIVE_BRANCH, messageId) as Promise<void>,
     abort: () => ipcRenderer.invoke(IPC.CHAT.ABORT),
-    previewSystemPrompt: (conversationId: string, memoryMode: MemoryMode, context?: ContextSelection) =>
-      ipcRenderer.invoke(IPC.CHAT.PREVIEW_SYSTEM_PROMPT, conversationId, memoryMode, context) as Promise<SystemPromptEntry[]>,
+    previewSystemPrompt: (conversationId: string, memoryMode: MemoryMode, context?: ContextSelection, roleId?: string | null) =>
+      ipcRenderer.invoke(IPC.CHAT.PREVIEW_SYSTEM_PROMPT, conversationId, memoryMode, context, roleId) as Promise<SystemPromptEntry[]>,
     onChunk: (callback: (chunk: StreamChunk) => void) => {
       const handleChunk = (_event: Electron.IpcRendererEvent, chunk: StreamChunk) => callback(chunk)
       const handleDone = (_event: Electron.IpcRendererEvent, chunk: StreamChunk) => callback(chunk)
@@ -77,6 +78,9 @@ const api: ElectronAPI = {
     startConversation: (model: string, effort: ReasoningEffort) => ipcRenderer.invoke(IPC.RECALL.START_CONVERSATION, model, effort) as Promise<Conversation>,
     openFile: (path: string) => ipcRenderer.invoke(IPC.RECALL.OPEN_FILE, path) as Promise<void>,
     revealFile: (path: string) => ipcRenderer.invoke(IPC.RECALL.REVEAL_FILE, path) as Promise<void>,
+    history: () => ipcRenderer.invoke(IPC.RECALL.HISTORY) as Promise<RecallHistoryEntry[]>,
+    deleteHistory: (id: string) => ipcRenderer.invoke(IPC.RECALL.DELETE_HISTORY, id) as Promise<RecallHistoryEntry[]>,
+    clearHistory: () => ipcRenderer.invoke(IPC.RECALL.CLEAR_HISTORY) as Promise<number>,
   },
   memory: {
     list: () => ipcRenderer.invoke(IPC.MEMORY.LIST) as Promise<MemoryField[]>,
@@ -243,13 +247,13 @@ const api: ElectronAPI = {
       ipcRenderer.invoke(IPC.ACTIVITY.SIDECAR_AVAILABLE) as Promise<boolean>,
   },
   documents: {
-    generate: (projectId: string, tier?: ModelTier, options?: { sourcePath?: string; force?: boolean }) =>
+    generate: (projectId: string, tier?: ModelTier, options?: { sourcePath?: string; force?: boolean; granularity?: IndexGranularity }) =>
       ipcRenderer.invoke(IPC.DOCUMENTS.GENERATE, projectId, tier, options) as Promise<DocumentContextResult>,
-    generateAll: (options?: { resume?: boolean; tier?: ModelTier; projectIds?: string[]; force?: boolean }) =>
+    generateAll: (options?: { resume?: boolean; tier?: ModelTier; projectIds?: string[]; force?: boolean; granularity?: IndexGranularity }) =>
       ipcRenderer.invoke(IPC.DOCUMENTS.GENERATE_ALL, options) as Promise<DocumentIndexAllResult>,
-    estimate: (projectId: string, tier?: ModelTier, options?: { sourcePath?: string; force?: boolean }) =>
+    estimate: (projectId: string, tier?: ModelTier, options?: { sourcePath?: string; force?: boolean; granularity?: IndexGranularity }) =>
       ipcRenderer.invoke(IPC.DOCUMENTS.ESTIMATE, projectId, tier, options) as Promise<IndexEstimate>,
-    estimateAll: (tier?: ModelTier, options?: { projectIds?: string[]; force?: boolean }) =>
+    estimateAll: (tier?: ModelTier, options?: { projectIds?: string[]; force?: boolean; granularity?: IndexGranularity }) =>
       ipcRenderer.invoke(IPC.DOCUMENTS.ESTIMATE_ALL, tier, options) as Promise<IndexEstimate>,
     abort: () => ipcRenderer.invoke(IPC.DOCUMENTS.ABORT) as Promise<DocumentIndexState>,
     pause: () => ipcRenderer.invoke(IPC.DOCUMENTS.PAUSE) as Promise<DocumentIndexState>,
@@ -401,6 +405,8 @@ const api: ElectronAPI = {
       ipcRenderer.invoke(IPC.LIBRARY.LIST_AUDIOBOOKS, bookId) as Promise<Audiobook[]>,
     deleteAudiobook: (bookId: string, chapterIndex: number) =>
       ipcRenderer.invoke(IPC.LIBRARY.DELETE_AUDIOBOOK, bookId, chapterIndex) as Promise<void>,
+    getMediaUrl: (kind: RemoteMediaKind, id: string) =>
+      ipcRenderer.invoke(IPC.LIBRARY.GET_MEDIA_URL, kind, id) as Promise<RemoteMediaTicket>,
     planOrganize: (projectId: string, tier?: ModelTier) =>
       ipcRenderer.invoke(IPC.LIBRARY.PLAN_ORGANIZE, projectId, tier) as Promise<OrganizePlan>,
     applyOrganize: (plan: OrganizePlan) =>
@@ -461,6 +467,10 @@ const api: ElectronAPI = {
       return () => ipcRenderer.removeListener(IPC.ROLES.SESSION_NOTE_ADDED, handler)
     },
   },
+  ideas: {
+    get: () => ipcRenderer.invoke(IPC.IDEAS.GET) as Promise<HomeIdeasResult>,
+    refresh: (force?: boolean) => ipcRenderer.invoke(IPC.IDEAS.REFRESH, force) as Promise<HomeIdeasResult>,
+  },
   providerCredit: {
     get: () => ipcRenderer.invoke(IPC.PROVIDER_CREDIT.GET) as Promise<CreditBreakerState>,
     clear: () => ipcRenderer.invoke(IPC.PROVIDER_CREDIT.CLEAR) as Promise<void>,
@@ -482,7 +492,8 @@ const api: ElectronAPI = {
     getStatus: () => ipcRenderer.invoke(IPC.REMOTE.GET_STATUS) as Promise<RemoteServerStatus>,
     setEnabled: (enabled: boolean) =>
       ipcRenderer.invoke(IPC.REMOTE.SET_ENABLED, enabled) as Promise<RemoteServerStatus>,
-    createPairing: () => ipcRenderer.invoke(IPC.REMOTE.CREATE_PAIRING) as Promise<RemotePairingOffer>,
+    createPairing: (scope: RemoteScope) =>
+      ipcRenderer.invoke(IPC.REMOTE.CREATE_PAIRING, scope) as Promise<RemotePairingOffer>,
     cancelPairing: () => ipcRenderer.invoke(IPC.REMOTE.CANCEL_PAIRING) as Promise<void>,
     listDevices: () => ipcRenderer.invoke(IPC.REMOTE.LIST_DEVICES) as Promise<RemoteDevice[]>,
     revokeDevice: (deviceId: string) => ipcRenderer.invoke(IPC.REMOTE.REVOKE_DEVICE, deviceId) as Promise<void>,

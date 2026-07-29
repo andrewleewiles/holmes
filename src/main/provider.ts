@@ -580,6 +580,66 @@ export async function generateVideo(
   )
 }
 
+/**
+ * Pulls a JSON object out of a reply that may be wrapped in a fence or preceded
+ * by the model's own reasoning.
+ *
+ * Reasoning models answer "return only JSON" by thinking out loud first and
+ * putting the JSON last, and prose routinely contains braces of its own, so the
+ * object is found by scanning for balanced braces and preferring the last one
+ * that parses rather than by matching the first "{" to the final "}".
+ */
+export function extractJsonObject(text: string): unknown {
+  const unfenced = text
+    .replace(/^\s*```(?:json)?\s*/i, '')
+    .replace(/\s*```\s*$/, '')
+    .trim()
+  try {
+    return JSON.parse(unfenced)
+  } catch { /* Fall through to scanning. */ }
+
+  const candidates: string[] = []
+  let depth = 0
+  let start = -1
+  let inString = false
+  let escaped = false
+  for (let index = 0; index < unfenced.length; index += 1) {
+    const character = unfenced[index]
+    if (inString) {
+      if (escaped) escaped = false
+      else if (character === '\\') escaped = true
+      else if (character === '"') inString = false
+      continue
+    }
+    if (character === '"') inString = true
+    else if (character === '{') {
+      if (depth === 0) start = index
+      depth += 1
+    } else if (character === '}' && depth > 0) {
+      depth -= 1
+      if (depth === 0 && start >= 0) candidates.push(unfenced.slice(start, index + 1))
+    }
+  }
+
+  for (const candidate of candidates.reverse()) {
+    try {
+      return JSON.parse(candidate)
+    } catch { /* Try the next-earlier object. */ }
+  }
+  return undefined
+}
+
+/**
+ * A reply cut off by the output cap is not a malformed reply: the model was
+ * still writing. Saying so lets the caller stop treating it as a bad format and
+ * retrying in ways that cannot help.
+ */
+function assertNotTruncated(payload: any, label: string): void {
+  if (payload?.choices?.[0]?.finish_reason === 'length') {
+    throw new Error(`System Model ran out of output space before finishing the ${label}`)
+  }
+}
+
 export async function expandRecallQuery(
   config: ProviderConfig,
   model: string,
@@ -609,7 +669,10 @@ export async function expandRecallQuery(
           content: JSON.stringify({ query }),
         },
       ],
-      max_tokens: 250,
+      // Reasoning models spend output tokens thinking before they answer, and a
+      // cap that only fits the JSON gets consumed entirely by the reasoning,
+      // truncating the reply before the JSON is ever written.
+      max_tokens: 1_200,
       temperature: 0.2,
       stream: false,
     }),
@@ -637,17 +700,10 @@ export async function expandRecallQuery(
     throw new Error('System Model returned no semantic query expansion')
   }
 
-  const jsonText = content
-    .replace(/^\s*```(?:json)?\s*/i, '')
-    .replace(/\s*```\s*$/, '')
-    .trim()
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(jsonText)
-  } catch {
-    const objectMatch = jsonText.match(/\{[\s\S]*\}/)
-    if (!objectMatch) throw new Error('System Model returned invalid semantic query JSON')
-    parsed = JSON.parse(objectMatch[0])
+  const parsed = extractJsonObject(content)
+  if (parsed === undefined) {
+    assertNotTruncated(payload, 'semantic query expansion')
+    throw new Error('System Model returned invalid semantic query JSON')
   }
 
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return []
@@ -680,7 +736,9 @@ export async function answerRecallQuestion(
     return {
       id: alias,
       title: source.title.slice(0, 300),
-      content: source.content.slice(0, 16_000),
+      // Sources arrive already trimmed to the caller's grounding budget; a
+      // second, smaller cap here silently truncated long lists mid-way.
+      content: source.content.slice(0, 90_000),
     }
   })
 
@@ -700,7 +758,11 @@ export async function answerRecallQuestion(
           content: JSON.stringify({ question: query, sources: promptSources }),
         },
       ],
-      max_tokens: 700,
+      // A reasoning model reads the sources, works through them out loud, and
+      // only then writes the JSON. At 700 the thinking alone exhausted the
+      // budget and the reply was cut off mid-sentence, which read downstream as
+      // a malformed answer from a model that had in fact answered correctly.
+      max_tokens: 4_000,
       temperature: 0.1,
       stream: false,
     }),
@@ -728,34 +790,28 @@ export async function answerRecallQuestion(
     .replace(/^\s*```(?:json)?\s*/i, '')
     .replace(/\s*```\s*$/, '')
     .trim()
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(jsonText)
-  } catch {
-    const objectMatch = jsonText.match(/\{[\s\S]*\}/)
-    if (!objectMatch) {
-      if (sources.length !== 1 || !jsonText || jsonText.startsWith('{') || jsonText.startsWith('[')) {
-        throw new Error('System Model returned invalid Recall answer JSON')
-      }
-      const plainAnswer = jsonText
-        .replace(/^\s*```(?:text|markdown)?\s*/i, '')
-        .replace(/\s*```\s*$/, '')
-        .replace(/[\u0000-\u001f\u007f]/g, ' ')
-        .replace(/\s+/g, ' ')
-        .trim()
-      if (!plainAnswer || plainAnswer.length > 4_000) {
-        throw new Error('System Model returned an invalid Recall answer')
-      }
-      return {
-        text: plainAnswer,
-        sourceIds: [sources[0].resultId],
-        model: typeof payload.model === 'string' ? payload.model : model,
-      }
-    }
-    try {
-      parsed = JSON.parse(objectMatch[0])
-    } catch {
+  const parsed = extractJsonObject(content)
+  if (parsed === undefined) {
+    // A truncated reply is reported as such before falling back, so the caller
+    // does not mistake "the model ran out of room" for "the model cannot
+    // produce this format" and retry in a way that cannot help.
+    assertNotTruncated(payload, 'Recall answer')
+    if (sources.length !== 1 || !jsonText || jsonText.startsWith('{') || jsonText.startsWith('[')) {
       throw new Error('System Model returned invalid Recall answer JSON')
+    }
+    const plainAnswer = jsonText
+      .replace(/^\s*```(?:text|markdown)?\s*/i, '')
+      .replace(/\s*```\s*$/, '')
+      .replace(/[\u0000-\u001f\u007f]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+    if (!plainAnswer || plainAnswer.length > 4_000) {
+      throw new Error('System Model returned an invalid Recall answer')
+    }
+    return {
+      text: plainAnswer,
+      sourceIds: [sources[0].resultId],
+      model: typeof payload.model === 'string' ? payload.model : model,
     }
   }
 

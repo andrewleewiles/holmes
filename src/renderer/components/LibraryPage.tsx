@@ -8,6 +8,7 @@ import {
 } from '@fortawesome/free-solid-svg-icons'
 import type { BookReadingStatus, LibraryBook } from '@shared/types'
 import { BookReader } from './BookReader'
+import { PageHeader, PAGE_HEADER_ICON } from './PageHeader'
 import { useLibraryRun } from '../hooks/useLibraryRun'
 
 interface LibraryPageProps {
@@ -135,33 +136,27 @@ export const LibraryPage: FC<LibraryPageProps> = ({ onBack, onOpenData, onDiscus
 
   return (
     <div className="flex flex-1 flex-col overflow-y-auto bg-holmes-bg">
-      <div className="sticky top-0 z-10 flex items-center justify-between border-b border-white/10 bg-holmes-bg/95 px-6 py-3 backdrop-blur">
-        <div className="flex items-center gap-3">
-          <button onClick={onBack} className="text-sm text-white/40 transition-colors hover:text-white/80 cursor-pointer">
-            ← Back
-          </button>
-          <span className="text-white/15">/</span>
-          <div className="flex items-center gap-2">
-            <FontAwesomeIcon icon={faBookOpen} className="text-sm text-violet-300" />
-            <h1 className="font-serif-display text-xl font-medium text-white/85">Library</h1>
-          </div>
-        </div>
-        <div className="flex items-center gap-3">
-          <span className="text-[11px] tabular-nums text-white/30">
-            {books.length} book{books.length === 1 ? '' : 's'}
-            {finished > 0 && ` · ${finished} finished`}
-          </span>
-          <button
-            onClick={() => void handleRescan()}
-            disabled={scanning || books.length === 0}
-            title="Re-read every connected folder"
-            className="flex cursor-pointer items-center gap-1.5 rounded-lg border border-violet-400/25 bg-violet-400/[0.07] px-2.5 py-1 text-[11px] text-violet-100/85 transition-colors hover:border-violet-400/45 disabled:opacity-40"
-          >
-            <FontAwesomeIcon icon={faArrowRotateRight} className={`text-[10px] ${scanning ? 'animate-spin' : ''}`} />
-            {scanning ? 'Scanning…' : 'Rescan'}
-          </button>
-        </div>
-      </div>
+      <PageHeader
+        icon={<FontAwesomeIcon icon={faBookOpen} className={PAGE_HEADER_ICON} />}
+        title="Library"
+        actions={
+          <>
+            <span className="text-[11px] tabular-nums text-white/30">
+              {books.length} book{books.length === 1 ? '' : 's'}
+              {finished > 0 && ` · ${finished} finished`}
+            </span>
+            <button
+              onClick={() => void handleRescan()}
+              disabled={scanning || books.length === 0}
+              title="Re-read every connected folder"
+              className="flex cursor-pointer items-center gap-1.5 rounded-lg border border-violet-400/25 bg-violet-400/[0.07] px-2.5 py-1 text-[11px] text-violet-100/85 transition-colors hover:border-violet-400/45 disabled:opacity-40"
+            >
+              <FontAwesomeIcon icon={faArrowRotateRight} className={`text-[10px] ${scanning ? 'animate-spin' : ''}`} />
+              {scanning ? 'Scanning…' : 'Rescan'}
+            </button>
+          </>
+        }
+      />
 
       <div className="mx-auto w-full max-w-6xl px-6 py-5">
         {error && (

@@ -35,6 +35,31 @@ export function classifyAttachment(name: string): { kind: ChatAttachmentKind; mi
   return null
 }
 
+/**
+ * Pasted files often arrive without a usable name — a screenshot off the
+ * clipboard is just `image.png`, and some sources hand over no name at all —
+ * so the MIME type the clipboard reports is the only thing left to classify by.
+ */
+export function classifyAttachmentMimeType(mimeType: string): { kind: ChatAttachmentKind; mimeType: string } | null {
+  const normalized = mimeType.toLowerCase().split(';')[0].trim()
+  if (!normalized) return null
+  if (Object.values(IMAGE_EXTENSIONS).includes(normalized)) return { kind: 'image', mimeType: normalized }
+  if (Object.values(VIDEO_EXTENSIONS).includes(normalized)) return { kind: 'video', mimeType: normalized }
+  return null
+}
+
+/** The canonical extension for a supported MIME type, for naming unnamed pastes. */
+export function extensionForMimeType(mimeType: string): string | null {
+  const normalized = mimeType.toLowerCase().split(';')[0].trim()
+  for (const [ext, mime] of Object.entries(IMAGE_EXTENSIONS)) {
+    if (mime === normalized) return ext
+  }
+  for (const [ext, mime] of Object.entries(VIDEO_EXTENSIONS)) {
+    if (mime === normalized) return ext
+  }
+  return null
+}
+
 export function formatAttachmentSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`

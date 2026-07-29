@@ -24,9 +24,9 @@ const TEXT_EXTENSIONS = new Set([
 ])
 
 // Broader set for the document-context feature, which can extract text from
-// common binary document formats (PDF via pdfjs-dist, XLSX/DOCX via unzip).
+// common binary document formats (PDF via pdfjs-dist, XLSX/DOCX/PPTX via unzip).
 export const DOCUMENT_EXTENSIONS = new Set([
-  ...TEXT_EXTENSIONS, '.pdf', '.xlsx', '.docx',
+  ...TEXT_EXTENSIONS, '.pdf', '.xlsx', '.docx', '.pptx',
 ])
 
 // Images are summarized by a vision model rather than text-extracted. HEIC/HEIF

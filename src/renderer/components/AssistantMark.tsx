@@ -8,6 +8,11 @@ import holmesSymbol from '../../../assets/holmesSymbol.svg'
 interface AssistantMarkProps {
   className?: string
   style?: CSSProperties
+  /**
+   * An active character's colour. Applies to a registry icon; a custom image is
+   * the user's own artwork and is left alone.
+   */
+  color?: string
 }
 
 /**
@@ -16,12 +21,12 @@ interface AssistantMarkProps {
  * one extra state: empty means the bundled Holmes symbol, so an untouched
  * install looks exactly as it did before the setting existed.
  */
-export const AssistantMark: FC<AssistantMarkProps> = ({ className, style }) => {
+export const AssistantMark: FC<AssistantMarkProps> = ({ className, style, color }) => {
   const { name, icon } = useAssistantIdentity()
 
   const faIcon: IconDefinition | undefined = icon ? PROJECT_ICON_REGISTRY[icon] : undefined
   if (faIcon) {
-    return <FontAwesomeIcon icon={faIcon} className={className} style={{ color: '#47a08f', ...style }} />
+    return <FontAwesomeIcon icon={faIcon} className={className} style={{ color: color ?? '#47a08f', ...style }} />
   }
 
   const src = icon.startsWith('data:') ? icon : holmesSymbol

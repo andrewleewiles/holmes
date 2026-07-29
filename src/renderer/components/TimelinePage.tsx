@@ -1,4 +1,4 @@
-import { type FC, useCallback, useEffect, useMemo, useState } from 'react'
+import { type FC, type KeyboardEvent, useCallback, useEffect, useMemo, useState } from 'react'
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
 import { faArrowRotateRight, faBoxArchive, faFileLines, faPlus, faTimeline, faXmark } from '@fortawesome/free-solid-svg-icons'
 import type {
@@ -11,34 +11,19 @@ import type {
   TimelineYearContext,
 } from '@shared/types'
 import {
-  TIMELINE_ALL_CATEGORIES,
   TIMELINE_CATEGORIES,
   formatTimelineDate,
   formatTimelineRange,
   groupTimelineByYear,
 } from '@shared/timeline'
 import { useSettings } from '../hooks/useSettings'
+import { PageHeader, PAGE_HEADER_ICON } from './PageHeader'
+import { CATEGORY_STYLE, TimelineRibbon } from './TimelineRibbon'
 
 interface TimelinePageProps {
-  onBack: () => void
 }
 
-const CATEGORY_STYLE: Record<TimelineCategory, { dot: string; chip: string; text: string }> = {
-  milestone: { dot: 'bg-amber-300', chip: 'border-amber-400/40 bg-amber-400/10', text: 'text-amber-200/90' },
-  health: { dot: 'bg-emerald-400', chip: 'border-emerald-400/40 bg-emerald-400/10', text: 'text-emerald-200/90' },
-  training: { dot: 'bg-lime-400', chip: 'border-lime-400/40 bg-lime-400/10', text: 'text-lime-200/90' },
-  work: { dot: 'bg-sky-400', chip: 'border-sky-400/40 bg-sky-400/10', text: 'text-sky-200/90' },
-  education: { dot: 'bg-indigo-400', chip: 'border-indigo-400/40 bg-indigo-400/10', text: 'text-indigo-200/90' },
-  finance: { dot: 'bg-teal-400', chip: 'border-teal-400/40 bg-teal-400/10', text: 'text-teal-200/90' },
-  travel: { dot: 'bg-orange-400', chip: 'border-orange-400/40 bg-orange-400/10', text: 'text-orange-200/90' },
-  relationships: { dot: 'bg-rose-400', chip: 'border-rose-400/40 bg-rose-400/10', text: 'text-rose-200/90' },
-  media: { dot: 'bg-fuchsia-400', chip: 'border-fuchsia-400/40 bg-fuchsia-400/10', text: 'text-fuchsia-200/90' },
-  technology: { dot: 'bg-cyan-400', chip: 'border-cyan-400/40 bg-cyan-400/10', text: 'text-cyan-200/90' },
-  home: { dot: 'bg-violet-400', chip: 'border-violet-400/40 bg-violet-400/10', text: 'text-violet-200/90' },
-  life: { dot: 'bg-white/50', chip: 'border-white/20 bg-white/[0.06]', text: 'text-white/70' },
-  other: { dot: 'bg-white/25', chip: 'border-white/15 bg-white/[0.04]', text: 'text-white/50' },
-  record: { dot: 'bg-slate-400', chip: 'border-slate-400/30 bg-slate-400/10', text: 'text-slate-300/80' },
-}
+type TimelineTab = 'eras' | 'years' | 'record'
 
 const PRECISION_LABEL: Record<string, string> = {
   day: 'exact date',
@@ -51,7 +36,7 @@ function cleanError(error: unknown): string {
   return error.message.replace(/^Error invoking remote method '[^']+': Error: /, '')
 }
 
-export const TimelinePage: FC<TimelinePageProps> = ({ onBack }) => {
+export const TimelinePage: FC<TimelinePageProps> = () => {
   const { settings } = useSettings()
   const enabled = settings?.timelineEnabled ?? true
 
@@ -67,12 +52,18 @@ export const TimelinePage: FC<TimelinePageProps> = ({ onBack }) => {
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
 
+  const [tab, setTab] = useState<TimelineTab>('eras')
+  // Set once the user picks a tab themselves, so the "nothing synthesized yet"
+  // fallback below can never yank them off a tab they chose.
+  const [tabChosen, setTabChosen] = useState(false)
+
   const [search, setSearch] = useState('')
   const [activeCategories, setActiveCategories] = useState<TimelineCategory[]>([])
   const [narrativeExpanded, setNarrativeExpanded] = useState(false)
   const [years, setYears] = useState<TimelineYearContext[]>([])
   const [birthYear, setBirthYear] = useState<number | null>(null)
   const [openYear, setOpenYear] = useState<number | null>(null)
+  const [selectedYear, setSelectedYear] = useState<number | null>(null)
   const [showPreBirthYears, setShowPreBirthYears] = useState(false)
 
   const [showRecord, setShowRecord] = useState(false)
@@ -233,11 +224,6 @@ export const TimelinePage: FC<TimelinePageProps> = ({ onBack }) => {
     }
   }
 
-  const presentCategories = useMemo(() => {
-    const present = new Set(events.map((event) => event.category))
-    return TIMELINE_ALL_CATEGORIES.filter((category) => present.has(category))
-  }, [events])
-
   const recordCount = useMemo(() => events.filter((event) => event.category === 'record').length, [events])
   const archivedCount = useMemo(() => events.filter((event) => event.archivedAt).length, [events])
 
@@ -285,25 +271,72 @@ export const TimelinePage: FC<TimelinePageProps> = ({ onBack }) => {
   const narrative = summary?.narrative?.trim() ?? ''
   const narrativeIsLong = narrative.length > 420
 
+  // A separate-context project has no eras and no year syntheses by design, so it
+  // only ever has one tab to show.
+  const scoped = scopeProjectId !== null
+  const tabs = useMemo<{ key: TimelineTab; label: string; count: number | null }[]>(() => {
+    if (scoped) return [{ key: 'record', label: 'Dated record', count: events.length }]
+    return [
+      { key: 'eras', label: 'Eras', count: summary?.eras.length ?? 0 },
+      { key: 'years', label: 'Years', count: lifeYears.length },
+      { key: 'record', label: 'Dated record', count: events.length },
+    ]
+  }, [scoped, summary, lifeYears.length, events.length])
+
+  const activeTab: TimelineTab = tabs.some((entry) => entry.key === tab) ? tab : 'record'
+
+  // Landing on an empty Eras tab tells a first-time user nothing; the dated record
+  // is the one thing that exists before anything has been synthesized.
+  useEffect(() => {
+    if (tabChosen || loading || scoped) return
+    if (summary?.eras.length || narrative) return
+    setTab(years.length > 0 ? 'years' : 'record')
+  }, [tabChosen, loading, scoped, summary, narrative, years.length])
+
+  const chooseTab = (next: TimelineTab) => {
+    setTab(next)
+    setTabChosen(true)
+  }
+
+  // Left/right arrows cycle the tabs, wrapping at both ends.
+  const handleTabKey = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.key !== 'ArrowRight' && event.key !== 'ArrowLeft') return
+    event.preventDefault()
+    const index = tabs.findIndex((entry) => entry.key === activeTab)
+    const step = event.key === 'ArrowRight' ? 1 : tabs.length - 1
+    chooseTab(tabs[(index + step) % tabs.length].key)
+  }
+
+  // Clicking a year on the ribbon opens it wherever it actually exists: its
+  // synthesis if one has been built, otherwise its slice of the dated record.
+  const handleSelectYear = (year: number) => {
+    setSelectedYear(year)
+    setTabChosen(true)
+    if (!scoped && years.some((entry) => entry.year === year)) {
+      setOpenYear(year)
+      setTab('years')
+    } else {
+      setTab('record')
+    }
+    requestAnimationFrame(() => {
+      document.getElementById(`timeline-year-${year}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    })
+  }
+
   return (
     <div className="flex-1 flex flex-col overflow-y-auto bg-holmes-bg">
-      <div className="sticky top-0 z-10 flex items-center justify-between border-b border-white/10 bg-holmes-bg/95 px-6 py-3 backdrop-blur">
-        <div className="flex items-center gap-3">
-          <button
-            onClick={onBack}
-            className="text-sm text-white/40 hover:text-white/80 transition-colors cursor-pointer"
-          >
-            ← Back
-          </button>
-          <span className="text-white/15">/</span>
-          <div className="flex items-center gap-2">
-            <FontAwesomeIcon icon={faTimeline} className="text-sky-400 text-sm" />
-            <h1 className="text-xl font-medium text-white/85 font-serif-display">Timeline</h1>
-          </div>
-          {separateProjects.length > 0 && (
+      <PageHeader
+        icon={<FontAwesomeIcon icon={faTimeline} className={PAGE_HEADER_ICON} />}
+        title="Timeline"
+        aside={
+          separateProjects.length > 0 ? (
             <select
               value={scopeProjectId ?? 'life'}
-              onChange={(event) => setScopeProjectId(event.target.value === 'life' ? null : event.target.value)}
+              onChange={(event) => {
+                setScopeProjectId(event.target.value === 'life' ? null : event.target.value)
+                setSelectedYear(null)
+                setOpenYear(null)
+              }}
               title="Projects kept separate from the life context keep their own timeline"
               className="ml-2 rounded-md border border-white/10 bg-white/[0.04] px-2 py-1 text-[11px] text-white/60 outline-none hover:border-white/20 cursor-pointer"
             >
@@ -312,25 +345,27 @@ export const TimelinePage: FC<TimelinePageProps> = ({ onBack }) => {
                 <option key={project.id} value={project.id}>{project.name}</option>
               ))}
             </select>
-          )}
-        </div>
-        <div className="flex items-center gap-3">
-          <span className="text-[11px] text-white/30">
-            {lifeEvents.length} event{lifeEvents.length === 1 ? '' : 's'}
-            {span ? ` · ${span}` : ''}
-            {summary?.eras.length ? ` · ${summary.eras.length} era${summary.eras.length === 1 ? '' : 's'}` : ''}
-          </span>
-          <button
-            onClick={() => void handleRebuild()}
-            disabled={!enabled || rebuilding}
-            title={enabled ? 'Re-read every generated context and rebuild the timeline' : 'Enable Timeline in Settings'}
-            className="flex items-center gap-1.5 rounded-lg border border-sky-400/25 bg-sky-400/[0.07] px-2.5 py-1 text-[11px] text-sky-100/85 hover:border-sky-400/45 disabled:opacity-40 cursor-pointer transition-colors"
-          >
-            <FontAwesomeIcon icon={faArrowRotateRight} className={`text-[10px] ${rebuilding ? 'animate-spin' : ''}`} />
-            {rebuilding ? 'Rebuilding…' : 'Rebuild'}
-          </button>
-        </div>
-      </div>
+          ) : null
+        }
+        actions={
+          <>
+            <span className="text-[11px] text-white/30">
+              {lifeEvents.length} event{lifeEvents.length === 1 ? '' : 's'}
+              {span ? ` · ${span}` : ''}
+              {summary?.eras.length ? ` · ${summary.eras.length} era${summary.eras.length === 1 ? '' : 's'}` : ''}
+            </span>
+            <button
+              onClick={() => void handleRebuild()}
+              disabled={!enabled || rebuilding}
+              title={enabled ? 'Re-read every generated context and rebuild the timeline' : 'Enable Timeline in Settings'}
+              className="flex items-center gap-1.5 rounded-lg border border-sky-400/25 bg-sky-400/[0.07] px-2.5 py-1 text-[11px] text-sky-100/85 hover:border-sky-400/45 disabled:opacity-40 cursor-pointer transition-colors"
+            >
+              <FontAwesomeIcon icon={faArrowRotateRight} className={`text-[10px] ${rebuilding ? 'animate-spin' : ''}`} />
+              {rebuilding ? 'Rebuilding…' : 'Rebuild'}
+            </button>
+          </>
+        }
+      />
 
       <div className="p-6 max-w-4xl mx-auto w-full">
         {!enabled && (
@@ -352,12 +387,60 @@ export const TimelinePage: FC<TimelinePageProps> = ({ onBack }) => {
           <div className="mb-4 rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-[11px] text-white/50">{notice}</div>
         )}
 
-        {(summary?.eras.length || narrative) && (
+        {!loading && events.length > 0 && (
+          <TimelineRibbon
+            events={events}
+            eras={summary?.eras ?? []}
+            birthYear={birthYear}
+            selectedYear={selectedYear}
+            onSelectYear={handleSelectYear}
+            selectedCategories={activeCategories}
+            onToggleCategory={toggleCategory}
+            onClearCategories={() => setActiveCategories([])}
+          />
+        )}
+
+        <div
+          role="tablist"
+          aria-label="Timeline views"
+          onKeyDown={handleTabKey}
+          className="mb-5 flex items-center gap-1 border-b border-white/[0.07]"
+        >
+          {tabs.map((entry) => {
+            const active = entry.key === activeTab
+            return (
+              <button
+                key={entry.key}
+                role="tab"
+                type="button"
+                aria-selected={active}
+                tabIndex={active ? 0 : -1}
+                onClick={() => chooseTab(entry.key)}
+                className={`-mb-px flex cursor-pointer items-center gap-1.5 border-b-2 px-3 py-2 text-xs transition-colors font-serif-display ${
+                  active
+                    ? 'border-holmes-primary text-white/85'
+                    : 'border-transparent text-white/40 hover:text-white/70'
+                }`}
+              >
+                {entry.label}
+                {entry.count !== null && (
+                  <span className={`text-[10px] tabular-nums ${active ? 'text-white/35' : 'text-white/20'}`}>
+                    {entry.count}
+                  </span>
+                )}
+              </button>
+            )
+          })}
+        </div>
+
+        {activeTab === 'eras' && (
           <section className="mb-8">
-            <h2 className="mb-3 flex items-center gap-2 text-sm font-medium text-white/75 font-serif-display">
-              <span className="h-2 w-2 rounded-full bg-sky-400" />
-              Eras
-            </h2>
+            {!summary?.eras.length && !narrative && (
+              <div className="rounded-xl border border-dashed border-white/[0.09] bg-holmes-surface px-4 py-3 text-[11px] leading-relaxed text-white/40">
+                No eras yet — “Rebuild” reads the whole dated record and divides it into the chapters of a life, then
+                writes the narrative that ties them together.
+              </div>
+            )}
             {summary && summary.eras.length > 0 && (
               <div className="mb-3 grid gap-2 sm:grid-cols-2">
                 {summary.eras.map((era, index) => (
@@ -396,19 +479,14 @@ export const TimelinePage: FC<TimelinePageProps> = ({ onBack }) => {
           </section>
         )}
 
-        {events.length > 0 && (
+        {activeTab === 'years' && (
           <section className="mb-8">
-            <h2 className="mb-1 flex items-center gap-2 text-sm font-medium text-white/75 font-serif-display">
-              <span className="h-2 w-2 rounded-full bg-amber-400" />
-              Years
+            <p className="mb-3 text-[10px] leading-relaxed text-white/30">
               {lifeYears.length > 0 && (
-                <span className="text-[10px] font-normal text-white/30">
-                  {lifeYears[0].year}–{lifeYears[lifeYears.length - 1].year} · {lifeYears.length} year
-                  {lifeYears.length === 1 ? '' : 's'}
+                <span className="text-white/40">
+                  {lifeYears[0].year}–{lifeYears[lifeYears.length - 1].year} ·{' '}
                 </span>
               )}
-            </h2>
-            <p className="mb-3 text-[10px] leading-relaxed text-white/30">
               Each year of the record compressed into prose. The dated record is far larger than any chat context can
               hold, so these are what carry the whole span into conversations.
             </p>
@@ -461,9 +539,18 @@ export const TimelinePage: FC<TimelinePageProps> = ({ onBack }) => {
               {lifeYears.map((year) => {
                 const open = openYear === year.year
                 return (
-                  <div key={year.year} className="rounded-xl border border-white/[0.07] bg-holmes-surface">
+                  <div
+                    key={year.year}
+                    id={`timeline-year-${year.year}`}
+                    className={`rounded-xl border bg-holmes-surface ${
+                      selectedYear === year.year ? 'border-holmes-primary/40' : 'border-white/[0.07]'
+                    }`}
+                  >
                     <button
-                      onClick={() => setOpenYear(open ? null : year.year)}
+                      onClick={() => {
+                        setOpenYear(open ? null : year.year)
+                        setSelectedYear(open ? null : year.year)
+                      }}
                       className="flex w-full cursor-pointer items-baseline gap-3 px-3 py-2 text-left"
                     >
                       <span className="shrink-0 text-xs font-medium text-white/80 tabular-nums font-serif-display">{year.year}</span>
@@ -487,15 +574,14 @@ export const TimelinePage: FC<TimelinePageProps> = ({ onBack }) => {
           </section>
         )}
 
+        {activeTab === 'record' && (
         <section>
           <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-            <h2 className="flex items-center gap-2 text-sm font-medium text-white/75 font-serif-display">
-              <span className="h-2 w-2 rounded-full bg-white/40" />
-              Dated record
-              {filtered.length !== events.length && (
-                <span className="text-[10px] font-normal text-white/30">{filtered.length} of {events.length} shown</span>
-              )}
-            </h2>
+            <span className="text-[10px] text-white/30">
+              {filtered.length !== events.length
+                ? `${filtered.length} of ${events.length} shown`
+                : 'Every dated entry harvested from the generated contexts'}
+            </span>
             <div className="flex items-center gap-2">
               <input
                 value={search}
@@ -512,34 +598,6 @@ export const TimelinePage: FC<TimelinePageProps> = ({ onBack }) => {
               </button>
             </div>
           </div>
-
-          {presentCategories.length > 1 && (
-            <div className="mb-3 flex flex-wrap gap-1.5">
-              {presentCategories.map((category) => {
-                const active = activeCategories.includes(category)
-                const style = CATEGORY_STYLE[category]
-                return (
-                  <button
-                    key={category}
-                    onClick={() => toggleCategory(category)}
-                    className={`rounded-full border px-2 py-0.5 text-[10px] transition-colors cursor-pointer ${
-                      active ? `${style.chip} ${style.text}` : 'border-white/10 bg-white/[0.02] text-white/35 hover:text-white/60'
-                    }`}
-                  >
-                    {category}
-                  </button>
-                )
-              })}
-              {activeCategories.length > 0 && (
-                <button
-                  onClick={() => setActiveCategories([])}
-                  className="rounded-full border border-white/10 px-2 py-0.5 text-[10px] text-white/35 transition-colors hover:text-white/70 cursor-pointer"
-                >
-                  clear
-                </button>
-              )}
-            </div>
-          )}
 
           {(recordCount > 0 || archivedCount > 0) && (
             <div className="mb-3 flex flex-wrap items-center gap-3 text-[10px] text-white/30">
@@ -625,9 +683,15 @@ export const TimelinePage: FC<TimelinePageProps> = ({ onBack }) => {
           ) : (
             <div className="space-y-6">
               {byYear.map(({ year, events: yearEvents }) => (
-                <div key={year}>
+                <div key={year} id={`timeline-year-${year}`}>
                   <div className="mb-2 flex items-center gap-3">
-                    <span className="text-sm font-medium text-white/70 tabular-nums">{year}</span>
+                    <span
+                      className={`text-sm font-medium tabular-nums ${
+                        selectedYear === year ? 'text-holmes-primary-light' : 'text-white/70'
+                      }`}
+                    >
+                      {year}
+                    </span>
                     <span className="h-px flex-1 bg-white/[0.07]" />
                     <span className="text-[10px] text-white/25">{yearEvents.length}</span>
                   </div>
@@ -736,6 +800,7 @@ export const TimelinePage: FC<TimelinePageProps> = ({ onBack }) => {
             </div>
           )}
         </section>
+        )}
       </div>
     </div>
   )

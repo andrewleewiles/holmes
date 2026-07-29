@@ -1,7 +1,10 @@
-import { type FC, useEffect, useRef, useState } from 'react'
+import { type FC, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
-import { faBagShopping, faBookOpen, faBriefcase, faCaretDown, faCirclePlus, faDatabase, faDiagramProject, faFloppyDisk, faGavel, faLightbulb, faMagnifyingGlass, faPause, faReceipt, faRefresh, faSpa, faStop, faXmark } from '@fortawesome/free-solid-svg-icons'
+import { faBagShopping, faBookOpen, faBriefcase, faCaretDown, faCirclePlus, faClockRotateLeft, faDatabase, faDiagramProject, faFileLines, faFilePowerpoint, faFloppyDisk, faFolderOpen, faGavel, faLeaf, faMagnifyingGlass, faPause, faReceipt, faRefresh, faSpa, faStop, faTable, faUmbrellaBeach, faXmark } from '@fortawesome/free-solid-svg-icons'
 import type { Conversation, DocumentIndexState, Project } from '@shared/types'
+import { WORK_DOCUMENT_TYPES, type WorkDocumentKind } from '@shared/workDocuments'
+import { WORK_ROLES, getWorkRole } from '@shared/workRoles'
+import { workToolIcon } from './workToolIcons'
 import lifeIcon from '../../../assets/lifeIcon.svg'
 import { ProjectIcon } from './ProjectIcon'
 import { useDocumentIndexState } from '../hooks/useDocumentIndex'
@@ -10,7 +13,28 @@ import { usePeopleRunState } from '../hooks/usePeopleRun'
 import { useActivityRunState } from '../hooks/useActivityRun'
 import { useLibraryRun } from '../hooks/useLibraryRun'
 
-type SidebarSection = 'recall' | 'projects' | 'dashboard' | 'data' | 'product-search' | 'mental-coach' | 'memory' | 'timeline' | 'library' | 'call-history' | null
+type SidebarSection = 'recall' | 'projects' | 'dashboard' | 'data' | 'product-search' | 'mental-coach' | 'memory' | 'timeline' | 'library' | 'work' | 'call-history' | 'history' | null
+
+/** The icon for each work document kind, kept beside the shared type list. */
+const WORK_KIND_ICONS: Record<WorkDocumentKind, typeof faFileLines> = {
+  document: faFileLines,
+  spreadsheet: faTable,
+  presentation: faFilePowerpoint,
+}
+
+/**
+ * Height of one conversation row: py-1.5 (12px) + a 20px line box + the 2px
+ * `mb-0.5` gap. The list clips itself to whole rows rather than scrolling, so
+ * this has to track the row markup below.
+ */
+const CONVERSATION_ROW_HEIGHT = 34
+
+/**
+ * The mode pills at the top of the sidebar. They swap the nav below them rather
+ * than only labelling it: Life carries the whole personal record, Leisure is
+ * where the Library lives, and Work is where documents are made.
+ */
+type SidebarMode = 'life' | 'work' | 'leisure'
 
 interface SidebarProps {
   conversations: Conversation[]
@@ -29,7 +53,12 @@ interface SidebarProps {
   onMemory: () => void
   onTimeline: () => void
   onLibrary: () => void
+  /** Opens the Work page; a kind means "start a new one of these". */
+  onWork: (kind: WorkDocumentKind | null) => void
+  /** A role's tool was picked — the tool's label, and the role it came from. */
+  onWorkTool: (tool: string, roleId: string) => void
   onCallHistory: () => void
+  onHistory: () => void
   onOpenIndexRun: (projectId: string | null) => void
   activeSection: SidebarSection
 }
@@ -51,7 +80,10 @@ export const Sidebar: FC<SidebarProps> = ({
   onMemory,
   onTimeline,
   onLibrary,
+  onWork,
+  onWorkTool,
   onCallHistory,
+  onHistory,
   onOpenIndexRun,
   activeSection,
 }) => {
@@ -61,12 +93,54 @@ export const Sidebar: FC<SidebarProps> = ({
   // tied to one, which is where a plain new chat lands.
   const [filterProjectId, setFilterProjectId] = useState<string | null>(null)
   const [filterOpen, setFilterOpen] = useState(false)
+  const [mode, setMode] = useState<SidebarMode>(
+    activeSection === 'library' ? 'leisure' : activeSection === 'work' ? 'work' : 'life',
+  )
+  // The Work role. Kept here beside the project filter it mirrors: both are
+  // sidebar-local pickers that re-shape the nav rather than app-wide state.
+  const [workRoleId, setWorkRoleId] = useState<string | null>(null)
+  const [roleOpen, setRoleOpen] = useState(false)
+  const roleRef = useRef<HTMLDivElement>(null)
   const filterRef = useRef<HTMLDivElement>(null)
+  const listRef = useRef<HTMLDivElement>(null)
+  // How many rows fit in the space left over between the nav and the footer.
+  // Measured rather than guessed because everything above the list changes
+  // height with the mode pills and the running-job strips.
+  const [visibleRows, setVisibleRows] = useState(0)
   const indexState = useDocumentIndexState()
   const timelineState = useTimelineRunState()
   const peopleState = usePeopleRunState()
   const activityState = useActivityRunState()
   const libraryState = useLibraryRun()
+
+  // Opening a page from anywhere else — the Dashboard, a deep link — moves the
+  // pills to whichever mode owns it, so the nav never contradicts the page.
+  useEffect(() => {
+    if (activeSection === 'library') setMode('leisure')
+    else if (activeSection === 'work') setMode('work')
+    else if (activeSection !== null) setMode('life')
+  }, [activeSection])
+
+  useLayoutEffect(() => {
+    const element = listRef.current
+    if (!element) return
+    const measure = () => {
+      setVisibleRows(Math.max(0, Math.floor(element.clientHeight / CONVERSATION_ROW_HEIGHT)))
+    }
+    measure()
+    const observer = new ResizeObserver(measure)
+    observer.observe(element)
+    return () => observer.disconnect()
+  }, [])
+
+  useEffect(() => {
+    if (!roleOpen) return
+    const handleClickOutside = (event: MouseEvent) => {
+      if (roleRef.current && !roleRef.current.contains(event.target as Node)) setRoleOpen(false)
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [roleOpen])
 
   useEffect(() => {
     if (!filterOpen) return
@@ -101,12 +175,30 @@ export const Sidebar: FC<SidebarProps> = ({
     return filterProjectId ? ids.includes(filterProjectId) : ids.length === 0
   })
 
+  // Only whole rows are shown — the rest live on the Chat History page behind
+  // the button at the bottom. The open conversation always keeps a slot, taking
+  // the last one when it is older than everything that fits.
+  const fittedConv = (() => {
+    const shown = selectedConv.slice(0, visibleRows)
+    if (visibleRows === 0 || activeSection !== null || !currentConversationId) return shown
+    if (shown.some((conv) => conv.id === currentConversationId)) return shown
+    const current = selectedConv.find((conv) => conv.id === currentConversationId)
+    if (!current) return shown
+    return [...shown.slice(0, visibleRows - 1), current]
+  })()
+  const hiddenCount = selectedConv.length - fittedConv.length
+
   const handleRenameConfirm = () => {
     if (editingId && editTitle.trim()) {
       onRename(editingId, editTitle.trim())
     }
     setEditingId(null)
   }
+
+  const workRole = mode === 'work' ? getWorkRole(workRoleId) : null
+  // Only a role that has tools authored re-shapes the nav; the rest keep the
+  // default Work actions rather than leaving an empty list.
+  const roleTools = workRole?.tools ?? []
 
   const toolButtonClass =
     'flex h-[30px] w-full items-center gap-3 rounded-md px-2 text-sm text-[#9b948f] transition-colors'
@@ -234,35 +326,116 @@ export const Sidebar: FC<SidebarProps> = ({
   const peopleIcon = peoplePaused ? faPause : peopleStopping ? faStop : faRefresh
   const peopleAriaLabel = `${peopleHeadline}${peopleCounts ? ` — ${peopleCounts}` : ''}. ${peopleDetail} Open the Dashboard.`
 
+  // The enclosure is a closed rounded rectangle inset 6px from the window on
+  // every side. Its radius has to nest inside the macOS window's own corner —
+  // concentric means window radius minus the 6px inset — so it stays well under
+  // that. The 26px negative top margin pulls it up under the 32px title bar so
+  // the gap above matches the one below; the height gives that 26px back and
+  // takes off the 6px it should leave at the bottom.
   return (
-    <aside className="relative z-10 -mt-7 ml-1 flex h-[calc(100%+28px)] w-60 shrink-0 flex-col overflow-hidden rounded-t-[26px] border border-[#56554f] bg-[#252321] shadow-[inset_0_1px_0_rgba(255,255,255,0.025)]">
-      <div className="h-9 shrink-0" />
+    <aside className="relative z-10 -mt-[26px] ml-1.5 flex h-[calc(100%+20px)] w-60 shrink-0 flex-col overflow-hidden rounded-[12px] border border-[#56554f] bg-[#252321] shadow-[inset_0_1px_0_rgba(255,255,255,0.025)]">
+      {/* Clears the title bar controls, which App.tsx overlays on this corner:
+          the icon row runs from y=17 to 37 and the enclosure's inner edge is at
+          y=7, so 40px of spacer puts the pills at y=47 — the same 10px below the
+          icons as there is above them. */}
+      <div className="h-10 shrink-0" />
 
-      <div className="mx-3 grid h-[26px] shrink-0 grid-cols-3 overflow-hidden rounded-md bg-[#322f2d] text-[13px]">
+      <div className="mx-3 grid h-[26px] shrink-0 grid-cols-3 overflow-hidden rounded-md bg-[#35312f] text-[13px]">
         <button
-          className="flex items-center justify-center gap-1.5 rounded-[5px] border border-[#918b86] bg-[#69645f] text-white shadow-sm"
-          aria-pressed="true"
+          onClick={() => setMode('life')}
+          aria-pressed={mode === 'life'}
+          className={`flex items-center justify-center gap-1.5 rounded-[5px] cursor-pointer ${
+            mode === 'life'
+              ? 'border border-[#777772] bg-[#635d59] text-white shadow-sm'
+              : 'text-[#77716d] hover:text-[#a9a29d]'
+          }`}
         >
-          <FontAwesomeIcon icon={faLightbulb} className="text-[11px]" />
-          Think
+          <FontAwesomeIcon icon={faLeaf} className="text-[11px]" />
+          Life
         </button>
         <button
-          disabled
-          title="Work mode coming soon"
-          className="border-l border-black/15 text-[#77716d] cursor-not-allowed"
+          onClick={() => setMode('work')}
+          aria-pressed={mode === 'work'}
+          className={`flex items-center justify-center gap-1.5 rounded-[5px] cursor-pointer ${
+            mode === 'work'
+              ? 'border border-[#777772] bg-[#635d59] text-white shadow-sm'
+              : 'border-l border-black/15 text-[#77716d] hover:text-[#a9a29d]'
+          }`}
         >
+          <FontAwesomeIcon icon={faBriefcase} className="text-[11px]" />
           Work
         </button>
         <button
-          disabled
-          title="Code mode coming soon"
-          className="border-l border-black/15 text-[#77716d] cursor-not-allowed"
+          onClick={() => setMode('leisure')}
+          aria-pressed={mode === 'leisure'}
+          className={`flex items-center justify-center gap-1.5 rounded-[5px] cursor-pointer ${
+            mode === 'leisure'
+              ? 'border border-[#777772] bg-[#635d59] text-white shadow-sm'
+              : 'border-l border-black/15 text-[#77716d] hover:text-[#a9a29d]'
+          }`}
         >
-          Code
+          <FontAwesomeIcon icon={faUmbrellaBeach} className="text-[11px]" />
+          Play
         </button>
       </div>
 
       <nav className="mt-2 shrink-0 px-3" aria-label="Primary navigation">
+        {/* The role picker. Deliberately the same control as the project filter
+            further down — both narrow what the sidebar below them offers. */}
+        {mode === 'work' && (
+          <div ref={roleRef} className="relative mb-2">
+            <button
+              onClick={() => setRoleOpen((open) => !open)}
+              aria-expanded={roleOpen}
+              title="Choose a working role"
+              className="flex h-[26px] w-full items-center gap-2 rounded-md border border-[#56544f] bg-[#3a3733] px-2.5 text-[13px] text-[#b3aca7] transition-colors hover:border-[#6b6862] cursor-pointer"
+            >
+              {workRole && (
+                <span
+                  className="h-2 w-2 shrink-0 rounded-full"
+                  style={{ backgroundColor: workRole.color }}
+                />
+              )}
+              <span className="min-w-0 flex-1 truncate text-left">{workRole?.role ?? 'General'}</span>
+              <FontAwesomeIcon icon={faCaretDown} className="shrink-0 text-[11px] text-[#8b857f]" />
+            </button>
+
+            {roleOpen && (
+              <div className="absolute left-0 right-0 top-full z-50 mt-1 max-h-72 overflow-y-auto rounded-md border border-white/10 bg-holmes-surface py-1 shadow-2xl scrollbar-thin">
+                {WORK_ROLES.map((role) => (
+                  <button
+                    key={role.id}
+                    onClick={() => { setWorkRoleId(role.id); setRoleOpen(false) }}
+                    className={`flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-[13px] transition-colors cursor-pointer ${
+                      workRoleId === role.id ? 'bg-holmes-primary/15 text-holmes-primary-light' : 'text-white/70 hover:bg-white/5'
+                    }`}
+                  >
+                    <span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: role.color }} />
+                    <span className="min-w-0 flex-1 truncate">{role.role}</span>
+                    {/* The character behind the role, the way the sheet pairs them. */}
+                    <span className="shrink-0 text-[11px] text-white/30">{role.character}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {roleTools.length > 0 ? (
+          /* A role's own tools stand in for the default actions: each list opens
+             with its own "New …", which is the job New Conversation was doing. */
+          roleTools.map((tool) => (
+            <button
+              key={tool}
+              onClick={() => onWorkTool(tool, workRole!.id)}
+              className={`${toolButtonClass} hover:bg-white/[0.04] hover:text-[#c7c0bb] cursor-pointer`}
+            >
+              <FontAwesomeIcon icon={workToolIcon(workRole!.id, tool)} className="w-4 shrink-0" />
+              {tool}
+            </button>
+          ))
+        ) : (
+        <>
         <button
           onClick={onNew}
           className={`${toolButtonClass} hover:bg-white/[0.04] hover:text-[#c7c0bb] cursor-pointer`}
@@ -281,6 +454,65 @@ export const Sidebar: FC<SidebarProps> = ({
           <FontAwesomeIcon icon={faMagnifyingGlass} className="w-4 shrink-0" />
           Recall
         </button>
+        {mode === 'leisure' ? (
+          <button
+            onClick={onLibrary}
+            className={`${toolButtonClass} ${
+              activeSection === 'library'
+                ? 'bg-holmes-primary/10 text-holmes-primary-light'
+                : 'hover:bg-white/[0.04] hover:text-[#c7c0bb]'
+            } cursor-pointer`}
+          >
+            <FontAwesomeIcon icon={faBookOpen} className="w-4 shrink-0" />
+            Library
+          </button>
+        ) : mode === 'work' ? (
+        <>
+        {/* Creating is the whole entry point to Work today, so the three kinds
+            are the nav rather than sitting behind a menu on the page. */}
+        {WORK_DOCUMENT_TYPES.map((type) => (
+          <button
+            key={type.kind}
+            onClick={() => onWork(type.kind)}
+            title={type.description}
+            className={`${toolButtonClass} hover:bg-white/[0.04] hover:text-[#c7c0bb] cursor-pointer`}
+          >
+            <FontAwesomeIcon icon={WORK_KIND_ICONS[type.kind]} className="w-4 shrink-0" />
+            {type.newLabel}
+          </button>
+        ))}
+        <button
+          onClick={() => onWork(null)}
+          className={`${toolButtonClass} ${
+            activeSection === 'work'
+              ? 'bg-holmes-primary/10 text-holmes-primary-light'
+              : 'hover:bg-white/[0.04] hover:text-[#c7c0bb]'
+          } cursor-pointer`}
+        >
+          <FontAwesomeIcon icon={faBriefcase} className="w-4 shrink-0" />
+          Workspace
+        </button>
+        {/* Both were always work tools; they sat under Life only because there
+            was no Work mode to put them in. */}
+        <button
+          disabled
+          title="Casebook coming soon"
+          className={`${toolButtonClass} cursor-not-allowed`}
+        >
+          <FontAwesomeIcon icon={faFolderOpen} className="w-4 shrink-0" />
+          Casebook
+        </button>
+        <button
+          disabled
+          title="Decision Room coming soon"
+          className={`${toolButtonClass} cursor-not-allowed`}
+        >
+          <FontAwesomeIcon icon={faGavel} className="w-4 shrink-0" />
+          Decision Room
+        </button>
+        </>
+        ) : (
+        <>
         <button
           onClick={onDashboard}
           className={`${toolButtonClass} ${
@@ -315,17 +547,6 @@ export const Sidebar: FC<SidebarProps> = ({
           Timeline
         </button>
         <button
-          onClick={onLibrary}
-          className={`${toolButtonClass} ${
-            activeSection === 'library'
-              ? 'bg-holmes-primary/10 text-holmes-primary-light'
-              : 'hover:bg-white/[0.04] hover:text-[#c7c0bb]'
-          } cursor-pointer`}
-        >
-          <FontAwesomeIcon icon={faBookOpen} className="w-4 shrink-0" />
-          Library
-        </button>
-        <button
           onClick={onProductSearch}
           className={`${toolButtonClass} ${
             activeSection === 'product-search'
@@ -346,22 +567,6 @@ export const Sidebar: FC<SidebarProps> = ({
         >
           <FontAwesomeIcon icon={faSpa} className="w-4 shrink-0" />
           Mental Coach
-        </button>
-        <button
-          disabled
-          title="Casebook coming soon"
-          className={`${toolButtonClass} cursor-not-allowed`}
-        >
-          <FontAwesomeIcon icon={faBriefcase} className="w-4 shrink-0" />
-          Casebook
-        </button>
-        <button
-          disabled
-          title="Decision Room coming soon"
-          className={`${toolButtonClass} cursor-not-allowed`}
-        >
-          <FontAwesomeIcon icon={faGavel} className="w-4 shrink-0" />
-          Decision Room
         </button>
         <button
           onClick={onMemory}
@@ -385,6 +590,10 @@ export const Sidebar: FC<SidebarProps> = ({
           <FontAwesomeIcon icon={faReceipt} className="w-4 shrink-0" />
           Call History
         </button>
+        </>
+        )}
+        </>
+        )}
       </nav>
 
       <div className="mx-5 my-3 shrink-0 border-t border-[#3d3d39]" />
@@ -434,13 +643,13 @@ export const Sidebar: FC<SidebarProps> = ({
         )}
       </div>
 
-      <div className="scrollbar-thin min-h-0 flex-1 overflow-y-auto px-3 pb-2">
+      <div ref={listRef} className="min-h-0 flex-1 overflow-hidden px-3">
         {selectedConv.length === 0 ? (
           <div className="px-2 py-3 text-center text-xs text-white/30">
             {filterProjectId ? 'No conversations in this project' : 'No conversations yet'}
           </div>
         ) : (
-          selectedConv.map((conv) => (
+          fittedConv.map((conv) => (
             <div
               key={conv.id}
               onClick={() => onSelect(conv.id)}
@@ -495,6 +704,24 @@ export const Sidebar: FC<SidebarProps> = ({
             </div>
           ))
         )}
+      </div>
+
+      <div className="shrink-0 px-3 pb-3 pt-2">
+        <button
+          onClick={onHistory}
+          title="Browse every conversation"
+          className={`flex h-[26px] w-full items-center gap-2 rounded-md border px-2.5 text-[12px] transition-colors cursor-pointer ${
+            activeSection === 'history'
+              ? 'border-holmes-primary/40 bg-holmes-primary/10 text-holmes-primary-light'
+              : 'border-[#56544f] bg-[#302d2a] text-[#9b948f] hover:border-[#6b6862] hover:text-[#c7c0bb]'
+          }`}
+        >
+          <FontAwesomeIcon icon={faClockRotateLeft} className="shrink-0 text-[11px]" />
+          <span className="min-w-0 flex-1 truncate text-left">View all chat history</span>
+          {hiddenCount > 0 && (
+            <span className="shrink-0 text-[10px] tabular-nums text-white/30">+{hiddenCount}</span>
+          )}
+        </button>
       </div>
 
       {indexVisible && (

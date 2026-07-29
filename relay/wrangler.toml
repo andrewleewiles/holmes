@@ -1,0 +1,24 @@
+name = "holmes-relay"
+main = "src/worker.ts"
+
+# Ed25519 in WebCrypto (`crypto.subtle.verify('Ed25519', ...)`) needs a recent
+# workerd. Do not lower this date without re-checking slot.ts's auth path.
+compatibility_date = "2025-01-01"
+
+# The relay is a pipe. It must never keep a record of who talked to whom, so
+# there is no Analytics Engine binding, no KV, no D1, and Logpush stays off.
+logpush = false
+
+[observability]
+enabled = false
+
+[[durable_objects.bindings]]
+name = "SLOT"
+class_name = "RelaySlot"
+
+# `new_sqlite_classes` (not `new_classes`) is what makes this Durable Object
+# eligible for the Workers Free plan. The class never writes to storage, but the
+# SQLite backend is still the one to pick.
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["RelaySlot"]

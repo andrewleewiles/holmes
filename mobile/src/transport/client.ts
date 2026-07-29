@@ -5,13 +5,16 @@ import {
   normalizePairingCode,
   type RemoteFrame,
   type RemoteMessage,
+  type RemoteScope,
 } from '@shared/remote'
 import {
+  derivePairingKeys,
   deriveSessionKeys,
   fromBase64,
   generateEphemeralKeyPair,
   generateStaticKeyPair,
   open as openSealed,
+  pairingBindTag,
   seal,
   toBase64,
   type SessionKeys,
@@ -65,6 +68,11 @@ export class RemoteClient {
     return this.identity?.host ?? null
   }
 
+  /** What the Mac granted this device. Display only — the Mac enforces it. */
+  getScope(): RemoteScope {
+    return this.identity?.scope ?? 'media'
+  }
+
   onEvent(listener: EventListener): () => void {
     this.eventListeners.add(listener)
     return () => this.eventListeners.delete(listener)
@@ -96,53 +104,116 @@ export class RemoteClient {
 
     const keyPair = generateStaticKeyPair()
     const code = normalizePairingCode(input.code)
+    let pairKeys: SessionKeys | null = null
+    let pinnedServerStaticPub: string | null = null
 
-    const paired = await new Promise<{ deviceId: string; serverStaticPub: string }>((resolve, reject) => {
+    const ephemeral = generateEphemeralKeyPair()
+
+    const paired = await new Promise<{ deviceId: string; serverStaticPub: string; scope: RemoteScope }>((resolve, reject) => {
       const socket = new WebSocket(socketUrl(host, input.port))
+      let settled = false
+      const finish = (fn: () => void): void => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        fn()
+        socket.close()
+      }
       const timer = setTimeout(() => {
         socket.close()
-        reject(new Error('The Mac did not answer. Check that both devices are on your tailnet.'))
+        reject(new Error('The Mac did not answer. Check that both devices can reach each other.'))
       }, 15_000)
 
       socket.onopen = () => {
         socket.send(JSON.stringify({
-          t: 'pair',
+          t: 'pair-hello',
           v: REMOTE_PROTOCOL_VERSION,
-          code,
-          clientStaticPub: keyPair.publicKey,
-          deviceName: input.deviceName,
-          platform: 'ios',
+          clientEphemeralPub: toBase64(ephemeral.publicKey),
         }))
       }
 
       socket.onmessage = (event) => {
-        clearTimeout(timer)
-        let frame: RemoteFrame
-        try {
-          frame = JSON.parse(String(event.data)) as RemoteFrame
-        } catch {
-          reject(new Error('The Mac sent something unreadable'))
-          socket.close()
-          return
-        }
-        if (frame.t === 'paired') {
-          resolve({ deviceId: frame.deviceId, serverStaticPub: frame.serverStaticPub })
-        } else if (frame.t === 'error') {
-          reject(new Error(frame.message))
-        } else {
-          reject(new Error('Unexpected reply from the Mac'))
-        }
-        socket.close()
+        void (async () => {
+          let frame: RemoteFrame
+          try {
+            frame = JSON.parse(String(event.data)) as RemoteFrame
+          } catch {
+            finish(() => reject(new Error('The Mac sent something unreadable')))
+            return
+          }
+
+          if (frame.t === 'error') {
+            finish(() => reject(new Error(frame.message)))
+            return
+          }
+
+          if (frame.t === 'pair-offer') {
+            const serverStaticPub = fromBase64(frame.serverStaticPub)
+            const expected = await pairingBindTag(code, serverStaticPub, ephemeral.publicKey)
+
+            // The key came off the wire, so it is worth nothing until the code
+            // vouches for it. Anything on the path can offer a key; only the Mac
+            // showing this code can tag one.
+            if (expected !== frame.tag) {
+              finish(() => reject(new Error(
+                'That is not the Mac showing this code. Someone may be intercepting the connection.'
+              )))
+              return
+            }
+
+            pairKeys = await derivePairingKeys({
+              ephemeralPrivate: ephemeral.privateKey,
+              serverStaticPub,
+              clientEphemeralPub: ephemeral.publicKey,
+            })
+            pinnedServerStaticPub = frame.serverStaticPub
+
+            socket.send(JSON.stringify({
+              t: 'pair',
+              v: REMOTE_PROTOCOL_VERSION,
+              d: await seal(pairKeys.clientToServer, 1, JSON.stringify({
+                code,
+                clientStaticPub: keyPair.publicKey,
+                deviceName: input.deviceName,
+                platform: 'ios',
+              })),
+            }))
+            return
+          }
+
+          if (frame.t === 'paired') {
+            if (!pairKeys || !pinnedServerStaticPub) {
+              finish(() => reject(new Error('The Mac replied out of order')))
+              return
+            }
+            try {
+              const payload = JSON.parse(await openSealed(pairKeys.serverToClient, 1, frame.d)) as {
+                deviceId: string
+                scope: RemoteScope
+              }
+              finish(() => resolve({
+                deviceId: payload.deviceId,
+                serverStaticPub: pinnedServerStaticPub as string,
+                scope: payload.scope === 'owner' ? 'owner' : 'media',
+              }))
+            } catch {
+              finish(() => reject(new Error('The Mac\'s reply could not be authenticated')))
+            }
+            return
+          }
+
+          finish(() => reject(new Error('Unexpected reply from the Mac')))
+        })()
       }
 
       socket.onerror = () => {
-        clearTimeout(timer)
-        reject(new Error('Could not reach the Mac'))
+        finish(() => reject(new Error('Could not reach the Mac')))
       }
     })
 
     const identity: PairedIdentity = {
       deviceId: paired.deviceId,
+      scope: paired.scope,
       host,
       port: input.port,
       // Pinned here and never renegotiated: it is what proves on every later

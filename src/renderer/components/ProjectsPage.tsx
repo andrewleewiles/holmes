@@ -1,7 +1,10 @@
 import { type FC, useState } from 'react'
+import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
+import { faFolderTree, faPlus } from '@fortawesome/free-solid-svg-icons'
 import type { Project } from '@shared/types'
 import { ProjectIcon } from './ProjectIcon'
 import { IconPicker } from './IconPicker'
+import { PageHeader, PAGE_HEADER_ICON } from './PageHeader'
 
 interface ProjectsPageProps {
   projects: Project[]
@@ -67,21 +70,22 @@ export const ProjectsPage: FC<ProjectsPageProps> = ({
   }
 
   return (
-    <div className="flex-1 flex flex-col p-8 overflow-y-auto bg-holmes-bg">
-      <div className="max-w-5xl w-full mx-auto">
-        <div className="flex items-center gap-3 mb-8">
-          <h1 className="text-xl font-medium text-white/80 font-serif-display">Projects</h1>
+    <div className="flex-1 flex flex-col overflow-y-auto bg-holmes-bg">
+      <PageHeader
+        icon={<FontAwesomeIcon icon={faFolderTree} className={PAGE_HEADER_ICON} />}
+        title="Projects"
+        actions={
           <button
             onClick={() => setCreating((value) => !value)}
-            className="ml-auto text-xs text-white/40 hover:text-holmes-primary-light transition-colors cursor-pointer flex items-center gap-1"
+            className="flex h-[30px] items-center gap-2 rounded-md border border-white/10 bg-white/[0.03] px-3 text-[13px] text-white/60 transition-colors hover:border-white/20 hover:text-white/85 cursor-pointer"
           >
-            <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <line x1="12" y1="5" x2="12" y2="19" />
-              <line x1="5" y1="12" x2="19" y2="12" />
-            </svg>
+            <FontAwesomeIcon icon={faPlus} className="text-[13px]" />
             New project
           </button>
-        </div>
+        }
+      />
+
+      <div className="max-w-5xl w-full mx-auto px-8 py-6">
 
         {creating && (
           <div className="mb-6 bg-holmes-surface rounded-2xl border border-white/10 p-5">

@@ -1,5 +1,19 @@
 import { type FC, type ReactNode, useEffect, useRef, useState } from 'react'
 
+/**
+ * The mockup's pill: 33px tall, a hairline outline on near-black, small label.
+ * Exported so ModelSelector — which needs its own trigger markup for the "Free"
+ * badge — stays the same shape as the rest of the row.
+ */
+export const PILL_TRIGGER_CLASS =
+  'flex h-[33px] shrink-0 items-center gap-2 rounded-full border border-[#515149] bg-[#262626] px-3 text-xs text-white transition-colors hover:bg-[#323232] cursor-pointer disabled:opacity-50'
+
+export const PillCaret: FC = () => (
+  <svg className="h-2.5 w-2.5 shrink-0 text-white/45" viewBox="0 0 10 10" fill="currentColor" aria-hidden="true">
+    <path d="M1 3.2h8L5 7.6z" />
+  </svg>
+)
+
 export interface PillDropdownOption {
   value: string
   label: string
@@ -51,15 +65,13 @@ export const PillDropdown: FC<PillDropdownProps> = ({
       <button
         onClick={() => !disabled && setOpen(!open)}
         disabled={disabled}
-        className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-[#2e2e2e] border border-[#444] text-sm text-white hover:bg-[#383838] transition-colors cursor-pointer disabled:opacity-50 h-9"
+        className={PILL_TRIGGER_CLASS}
       >
-        <span className="flex items-center justify-center text-white/80 shrink-0">{icon}</span>
+        <span className="flex items-center justify-center text-white/90 shrink-0">{icon}</span>
         {!iconOnly && (
           <>
             <span className="max-w-[160px] truncate">{selected?.label || label}</span>
-            <svg className="w-3 h-3 text-white/60 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-            </svg>
+            <PillCaret />
           </>
         )}
       </button>

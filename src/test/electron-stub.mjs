@@ -19,6 +19,19 @@ export const BrowserWindow = {
   fromWebContents: () => null,
 }
 
+// The bulk-media resolver reads `audiobookRoot()` out of audioProtocol, which
+// imports these. Named ESM imports are resolved at link time, so a missing
+// export is a load failure rather than a runtime one — they have to exist even
+// though no test registers a scheme.
+export const protocol = {
+  registerSchemesAsPrivileged: () => {},
+  handle: () => {},
+}
+
+export const net = {
+  fetch: async () => new Response(null, { status: 404 }),
+}
+
 // Always reports an empty image so photoContext falls through to its sips path,
 // which is what actually runs under test on macOS.
 export const nativeImage = {

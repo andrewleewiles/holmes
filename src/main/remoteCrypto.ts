@@ -6,6 +6,7 @@ import {
   createPublicKey,
   diffieHellman,
   generateKeyPairSync,
+  createHmac,
   hkdfSync,
   randomInt,
   timingSafeEqual,
@@ -14,6 +15,9 @@ import {
 import { REMOTE_PAIRING_CODE_LENGTH } from '../shared/remote'
 
 const HKDF_INFO = 'holmes-remote-v1'
+const PAIR_HKDF_INFO = 'holmes-pair-v2'
+const PAIR_TRANSCRIPT_LABEL = 'holmes-pair-transcript-v2'
+const PAIR_BIND_LABEL = 'holmes-pair-bind-v2'
 const TRANSCRIPT_LABEL = 'holmes-remote-transcript-v1'
 const X25519_SPKI_PREFIX = Buffer.from('302a300506032b656e032100', 'hex')
 const KEY_BYTES = 32
@@ -151,4 +155,67 @@ export function pairingCodeMatches(expected: string, received: string): boolean 
   const b = Buffer.from(received, 'utf8')
   if (a.length !== b.length) return false
   return timingSafeEqual(a, b)
+}
+
+/**
+ * Binds the Mac's static key to the pairing code the user is reading off its
+ * screen.
+ *
+ * The client cannot take `serverStaticPub` from the wire on trust — anything on
+ * the path could substitute its own and hold both halves of the conversation
+ * forever. So the server proves it knows the code by tagging the key with it,
+ * and the client checks that tag against the code the user typed. An attacker
+ * who does not know the code cannot forge the tag, and therefore cannot get its
+ * own key pinned.
+ *
+ * The code is never sent. Recovering it from a captured tag means brute-forcing
+ * it offline, which is useless: by the time that finishes the offer is closed
+ * and the code is dead.
+ */
+export function pairingBindTag(code: string, serverStaticPub: Buffer, clientEphemeralPub: Buffer): string {
+  return createHmac('sha256', code)
+    .update(PAIR_BIND_LABEL)
+    .update(serverStaticPub)
+    .update(clientEphemeralPub)
+    .digest('base64')
+}
+
+export function pairingTagMatches(expected: string, received: unknown): boolean {
+  if (typeof received !== 'string') return false
+  const a = Buffer.from(expected, 'base64')
+  const b = Buffer.from(received, 'base64')
+  if (a.length !== b.length || a.length === 0) return false
+  return timingSafeEqual(a, b)
+}
+
+/**
+ * Keys for the pairing exchange itself, so the code and the device's identity
+ * key never cross in the clear. Only the holder of the Mac's static private key
+ * can derive these, which is what stops a relay from reading the code and
+ * pairing itself.
+ */
+export function derivePairingKeys(params: {
+  role: 'server' | 'client'
+  ephemeralPrivate?: KeyObject
+  staticPrivate?: KeyObject
+  peerPublic: KeyObject
+  serverStaticPub: Buffer
+  clientEphemeralPub: Buffer
+}): SessionKeys {
+  const privateKey = params.role === 'client' ? params.ephemeralPrivate : params.staticPrivate
+  if (!privateKey) throw new Error('Pairing key derivation is missing a private key')
+
+  const shared = diffieHellman({ privateKey, publicKey: params.peerPublic })
+
+  const salt = createHash('sha256')
+    .update(PAIR_TRANSCRIPT_LABEL)
+    .update(params.serverStaticPub)
+    .update(params.clientEphemeralPub)
+    .digest()
+
+  const okm = Buffer.from(hkdfSync('sha256', shared, salt, PAIR_HKDF_INFO, KEY_BYTES * 2))
+  return {
+    clientToServer: okm.subarray(0, KEY_BYTES),
+    serverToClient: okm.subarray(KEY_BYTES, KEY_BYTES * 2),
+  }
 }

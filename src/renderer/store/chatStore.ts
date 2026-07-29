@@ -38,6 +38,7 @@ interface ChatState {
   editMessage: (messageId: string, newContent: string, model: string, effort?: ReasoningEffort) => Promise<void>
   retryMessage: (messageId: string, model: string, effort?: ReasoningEffort) => Promise<void>
   setActiveBranch: (messageId: string) => Promise<void>
+  syncMessagesFromDb: () => Promise<void>
   abortStream: () => void
   clearError: () => void
   setSelectedModel: (model: string) => void
@@ -175,6 +176,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         set({ isStreaming: false, streamingText: '', streamingReasoning: '', streamingToolInteractions: [], error: chunk.error })
         cleanup()
         systemPromptCleanup()
+        void get().syncMessagesFromDb()
         return
       }
 
@@ -222,6 +224,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       })
       cleanup()
       systemPromptCleanup()
+      void get().syncMessagesFromDb()
     }
   },
 
@@ -247,6 +250,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         set({ isStreaming: false, streamingText: '', streamingReasoning: '', streamingToolInteractions: [], error: chunk.error })
         cleanup()
         systemPromptCleanup()
+        void get().syncMessagesFromDb()
         return
       }
 
@@ -295,6 +299,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       })
       cleanup()
       systemPromptCleanup()
+      void get().syncMessagesFromDb()
     }
   },
 
@@ -326,6 +331,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         set({ isStreaming: false, streamingText: '', streamingReasoning: '', streamingToolInteractions: [], error: chunk.error })
         cleanup()
         systemPromptCleanup()
+        void get().syncMessagesFromDb()
         return
       }
 
@@ -374,6 +380,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       })
       cleanup()
       systemPromptCleanup()
+      void get().syncMessagesFromDb()
     }
   },
 
@@ -386,9 +393,22 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set({ messages: msgs })
   },
 
+  // The optimistic user bubble gets a client-side id; the row the main process
+  // writes has its own. Only a read-back reconciles the two, so every path that
+  // ends a turn — done, stream error, IPC rejection, abort — has to call this.
+  // Skipping it leaves a phantom id in the list, and Retry on it comes back as
+  // "that message no longer exists".
+  syncMessagesFromDb: async () => {
+    const { currentConversationId } = get()
+    if (!currentConversationId) return
+    const msgs = await window.electronAPI.conversations.getMessages(currentConversationId)
+    set({ messages: msgs })
+  },
+
   abortStream: () => {
     window.electronAPI.chat.abort()
     set({ isStreaming: false, streamingText: '', streamingReasoning: '' })
+    void get().syncMessagesFromDb()
   },
 
   clearError: () => set({ error: null }),

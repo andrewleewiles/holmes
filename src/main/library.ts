@@ -24,6 +24,7 @@ import { parseEpub, EpubParseError, MAX_BOOK_FILE_SIZE, type ParsedEpub } from '
 import { parseBookDocument, CANONICAL_TEXT_VERSION } from './bookText'
 import { parsePdfBook, PdfParseError } from './bookPdf'
 import { reanchorBookAnnotations } from './bookAnnotations'
+import { segmentDirectory } from './audioProtocol'
 
 /** Bump when the scan's own logic changes what a book looks like: it is part of
  *  the identity hash, so every book re-parses once and then caches again. */
@@ -212,6 +213,101 @@ async function parseBookFile(filePath: string, format: 'epub' | 'pdf'): Promise<
 
 export type LibraryProgressSender = (progress: LibraryScanProgress) => void
 
+/**
+ * The shelf entry for a book that used to live somewhere else, if there is one.
+ *
+ * A file the user moved in Finder looks like two events to a path-keyed scan: a
+ * new file here, an absent one there. Shelving a second copy would strand the
+ * reading position, the annotations and the narration on an entry pointing at a
+ * path that no longer exists — and show the book twice.
+ */
+function findRelocatedBook(
+  projectId: string,
+  textHash: string,
+  seenPaths: Set<string>
+): Book | null {
+  for (const candidate of database.listBooksByTextHash(projectId, textHash)) {
+    // Only an entry whose own file is gone can be this same book at a new path.
+    // A file still sitting where it was is a second copy of the book, and two
+    // copies are two shelf entries.
+    if (seenPaths.has(candidate.filePath)) continue
+    if (fs.existsSync(candidate.filePath)) continue
+    return candidate
+  }
+  return null
+}
+
+/**
+ * Moves the generated narration of one book to another, since it is stored on
+ * disk under the book's id. Chapters the target already narrated keep their own
+ * audio; anything else would throw away the file the surviving row points at.
+ */
+function adoptBookAudio(sourceId: string, targetId: string): void {
+  const targetChapters = new Set(database.listAudiobooks(targetId).map((entry) => entry.chapterIndex))
+  for (const chapter of database.listAudiobooks(sourceId)) {
+    if (targetChapters.has(chapter.chapterIndex)) continue
+    const from = segmentDirectory(sourceId, chapter.chapterIndex)
+    const to = segmentDirectory(targetId, chapter.chapterIndex)
+    try {
+      fs.mkdirSync(path.dirname(to), { recursive: true })
+      fs.renameSync(from, to)
+    } catch {
+      // The audio did not move, so leave the rows pointing at where it is: a
+      // narration that still plays from the old directory beats a broken one.
+      continue
+    }
+    for (const segment of database.listAudiobookSegments(chapter.id)) {
+      if (!segment.filePath.startsWith(from + path.sep)) continue
+      database.updateAudiobookSegmentPath(segment.id, path.join(to, segment.filePath.slice(from.length + 1)))
+    }
+  }
+}
+
+/**
+ * What makes two rows the same book.
+ *
+ * Content, whenever there is any: identical canonical text is also what makes
+ * moving offsets between the two rows sound. A file that would not parse has no
+ * text to hash, and its size and name are all it has ever had — nothing is
+ * derived from an unreadable entry, so the weaker key costs nothing if it is
+ * ever wrong.
+ */
+function bookIdentityKey(book: Book): string | null {
+  if (book.status === 'ready') return book.textHash ? `text:${book.textHash}` : null
+  if (book.status !== 'failed' || !book.fileSize) return null
+  return `file:${book.fileSize}:${path.basename(book.filePath).toLowerCase()}`
+}
+
+/**
+ * Reunites entries split by a move made before the scanner learned to follow
+ * one. Both rows already exist by then — the live one is a cache hit on every
+ * later scan, so nothing else would ever look at the pair again.
+ */
+function mergeStrandedDuplicates(projectId: string): number {
+  const books = database.listBooks(projectId)
+  const liveByIdentity = new Map<string, Book>()
+  for (const book of books) {
+    if (book.missingSince) continue
+    const key = bookIdentityKey(book)
+    if (key && !liveByIdentity.has(key)) liveByIdentity.set(key, book)
+  }
+
+  let merged = 0
+  for (const ghost of books) {
+    if (!ghost.missingSince) continue
+    const key = bookIdentityKey(ghost)
+    const live = key ? liveByIdentity.get(key) : null
+    if (!live || live.id === ghost.id) continue
+    // A drive that came back mounts its books again: those are the same entries,
+    // not duplicates of anything, and must not be folded into each other.
+    if (fs.existsSync(ghost.filePath)) continue
+    adoptBookAudio(ghost.id, live.id)
+    database.mergeBookInto(ghost.id, live.id)
+    merged += 1
+  }
+  return merged
+}
+
 export async function scanLibrary(
   projectId: string,
   signal?: AbortSignal,
@@ -223,12 +319,16 @@ export async function scanLibrary(
   const sources = database.listProjectSourcePaths(projectId)
   const result: LibraryScanResult = {
     booksFound: 0, booksAdded: 0, booksUpdated: 0, booksUnchanged: 0,
-    booksFailed: 0, booksMissing: 0, pruned: 0, scanComplete: true, unreadableRoots: [],
+    booksFailed: 0, booksMissing: 0, booksMoved: 0, booksMerged: 0,
+    pruned: 0, scanComplete: true, unreadableRoots: [],
   }
   if (sources.length === 0) return result
 
   const seenPaths = new Set<string>()
   const existingByPath = new Map(database.listBooks(projectId).map((book) => [book.filePath, book]))
+  /** Entries re-pointed at a new path mid-scan. The snapshot above still files
+   *  them under the path they left, which is not a reason to call them missing. */
+  const relocatedIds = new Set<string>()
 
   for (const sourcePath of sources) {
     if (signal?.aborted) throw new LibraryError('Library scan cancelled')
@@ -279,11 +379,20 @@ export async function scanLibrary(
 
       try {
         const { parsed, metadata, coverDataUrl } = await parseBookFile(filePath, format)
+        const relativePath = path.relative(root, filePath) || path.basename(filePath)
+        // The file may be one the user moved rather than a new one. Re-point the
+        // entry it left behind, and the upsert below then finds it by path and
+        // keeps its id — with its reading record, lessons and annotations.
+        const relocated = existing ? null : findRelocatedBook(projectId, parsed.textHash, seenPaths)
+        if (relocated) {
+          database.updateBookLocation(relocated.id, { filePath, relativePath, identityHash })
+          relocatedIds.add(relocated.id)
+        }
         const book = database.upsertBook({
           projectId,
           sourcePath: root,
           filePath,
-          relativePath: path.relative(root, filePath) || path.basename(filePath),
+          relativePath,
           format,
           identityHash,
           textHash: parsed.textHash,
@@ -308,7 +417,8 @@ export async function scanLibrary(
             // they were, which the reader can still see and judge.
           }
         }
-        if (existing) result.booksUpdated += 1
+        if (relocated) result.booksMoved += 1
+        else if (existing) result.booksUpdated += 1
         else result.booksAdded += 1
       } catch (error) {
         // A book that will not parse still belongs on the shelf, saying why.
@@ -345,11 +455,17 @@ export async function scanLibrary(
   const now = new Date().toISOString()
   for (const [filePath, book] of existingByPath) {
     if (seenPaths.has(filePath)) continue
+    if (relocatedIds.has(book.id)) continue
     if (!result.scanComplete) continue
     if (fs.existsSync(filePath)) continue
     database.markBookMissing(book.id, book.missingSince ?? now)
     result.booksMissing += 1
   }
+
+  // Shelves that were already split in two by an earlier move are put back
+  // together here, for the same reason the pruning above is gated: only a scan
+  // that saw everything knows which of two entries is the one on disk.
+  if (result.scanComplete) result.booksMerged = mergeStrandedDuplicates(projectId)
 
   sendProgress?.({ phase: 'complete', message: 'Library up to date', current: result.booksFound, total: result.booksFound })
   return result

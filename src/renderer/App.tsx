@@ -6,6 +6,7 @@ import { hasProviderCredentials } from '@shared/providerConfig'
 import { Sidebar } from './components/Sidebar'
 import { ChatView } from './components/ChatView'
 import { WelcomeScreen } from './components/WelcomeScreen'
+import { NewConversationScreen } from './components/NewConversationScreen'
 import { Dashboard } from './components/Dashboard'
 import { ProjectsPage } from './components/ProjectsPage'
 import { ProductSearchPage } from './components/ProductSearchPage'
@@ -17,8 +18,12 @@ import { HealthPage } from './components/HealthPage'
 import { ActivityPage } from './components/ActivityPage'
 import { DataPage } from './components/DataPage'
 import { TimelinePage } from './components/TimelinePage'
+import { WorkPage } from './components/WorkPage'
+import type { WorkDocumentKind } from '@shared/workDocuments'
+import { getWorkRole } from '@shared/workRoles'
 import { LibraryPage } from './components/LibraryPage'
 import { CallHistoryPage } from './components/CallHistoryPage'
+import { ChatHistoryPage } from './components/ChatHistoryPage'
 import { SettingsPanel } from './components/SettingsPanel'
 import { ProviderCreditBanner } from './components/ProviderCreditBanner'
 import { useChat } from './hooks/useChat'
@@ -26,6 +31,7 @@ import { useSettings } from './hooks/useSettings'
 import { useChatStore } from './store/chatStore'
 import { useSettingsStore } from './store/settingsStore'
 import { isDefaultProjectName } from '@shared/defaultProjects'
+import { startIconBoil } from './boil/iconBoil'
 
 const App: FC = () => {
   const {
@@ -90,7 +96,17 @@ const App: FC = () => {
   const [showMemory, setShowMemory] = useState(false)
   const [showTimeline, setShowTimeline] = useState(false)
   const [showLibrary, setShowLibrary] = useState(false)
+  const [showWork, setShowWork] = useState(false)
+  // Which "New …" the sidebar asked for; null means Work was opened on its own.
+  const [workKind, setWorkKind] = useState<WorkDocumentKind | null>(null)
+  // The role and tool the sidebar last invoked, so the page can name them.
+  const [workTool, setWorkTool] = useState<{ tool: string; roleId: string } | null>(null)
   const [showCallHistory, setShowCallHistory] = useState(false)
+  const [showHistory, setShowHistory] = useState(false)
+  // A draft opened with its settings already chosen (Mental Coach) rather than
+  // from the home screen. Only meaningful while there is no conversation yet:
+  // it decides which of the two start screens the draft shows.
+  const [showNewConversation, setShowNewConversation] = useState(false)
   const [psychologyProjectId, setPsychologyProjectId] = useState<string | null>(null)
   const [healthProjectId, setHealthProjectId] = useState<string | null>(null)
   const [activityProjectId, setActivityProjectId] = useState<string | null>(null)
@@ -120,6 +136,19 @@ const App: FC = () => {
       setSelectedEffort(settings.defaultEffort)
     }
   }, [settings?.defaultEffort])
+
+  // index.css freezes the boiling display face on `:root[data-boil='off']`, so
+  // the switch is one attribute rather than a class on every heading.
+  useEffect(() => {
+    const off = settings?.boilEffectEnabled === false
+    if (off) document.documentElement.setAttribute('data-boil', 'off')
+    else document.documentElement.removeAttribute('data-boil')
+  }, [settings?.boilEffectEnabled])
+
+  // Icons drawn in the turquoise boil too, driven from here rather than from
+  // the 200-odd places that render one. It reads the same data-boil attribute
+  // the display face does, so the Settings switch covers both.
+  useEffect(() => startIconBoil().stop, [])
 
   useEffect(() => {
     loadSettings().then(() => {
@@ -213,7 +242,9 @@ const App: FC = () => {
     setShowMemory(false)
     setShowTimeline(false)
     setShowLibrary(false)
+    setShowWork(false)
     setShowCallHistory(false)
+    setShowHistory(false)
     setShowProjects(true)
   }
 
@@ -229,7 +260,9 @@ const App: FC = () => {
     setShowMemory(false)
     setShowTimeline(false)
     setShowLibrary(false)
+    setShowWork(false)
     setShowCallHistory(false)
+    setShowHistory(false)
     setShowDashboard(true)
   }
 
@@ -246,7 +279,9 @@ const App: FC = () => {
     setShowMemory(false)
     setShowTimeline(false)
     setShowLibrary(false)
+    setShowWork(false)
     setShowCallHistory(false)
+    setShowHistory(false)
     closeSettings()
     useChatStore.setState({
       currentConversationId: null,
@@ -270,7 +305,9 @@ const App: FC = () => {
     setShowMemory(false)
     setShowTimeline(false)
     setShowLibrary(false)
+    setShowWork(false)
     setShowCallHistory(false)
+    setShowHistory(false)
     setShowProductSearch(true)
   }
 
@@ -286,7 +323,9 @@ const App: FC = () => {
     setShowMemory(false)
     setShowTimeline(false)
     setShowLibrary(false)
+    setShowWork(false)
     setShowCallHistory(false)
+    setShowHistory(false)
     if (initialQuery) setWebSearchPendingQuery(initialQuery)
     setShowWebSearch(true)
   }
@@ -303,7 +342,9 @@ const App: FC = () => {
     setShowMemory(false)
     setShowTimeline(false)
     setShowLibrary(false)
+    setShowWork(false)
     setShowCallHistory(false)
+    setShowHistory(false)
     setShowRecall(true)
   }
 
@@ -319,7 +360,9 @@ const App: FC = () => {
     setShowWebSearch(false)
     setShowTimeline(false)
     setShowLibrary(false)
+    setShowWork(false)
     setShowCallHistory(false)
+    setShowHistory(false)
     setShowMemory(true)
   }
 
@@ -335,8 +378,37 @@ const App: FC = () => {
     setShowWebSearch(false)
     setShowMemory(false)
     setShowLibrary(false)
+    setShowWork(false)
     setShowCallHistory(false)
+    setShowHistory(false)
     setShowTimeline(true)
+  }
+
+  // A kind means the sidebar asked for a new one; null just opens the page.
+  const handleWork = (kind: WorkDocumentKind | null) => {
+    setPsychologyProjectId(null)
+    setHealthProjectId(null)
+    setActivityProjectId(null)
+    setShowData(false)
+    setShowRecall(false)
+    setShowProjects(false)
+    setShowDashboard(false)
+    setShowProductSearch(false)
+    setShowWebSearch(false)
+    setShowMemory(false)
+    setShowTimeline(false)
+    setShowLibrary(false)
+    setShowWork(false)
+    setShowCallHistory(false)
+    setShowHistory(false)
+    setWorkKind(kind)
+    setWorkTool(null)
+    setShowWork(true)
+  }
+
+  const handleWorkTool = (tool: string, roleId: string) => {
+    handleWork(null)
+    setWorkTool({ tool, roleId })
   }
 
   const handleLibrary = () => {
@@ -352,6 +424,8 @@ const App: FC = () => {
     setShowMemory(false)
     setShowTimeline(false)
     setShowCallHistory(false)
+    setShowHistory(false)
+    setShowWork(false)
     setShowLibrary(true)
   }
 
@@ -368,15 +442,16 @@ const App: FC = () => {
     setShowMemory(false)
     setShowTimeline(false)
     setShowLibrary(false)
+    setShowWork(false)
+    setShowHistory(false)
     setShowCallHistory(true)
   }
 
-  const handleMentalCoach = () => {
-    const project = projects.find((candidate) => candidate.name === 'Psychology')
-    if (!project) {
-      handleDashboard()
-      return
-    }
+  const handleHistory = () => {
+    setPsychologyProjectId(null)
+    setHealthProjectId(null)
+    setActivityProjectId(null)
+    setShowData(false)
     setShowRecall(false)
     setShowProjects(false)
     setShowDashboard(false)
@@ -385,8 +460,43 @@ const App: FC = () => {
     setShowMemory(false)
     setShowTimeline(false)
     setShowLibrary(false)
+    setShowWork(false)
     setShowCallHistory(false)
-    setPsychologyProjectId(project.id)
+    setShowHistory(true)
+  }
+
+  /**
+   * Opens a fresh therapy session rather than the Psychology page: a new
+   * conversation preset to detailed memory, the Psychology project as context,
+   * and the Therapist role. It stays a draft until the first message like any
+   * other new chat, but shows the new-conversation screen instead of the home
+   * screen — the ideas there would only steer the session elsewhere. The
+   * Psychology page itself is still reached from Data.
+   */
+  const handleMentalCoach = () => {
+    const project = projects.find((candidate) => candidate.name === 'Psychology')
+    setPsychologyProjectId(null)
+    setHealthProjectId(null)
+    setActivityProjectId(null)
+    setShowData(false)
+    setShowRecall(false)
+    setShowProjects(false)
+    setShowDashboard(false)
+    setShowProductSearch(false)
+    setShowWebSearch(false)
+    setShowMemory(false)
+    setShowTimeline(false)
+    setShowLibrary(false)
+    setShowWork(false)
+    setShowCallHistory(false)
+    setShowHistory(false)
+    startDraftConversation()
+    setShowNewConversation(true)
+    setMemoryMode('detailed')
+    // No Psychology project means a broken default install; the role and memory
+    // preset still apply rather than clearing whatever context was selected.
+    if (project) setSelectedContext({ kind: 'project', projectId: project.id })
+    setSelectedRole('therapist')
   }
 
   const handleHealth = () => {
@@ -407,7 +517,9 @@ const App: FC = () => {
     setShowMemory(false)
     setShowTimeline(false)
     setShowLibrary(false)
+    setShowWork(false)
     setShowCallHistory(false)
+    setShowHistory(false)
     setHealthProjectId(project.id)
   }
 
@@ -429,7 +541,9 @@ const App: FC = () => {
     setShowMemory(false)
     setShowTimeline(false)
     setShowLibrary(false)
+    setShowWork(false)
     setShowCallHistory(false)
+    setShowHistory(false)
     setActivityProjectId(project.id)
   }
 
@@ -446,7 +560,9 @@ const App: FC = () => {
     setShowMemory(false)
     setShowTimeline(false)
     setShowLibrary(false)
+    setShowWork(false)
     setShowCallHistory(false)
+    setShowHistory(false)
     setDataFocusProjectId(null)
     setShowData(true)
   }
@@ -469,7 +585,11 @@ const App: FC = () => {
     setShowMemory(false)
     setShowTimeline(false)
     setShowLibrary(false)
+    setShowWork(false)
     setShowCallHistory(false)
+    setShowHistory(false)
+    // A plain new chat is the home screen, whatever the last draft was.
+    setShowNewConversation(false)
     startDraftConversation()
   }
 
@@ -486,7 +606,9 @@ const App: FC = () => {
     setShowMemory(false)
     setShowTimeline(false)
     setShowLibrary(false)
+    setShowWork(false)
     setShowCallHistory(false)
+    setShowHistory(false)
     selectConversation(id)
   }
 
@@ -538,10 +660,10 @@ const App: FC = () => {
     sendMessage(content, activeModel, activeEffort, attachments)
   }
 
-  // The only path that creates a plain conversation: the welcome screen is a
+  // The only path that creates a plain conversation: both start screens are a
   // draft until the first message lands, so this is where the sidebar row and
-  // the generated title come from.
-  const handleWelcomeSend = async (content: string) => {
+  // the generated title come from — carrying whatever the pills were set to.
+  const handleWelcomeSend = async (content: string, attachments?: ChatAttachment[]) => {
     // Mirror the model the welcome screen was actually showing. `selectedModel`
     // is empty until the user picks one, and sending an empty model id fails
     // the request.
@@ -549,7 +671,7 @@ const App: FC = () => {
     const conversation = await window.electronAPI.conversations.create(model, selectedEffort, undefined, memoryMode, selectedContext, selectedRoleId)
     await loadConversations()
     await useChatStore.getState().selectConversation(conversation.id)
-    await useChatStore.getState().sendMessage(content, model, selectedEffort)
+    await useChatStore.getState().sendMessage(content, model, selectedEffort, attachments)
   }
 
   const handlePsychologyConversation = async (
@@ -576,7 +698,9 @@ const App: FC = () => {
     setShowMemory(false)
     setShowTimeline(false)
     setShowLibrary(false)
+    setShowWork(false)
     setShowCallHistory(false)
+    setShowHistory(false)
     await useChatStore.getState().sendMessage(content, model, effort)
   }
 
@@ -616,7 +740,9 @@ const App: FC = () => {
     setShowMemory(false)
     setShowTimeline(false)
     setShowLibrary(false)
+    setShowWork(false)
     setShowCallHistory(false)
+    setShowHistory(false)
     await useChatStore.getState().sendMessage(scope.seedPrompt, model, selectedEffort)
   }
 
@@ -642,7 +768,9 @@ const App: FC = () => {
     setShowMemory(false)
     setShowTimeline(false)
     setShowLibrary(false)
+    setShowWork(false)
     setShowCallHistory(false)
+    setShowHistory(false)
     await useChatStore.getState().sendMessage(content, model, effort)
   }
 
@@ -668,7 +796,9 @@ const App: FC = () => {
     setShowMemory(false)
     setShowTimeline(false)
     setShowLibrary(false)
+    setShowWork(false)
     setShowCallHistory(false)
+    setShowHistory(false)
     await useChatStore.getState().sendMessage(content, model, selectedEffort)
   }
 
@@ -703,6 +833,14 @@ const App: FC = () => {
     }
   }, [selectedModel, selectedEffort, settings?.defaultModel])
 
+  // Once the draft becomes a real conversation — or another one is opened — the
+  // preset start screen has done its job. Retiring it here rather than in each
+  // handler also covers deleting the open conversation, which drops back to a
+  // draft that should be the ordinary home screen.
+  useEffect(() => {
+    if (currentConversationId) setShowNewConversation(false)
+  }, [currentConversationId])
+
   // Refresh conversations list after sending (auto-title may update)
   useEffect(() => {
     if (!isStreaming && currentConversationId) {
@@ -721,8 +859,12 @@ const App: FC = () => {
   return (
     <div className="flex flex-col h-screen bg-holmes-bg text-white">
       <div className="relative z-20 h-8 shrink-0">
-        <div className="window-drag absolute inset-y-0 left-[154px] right-0" />
-        <div className="absolute left-[74px] top-[7px] z-10 flex items-center gap-2">
+        <div className="window-drag absolute inset-y-0 left-[210px] right-0" />
+        {/* Centred on the traffic lights (main.ts pins them at y=21, so their
+            12px circles centre on 27). The dots end at x=66; starting at 90
+            leaves 24px between the two groups — wider than the 10px inside this
+            one, so they read as separate sets of controls. */}
+        <div className="absolute left-[90px] top-[17px] z-10 flex items-center gap-2.5">
           <button
             onClick={() => setSidebarOpen((open) => !open)}
             className="window-no-drag flex h-5 w-5 items-center justify-center text-[#99928d] transition-colors hover:text-white cursor-pointer"
@@ -781,12 +923,19 @@ onSelect={handleSelectFromDashboard}
             onMemory={handleMemory}
             onTimeline={handleTimeline}
             onLibrary={handleLibrary}
+            onWork={handleWork}
+            onWorkTool={handleWorkTool}
             onCallHistory={handleCallHistory}
+            onHistory={handleHistory}
             onOpenIndexRun={handleOpenIndexRun}
             activeSection={
-              psychologyProject
+              // The unsent session counts as being in Mental Coach, as does the
+              // Psychology page it used to open.
+              showNewConversation || psychologyProject
                 ? 'mental-coach'
-                : showRecall
+                : showHistory
+                  ? 'history'
+                  : showRecall
                   ? 'recall'
                   : showProjects
                     ? 'projects'
@@ -798,6 +947,8 @@ onSelect={handleSelectFromDashboard}
                           ? 'call-history'
                           : showLibrary
                           ? 'library'
+                          : showWork
+                          ? 'work'
                           : showTimeline
                           ? 'timeline'
                           : showData
@@ -813,7 +964,6 @@ onSelect={handleSelectFromDashboard}
           {psychologyProject ? (
             <PsychologyPage
               project={psychologyProject}
-              onBack={() => setPsychologyProjectId(null)}
               onCompleteTest={async (testId: PsychologicalTestId, answers: number[]) => {
                 const result = await window.electronAPI.projects.completePsychologyTest(psychologyProject.id, testId, answers)
                 try {
@@ -846,7 +996,6 @@ onSelect={handleSelectFromDashboard}
               project={healthProject}
               healthAnalysisEnabled={settings?.healthAnalysisEnabled ?? false}
               healthLiveSyncEnabled={settings?.healthLiveSyncEnabled ?? false}
-              onBack={() => setHealthProjectId(null)}
               onAnalyzeHealth={handleAnalyzeHealth}
               onChooseDirectory={async () => {
                 const directory = await window.electronAPI.app.selectDirectory()
@@ -881,7 +1030,6 @@ onSelect={handleSelectFromDashboard}
             <ActivityPage
               projectId={activityProject.id}
               activityIngestEnabled={settings?.activityIngestEnabled ?? false}
-              onBack={() => setActivityProjectId(null)}
             />
           ) : showData ? (
             <DataPage
@@ -902,13 +1050,30 @@ onSelect={handleSelectFromDashboard}
               focusProjectId={dataFocusProjectId}
               onFocusHandled={() => setDataFocusProjectId(null)}
             />
+          ) : showHistory ? (
+            <ChatHistoryPage
+              conversations={conversations}
+              projects={visibleProjects}
+              currentConversationId={currentConversationId}
+              onSelect={handleSelectFromDashboard}
+              onNew={handleNewFromDashboard}
+              onDelete={deleteConversation}
+              onRename={renameConversation}
+            />
           ) : showCallHistory ? (
-            <CallHistoryPage onBack={() => setShowCallHistory(false)} />
+            <CallHistoryPage />
           ) : showLibrary ? (
             <LibraryPage
               onBack={() => setShowLibrary(false)}
               onOpenData={handleData}
               onDiscuss={handleBookConversation}
+            />
+          ) : showWork ? (
+            <WorkPage
+              requestedKind={workKind}
+              onRequestKind={(kind) => { setWorkKind(kind); setWorkTool(null) }}
+              role={getWorkRole(workTool?.roleId ?? null)}
+              tool={workTool?.tool ?? null}
             />
           ) : showRecall ? (
             <RecallPage
@@ -938,7 +1103,7 @@ onSelect={handleSelectFromDashboard}
           ) : showMemory ? (
             <MemoryPage />
           ) : showTimeline ? (
-            <TimelinePage onBack={() => setShowTimeline(false)} />
+            <TimelinePage />
           ) : showProjects ? (
             <ProjectsPage
               projects={userProjects}
@@ -1007,6 +1172,21 @@ onSelect={handleSelectFromDashboard}
               onRetryMessage={(messageId) => void retryMessage(messageId, activeModel, activeEffort)}
               onSetActiveBranch={(messageId) => void setActiveBranch(messageId)}
               onWebSearchCommand={(query) => handleWebSearch(query)}
+            />
+          ) : showNewConversation ? (
+            <NewConversationScreen
+              onSend={handleWelcomeSend}
+              models={models}
+              selectedModel={selectedModel || settings?.defaultModel || models[0]?.id || ''}
+              onModelChange={(model) => void handlePreferenceModelChange(model)}
+              selectedEffort={selectedEffort}
+              onEffortChange={(effort) => void handlePreferenceEffortChange(effort)}
+              memoryMode={memoryMode}
+              onMemoryModeChange={setMemoryMode}
+              selectedContext={selectedContext}
+              onContextChange={setSelectedContext}
+              selectedRoleId={selectedRoleId}
+              onRoleChange={setSelectedRole}
             />
           ) : (
             <WelcomeScreen

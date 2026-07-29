@@ -1,6 +1,6 @@
 import fs from 'fs'
 import path from 'path'
-import type { IndexEstimate, IndexEstimateLine, ModelTier, ProviderConfig } from '../shared/types'
+import type { IndexEstimate, IndexEstimateLine, IndexGranularity, ModelTier, ProviderConfig } from '../shared/types'
 import { isLibraryProject } from '../shared/defaultProjects'
 import * as database from './database'
 import {
@@ -11,6 +11,7 @@ import {
   MAX_INDEXED_DIRECTORY_ENTRIES,
 } from './projectContext'
 import { estimateImageTokens, PHOTO_MAX_EDGE } from './photoContext'
+import { samplePhotosOut } from './indexSampling'
 import { getPriceTable, priceCall, type PriceTable } from './modelPricing'
 import { estimateSecondsForCalls, DEFAULT_REQUESTS_PER_MINUTE } from './rateLimit'
 
@@ -75,6 +76,9 @@ export interface EstimateInput {
   projectPath: string | null
   projectFiles: string[]
   tier: ModelTier
+  // Defaults to 'full'. Medium/low drop a deterministic per-folder sample of
+  // photos — the same set indexSampling picks for the run, so the quote holds.
+  granularity?: IndexGranularity
   textModel: string
   visionModel: string
   priceTable: PriceTable
@@ -91,6 +95,7 @@ export interface EstimateInput {
 // Pure projection, so it is directly testable without a provider or a DB.
 export function computeIndexEstimate(input: EstimateInput): IndexEstimate {
   const { projectId, projectName, projectPath, projectFiles, tier, textModel, visionModel, priceTable } = input
+  const granularity = input.granularity ?? 'full'
   const requestsPerMinute = input.requestsPerMinute ?? DEFAULT_REQUESTS_PER_MINUTE
 
   // Must match documentContext.resolveBase: the collector returns realpath'd
@@ -111,10 +116,21 @@ export function computeIndexEstimate(input: EstimateInput): IndexEstimate {
   // A forced run regenerates every file, so the cache cannot discount anything.
   const cached = input.force ? new Set<string>() : new Set(database.listIndexedFilePaths(projectId))
 
+  // The identical set the run will skip: sampled over every photo the scan saw,
+  // cache state ignored, so estimate and run can never disagree on membership.
+  const sampledOut = samplePhotosOut(files.filter(isImageExtension), granularity)
+
   const textFiles: string[] = []
   const imageFiles: string[] = []
   let cachedFiles = 0
+  let sampledOutFiles = 0
   for (const file of files) {
+    // Sampled out beats cached: the run counts these photos as sampled out
+    // whether or not an earlier run indexed them, and either way they cost $0.
+    if (sampledOut.has(file)) {
+      sampledOutFiles += 1
+      continue
+    }
     // A cache hit costs nothing, so quoting it would overstate the bill. This
     // is why a re-index of an unchanged tree estimates near zero.
     if (cached.has(file)) {
@@ -158,7 +174,12 @@ export function computeIndexEstimate(input: EstimateInput): IndexEstimate {
   // Folder syntheses only rerun when their children changed, so a run with no
   // regenerated files also has no folder cost.
   const changedFiles = textFiles.length + imageFiles.length
-  const folders = roots.reduce((sum, root) => sum + countFolders(resolveBase(root), files), 0)
+  // Folders are counted over what the run will actually register. Today the
+  // per-folder sampling floor keeps every folder populated, so this filter
+  // changes nothing — it exists so a future floor change cannot desync the
+  // folder count from the run.
+  const effectiveFiles = files.filter((file) => !sampledOut.has(file))
+  const folders = roots.reduce((sum, root) => sum + countFolders(resolveBase(root), effectiveFiles), 0)
   const foldersToBuild = changedFiles > 0 ? folders : 0
   const folderInput = foldersToBuild * FOLDER_INPUT_TOKENS
   const folderOutput = foldersToBuild * FOLDER_OUTPUT_TOKENS
@@ -190,11 +211,13 @@ export function computeIndexEstimate(input: EstimateInput): IndexEstimate {
     projectId,
     projectName,
     tier,
+    granularity,
     textModel,
     visionModel,
     textFiles: textFiles.length,
     imageFiles: imageFiles.length,
     skippedFiles: 0,
+    sampledOutFiles,
     cachedFiles,
     folders: foldersToBuild,
     lines,
@@ -217,13 +240,13 @@ export async function estimateProjectIndex(
   visionModel: string,
   config: ProviderConfig,
   requestsPerMinute?: number,
-  scope: { sourcePath?: string; force?: boolean } = {}
+  scope: { sourcePath?: string; force?: boolean; granularity?: IndexGranularity } = {}
 ): Promise<IndexEstimate> {
   const project = database.getProjectById(projectId)
   // Belt and braces alongside the IPC guard: quoting a price for indexing a
   // library would mean walking a folder of books that will never be indexed.
   if (project && isLibraryProject(project)) {
-    return combineEstimates([], tier, textModel, visionModel)
+    return combineEstimates([], tier, textModel, visionModel, scope.granularity)
   }
   const priceTable = await getPriceTable(config)
   const stored = database.listProjectSources(projectId).map((source) => source.path)
@@ -235,6 +258,7 @@ export async function estimateProjectIndex(
     projectPath: project?.path ?? null,
     projectFiles: project?.files ?? [],
     tier,
+    granularity: scope.granularity,
     textModel,
     visionModel,
     priceTable,
@@ -247,7 +271,7 @@ export async function estimateProjectIndex(
 
 // Sums the per-project estimates for an "Index all" run, which processes
 // connected projects sequentially through the same pipeline.
-export function combineEstimates(estimates: IndexEstimate[], tier: ModelTier, textModel: string, visionModel: string): IndexEstimate {
+export function combineEstimates(estimates: IndexEstimate[], tier: ModelTier, textModel: string, visionModel: string, granularity: IndexGranularity = 'full'): IndexEstimate {
   const pricingUnavailable = estimates.some((estimate) => estimate.pricingUnavailable)
   const sum = (pick: (estimate: IndexEstimate) => number): number =>
     estimates.reduce((total, estimate) => total + pick(estimate), 0)
@@ -256,11 +280,13 @@ export function combineEstimates(estimates: IndexEstimate[], tier: ModelTier, te
     projectId: null,
     projectName: null,
     tier,
+    granularity,
     textModel,
     visionModel,
     textFiles: sum((e) => e.textFiles),
     imageFiles: sum((e) => e.imageFiles),
     skippedFiles: sum((e) => e.skippedFiles),
+    sampledOutFiles: sum((e) => e.sampledOutFiles),
     cachedFiles: sum((e) => e.cachedFiles),
     folders: sum((e) => e.folders),
     lines: [],

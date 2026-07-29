@@ -8,7 +8,7 @@ import { AssistantMark } from './AssistantMark'
 // while looking fine against the dev server's http origin.
 import thinkingStrip from '../../../assets/anim/holmes-thinking.png?inline'
 import talkingStrip from '../../../assets/anim/holmes-talking.png?inline'
-import stillFrame from '../../../assets/anim/holmes-talking-still.png?inline'
+import idleStrip from '../../../assets/anim/holmes-idle-boil.png?inline'
 
 export type MarkState = 'idle' | 'thinking' | 'talking'
 
@@ -20,7 +20,11 @@ export type MarkState = 'idle' | 'thinking' | 'talking'
 const CLIPS: Record<MarkState, { src: string; frames: number }> = {
   thinking: { src: thinkingStrip, frames: 33 },
   talking: { src: talkingStrip, frames: 54 },
-  idle: { src: stillFrame, frames: 1 },
+  // Idle is a "boil": the same symbol outline redrawn ten times with a small
+  // wobble, so at rest the mark breathes rather than sitting dead. The frames
+  // are generated procedurally from holmesSymbol.svg by anim/roughen-symbol.py
+  // — no drawing and no model, the outline is just perturbed.
+  idle: { src: idleStrip, frames: 10 },
 }
 
 /**
@@ -35,6 +39,8 @@ interface AnimatedMarkProps {
   state: MarkState
   className?: string
   style?: CSSProperties
+  /** Paints the mark in an active character's colour. Defaults to the brand colour. */
+  color?: string
 }
 
 /**
@@ -47,9 +53,9 @@ interface AnimatedMarkProps {
  * unifies them on the brand colour — the strips themselves carry no colour.
  * A custom assistant icon has no clips to play, so it falls back to AssistantMark.
  */
-export const AnimatedMark: FC<AnimatedMarkProps> = ({ state, className = '', style }) => {
+export const AnimatedMark: FC<AnimatedMarkProps> = ({ state, className = '', style, color }) => {
   const { name, icon } = useAssistantIdentity()
-  if (icon) return <AssistantMark className={className} style={style} />
+  if (icon) return <AssistantMark className={className} style={style} color={color} />
 
   const { src, frames } = CLIPS[state]
   const animated = frames > 1
@@ -60,6 +66,9 @@ export const AnimatedMark: FC<AnimatedMarkProps> = ({ state, className = '', sty
       aria-label={name}
       className={`holmes-mark ${animated ? 'holmes-mark--animated' : ''} ${className}`}
       style={{
+        // The strips are alpha masks, so the character's colour is simply the
+        // box behind them — the .holmes-mark rule's brand colour is the default.
+        ...(color ? { backgroundColor: color } : {}),
         WebkitMaskImage: `url(${src})`,
         maskImage: `url(${src})`,
         // frames x 100% wide, so mask-position 0%->100% lands frame 0 -> frame N-1

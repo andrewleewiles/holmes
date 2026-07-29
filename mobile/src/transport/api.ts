@@ -1,6 +1,11 @@
 import { IPC } from '../../../src/main/ipcChannels'
 import type { RemoteClientSettings } from '@shared/remote'
 import type {
+  Book,
+  BookChapter,
+  BookChapterContent,
+  BookReadingState,
+  LibraryBook,
   ContextSelection,
   Conversation,
   Message,
@@ -75,6 +80,16 @@ export const api = {
 
   people: {
     list: () => remoteClient.call<Person[]>(IPC.PEOPLE.LIST),
+  },
+
+  library: {
+    listBooks: () => remoteClient.call<LibraryBook[]>(IPC.LIBRARY.LIST_BOOKS),
+    getBook: (bookId: string) =>
+      remoteClient.call<{ book: Book; chapters: BookChapter[]; reading: BookReadingState }>(IPC.LIBRARY.GET_BOOK, bookId),
+    getChapter: (bookId: string, chapterIndex: number) =>
+      remoteClient.call<BookChapterContent>(IPC.LIBRARY.GET_CHAPTER, bookId, chapterIndex),
+    setProgress: (bookId: string, chapterIndex: number, charOffset: number) =>
+      remoteClient.call<BookReadingState>(IPC.LIBRARY.SET_PROGRESS, bookId, chapterIndex, charOffset),
   },
 }
 

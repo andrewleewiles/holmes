@@ -25,6 +25,7 @@ import type {
 } from '@shared/types'
 import { MEMORY_CATALOG, MEMORY_CATEGORY_KEYS } from '@shared/memoryCatalog'
 import { useAssistantIdentity } from '../hooks/useAssistantIdentity'
+import { PageHeader, PAGE_HEADER_ICON } from './PageHeader'
 
 type FieldFilter = 'all' | 'filled' | 'empty' | 'locked'
 const ALL_FIELDS_CATEGORY = '__all_fields__'
@@ -441,46 +442,38 @@ export const MemoryPage: FC = () => {
   })
 
   return (
-    <div className="flex-1 overflow-y-auto bg-holmes-bg">
-      <div className="mx-auto w-full max-w-7xl p-6 sm:p-8">
-        <header className="flex flex-wrap items-start justify-between gap-4">
-          <div className="flex items-start gap-3">
-            <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-holmes-primary/15 text-holmes-primary">
-              <FontAwesomeIcon icon={faHardDrive} className="text-lg" />
-            </span>
-            <div>
-              <div className="flex flex-wrap items-center gap-2">
-                <h1 className="text-xl font-medium text-white/85 font-serif-display">Memory</h1>
-                <span className="rounded-full border border-holmes-primary/25 bg-holmes-primary/10 px-2 py-0.5 text-[9px] font-semibold tracking-[0.13em] text-holmes-primary-light">
-                  LOCAL PROFILE
-                </span>
-              </div>
-              <p className="mt-1 max-w-2xl text-xs leading-relaxed text-white/40">
-                A modifiable hub for the facts, preferences, routines, relationships, and context {assistantName} knows about you.
-              </p>
-            </div>
-          </div>
-          <div className="flex items-center gap-2">
+    <div className="flex flex-1 flex-col overflow-y-auto bg-holmes-bg">
+      <PageHeader
+        icon={<FontAwesomeIcon icon={faHardDrive} className={PAGE_HEADER_ICON} />}
+        title="Memory"
+        actions={
+          <>
             <button
               onClick={() => {
                 setNewCategory(showingAllFields ? MEMORY_CATALOG[0].key : category.key)
                 setShowAddField(true)
               }}
-              className="flex items-center gap-2 rounded-lg border border-white/10 bg-white/[0.04] px-3 py-2 text-xs text-white/50 hover:border-white/20 hover:text-white/75 cursor-pointer"
+              className="flex h-[30px] items-center gap-2 rounded-md border border-white/10 bg-white/[0.03] px-3 text-[13px] text-white/60 transition-colors hover:border-white/20 hover:text-white/85 cursor-pointer"
             >
-              <FontAwesomeIcon icon={faPlus} /> Add field
+              <FontAwesomeIcon icon={faPlus} className="text-[13px]" /> Add field
             </button>
             <button
               onClick={() => {
                 setConfirmed(false)
                 setShowAutoFill(true)
               }}
-              className="flex items-center gap-2 rounded-lg bg-holmes-primary px-3 py-2 text-xs font-medium text-white hover:bg-holmes-primary-light cursor-pointer"
+              className="flex h-[30px] items-center gap-2 rounded-md bg-holmes-primary px-3 text-[13px] font-medium text-white transition-colors hover:bg-holmes-primary-light cursor-pointer"
             >
-              <FontAwesomeIcon icon={faWandMagicSparkles} /> Auto-fill Memory
+              <FontAwesomeIcon icon={faWandMagicSparkles} className="text-[13px]" /> Auto-fill Memory
             </button>
-          </div>
-        </header>
+          </>
+        }
+      />
+
+      <div className="mx-auto w-full max-w-7xl p-6 sm:p-8">
+        <p className="max-w-2xl text-xs leading-relaxed text-white/40">
+          A modifiable hub for the facts, preferences, routines, relationships, and context {assistantName} knows about you.
+        </p>
 
         <div className="mt-6 grid grid-cols-2 gap-2 sm:grid-cols-4">
           {[

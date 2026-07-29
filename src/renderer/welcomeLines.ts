@@ -12,6 +12,13 @@ export const DEFAULT_WELCOME_LINES: string[] = welcomeText
 
 export const WELCOME_NAME_TOKEN = '[user first name]'
 
+/**
+ * Both spellings of the name token are honoured: the character lines in
+ * assets/characterRoles.xlsx use `[user]` where Holmes's own lines use
+ * `[user first name]`, and either way it is the first name that is wanted.
+ */
 export function renderWelcomeLine(line: string, firstName: string): string {
-  return line.replace(/\[user first name\]/gi, firstName)
+  return line
+    .replace(/\[user first name\]/gi, firstName)
+    .replace(/\[user\]/gi, firstName)
 }

@@ -12,11 +12,11 @@ import { PsychologicalTestChat } from './PsychologicalTestChat'
 import { PsychologyPromptComposer } from './PsychologyPromptComposer'
 import { SessionNotesPanel } from './SessionNotesPanel'
 import { ProjectIcon } from './ProjectIcon'
+import { PageHeader, PAGE_HEADER_ICON } from './PageHeader'
 import { useAssistantIdentity } from '../hooks/useAssistantIdentity'
 
 interface PsychologyPageProps {
   project: Project
-  onBack: () => void
   onCompleteTest: (testId: PsychologicalTestId, answers: number[]) => Promise<PsychologicalTestResult>
   onChooseDirectory: () => Promise<void>
   onOpenExternal: (url: string) => Promise<void>
@@ -31,7 +31,6 @@ interface PsychologyPageProps {
 
 export const PsychologyPage: FC<PsychologyPageProps> = ({
   project,
-  onBack,
   onCompleteTest,
   onChooseDirectory,
   onOpenExternal,
@@ -61,26 +60,15 @@ export const PsychologyPage: FC<PsychologyPageProps> = ({
 
   return (
     <div className="flex-1 flex flex-col overflow-y-auto bg-holmes-bg">
-      <div className="max-w-4xl w-full mx-auto p-8">
-        <button
-          onClick={onBack}
-          className="flex items-center gap-1.5 text-xs text-white/40 hover:text-white/70 transition-colors mb-6 cursor-pointer"
-        >
-          <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <path d="M19 12H5M12 19l-7-7 7-7" />
-          </svg>
-          Back to Dashboard
-        </button>
+      <PageHeader
+        icon={<ProjectIcon icon={project.icon} className={PAGE_HEADER_ICON} />}
+        title={project.name}
+      />
 
-        <div className="flex items-center gap-3 mb-8">
-          <ProjectIcon icon={project.icon} className="text-3xl" />
-          <div>
-            <h1 className="text-xl font-medium text-white/80 font-serif-display">{project.name}</h1>
-            <p className="text-xs text-white/40 mt-0.5">
-              Psychological profile, standardized assessments, and relationship insights
-            </p>
-          </div>
-        </div>
+      <div className="max-w-4xl w-full mx-auto px-8 py-6">
+        <p className="text-xs text-white/40 mb-6">
+          Psychological profile, standardized assessments, and relationship insights
+        </p>
 
         <PsychologyPromptComposer
           project={project}

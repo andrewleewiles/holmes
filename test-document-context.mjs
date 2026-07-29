@@ -231,6 +231,39 @@ check('extracts shared strings and numeric cells from a .xlsx, one line per row'
   // Row structure is what makes a line citation locatable in a spreadsheet.
   assert.deepEqual(xlsxText.trim().split('\n'), ['Revenue\tRent', '1200'])
 })
+// A blank interior cell is simply absent from the XML. Placing values by
+// arrival order slides every later value one column left, so a rating gets read
+// under the genre heading and the answer is confidently wrong.
+const gappyPath = path.join(docsDir, 'ratings.xlsx')
+fs.writeFileSync(gappyPath, Buffer.from(zipSync({
+  'xl/workbook.xml': strToU8('<workbook><sheets><sheet name="Movies"/><sheet name="To Watch"/></sheets></workbook>'),
+  // "Jojo Rabbit" arrives as two runs inside one <si>, as Excel writes it when
+  // part of a string carries different formatting.
+  'xl/sharedStrings.xml': strToU8('<sst><si><t>Movie</t></si><si><t>Theater</t></si><si><t>Rating</t></si><si><r><t>Jojo </t></r><r><t>Rabbit</t></r></si></sst>'),
+  'xl/worksheets/sheet1.xml': strToU8('<worksheet><sheetData><row><c r="A1" t="s"><v>0</v></c><c r="B1" t="s"><v>1</v></c><c r="C1" t="s"><v>2</v></c></row><row><c r="A2" t="s"><v>3</v></c><c r="C2"><v>10.0</v></c></row></sheetData></worksheet>'),
+  'xl/worksheets/sheet2.xml': strToU8('<worksheet><sheetData><row><c r="A1"><v>2026</v></c></row></sheetData></worksheet>'),
+})))
+const gappyText = await readDocumentText(gappyPath, 40000)
+
+check('keeps spreadsheet values under their own column when a cell is blank', () => {
+  const rows = gappyText.trim().split('\n')
+  assert.deepEqual(rows[1], 'Movie\tTheater\tRating')
+  // The empty Theater cell holds its place, so 10 stays under Rating.
+  assert.deepEqual(rows[2].split('\t'), ['Jojo Rabbit', '', '10'])
+})
+check('joins shared-string runs into one value', () => {
+  assert.ok(gappyText.includes('Jojo Rabbit'), gappyText)
+})
+check('labels rows with the workbook sheet name', () => {
+  assert.ok(gappyText.startsWith('# Movies'), gappyText)
+  assert.ok(gappyText.includes('# To Watch'), gappyText)
+})
+check('drops the float encoding from whole numbers', () => {
+  // A rating column read as "10.0" and a year as "2023.0" is noise the sheet
+  // never displayed.
+  assert.ok(!gappyText.includes('10.0'), gappyText)
+  assert.ok(gappyText.includes('2026'), gappyText)
+})
 check('reads plain text files unchanged', () => {
   assert.equal(txtText.trim(), 'plain text note')
 })
@@ -1234,6 +1267,132 @@ check('combineEstimates sums projects and propagates unknown cost', () => {
   assert.equal(mixed.pricingUnavailable, true)
 })
 
+// ---------------------------------------------------------------------------
+// Granularity: photo sampling shared by the estimator and the indexer
+// ---------------------------------------------------------------------------
+console.log('Granularity sampling')
+
+const { samplePhotosOut, GRANULARITY_PHOTO_RATE, MIN_SAMPLED_PHOTOS_PER_FOLDER } = await import('./src/main/indexSampling.ts')
+
+check('full granularity samples nothing out', () => {
+  const photos = Array.from({ length: 50 }, (_, i) => `/photos/p${String(i).padStart(2, '0')}.jpg`)
+  assert.equal(samplePhotosOut(photos, 'full').size, 0)
+  assert.equal(GRANULARITY_PHOTO_RATE.full, 1)
+})
+
+check('sampling is per folder, rate-driven, and floored at a minimum per folder', () => {
+  const big = Array.from({ length: 64 }, (_, i) => `/photos/2018/p${String(i).padStart(2, '0')}.jpg`)
+  const small = Array.from({ length: MIN_SAMPLED_PHOTOS_PER_FOLDER }, (_, i) => `/photos/tiny/p${i}.jpg`)
+  const out = samplePhotosOut([...big, ...small], 'low')
+  // 64 * 1/16 = 4 kept in the big folder, 60 out; a floor-sized folder is kept whole.
+  assert.equal([...out].filter((f) => f.includes('/2018/')).length, 60)
+  assert.equal([...out].filter((f) => f.includes('/tiny/')).length, 0)
+  const outMedium = samplePhotosOut(big, 'medium')
+  assert.equal(outMedium.size, 48, '64 * 1/4 = 16 kept')
+})
+
+check('the sample is deterministic and independent of input order', () => {
+  const photos = Array.from({ length: 40 }, (_, i) => `/photos/2019/p${String(i).padStart(2, '0')}.jpg`)
+  const shuffled = [...photos].reverse()
+  const a = [...samplePhotosOut(photos, 'low')].sort()
+  const b = [...samplePhotosOut(shuffled, 'low')].sort()
+  assert.deepEqual(a, b, 'same tree, same sample — the estimate and the run must agree')
+})
+
+check('kept photos are spread across the folder, not the first K names', () => {
+  const photos = Array.from({ length: 64 }, (_, i) => `/photos/2020/p${String(i).padStart(2, '0')}.jpg`)
+  const out = samplePhotosOut(photos, 'low')
+  const kept = photos.filter((f) => !out.has(f)).sort()
+  assert.equal(kept.length, 4)
+  // Even midpoint spacing over the 64 sorted names: indices 8, 24, 40, 56.
+  assert.deepEqual(kept, [photos[8], photos[24], photos[40], photos[56]])
+})
+
+const granDir = fs.mkdtempSync(path.join(os.tmpdir(), 'holmes-gran-'))
+const granProject = createProject({ name: 'SampledPhotos', icon: 'image', color: '#06b6d4', path: granDir })
+for (let i = 0; i < 8; i += 1) fs.writeFileSync(path.join(granDir, `g${i}.jpg`), 'x'.repeat(1024))
+const granFiles = collectFiles([], granDir, INDEXABLE_EXTENSIONS, { maxFiles: 100, maxEntries: 1000 })
+const granOut = [...samplePhotosOut(granFiles, 'low')].sort()
+const granIn = granFiles.filter((f) => !granOut.includes(f)).sort()
+
+const granEstimateInput = (overrides = {}) => ({
+  projectId: granProject.id,
+  projectName: 'SampledPhotos',
+  projectPath: granDir,
+  projectFiles: [],
+  tier: 'mid',
+  textModel: 'text/model',
+  visionModel: 'vision/model',
+  priceTable,
+  ...overrides,
+})
+
+check('a low-granularity estimate bills the sample and reports the rest as sampled out', () => {
+  const full = computeIndexEstimate(granEstimateInput())
+  const low = computeIndexEstimate(granEstimateInput({ granularity: 'low' }))
+  assert.equal(full.imageFiles, 8)
+  assert.equal(full.sampledOutFiles, 0)
+  assert.equal(full.granularity, 'full')
+  // 8 photos at 1/16 keeps the 3-photo floor: 3 billed, 5 sampled out.
+  assert.equal(low.imageFiles, 3)
+  assert.equal(low.sampledOutFiles, 5)
+  assert.equal(low.granularity, 'low')
+  assert.ok(low.costUsd < full.costUsd, 'sampling is what makes the run cheaper')
+  assert.equal(low.scannedFiles, full.scannedFiles, 'the scan itself still saw every photo')
+})
+
+check('sampled out beats cached in the estimate, matching the run\'s counting', () => {
+  for (const file of granFiles) {
+    upsertDocumentFileContext({
+      projectId: granProject.id,
+      filePath: file,
+      relativePath: path.basename(file),
+      contentHash: 'cached',
+      kind: 'image',
+      context: 'A described photo.',
+    })
+  }
+  const low = computeIndexEstimate(granEstimateInput({ granularity: 'low' }))
+  assert.equal(low.sampledOutFiles, 5, 'previously indexed photos still count as sampled out, not cached')
+  assert.equal(low.cachedFiles, 3)
+  assert.equal(low.imageFiles, 0)
+  pruneDocumentFileContexts(granProject.id, [])
+})
+
+// Run-level: a real generateDocumentContexts pass at low granularity. No vision
+// model is configured, so sampled-IN photos are recorded instantly as failure
+// rows without any network call — which makes the sampling behavior observable
+// with the same dead provider the offline tests use.
+const preservedPath = granOut[0]
+upsertDocumentFileContext({
+  projectId: granProject.id,
+  filePath: preservedPath,
+  relativePath: path.basename(preservedPath),
+  contentHash: 'paid-for-in-a-full-run',
+  kind: 'image',
+  context: 'A described photo from an earlier full-granularity run.',
+})
+const granResult = await generateDocumentContexts(granProject.id, offlineConfig, 'model', undefined, undefined, { granularity: 'low' })
+
+check('the run indexes exactly the sampled-in photos the estimate quoted', () => {
+  assert.equal(granResult.filesProcessed, 8)
+  assert.equal(granResult.filesSampledOut, 5)
+  for (const file of granIn) {
+    assert.ok(getDocumentFileContext(granProject.id, file), `sampled-in photo has a row: ${path.basename(file)}`)
+  }
+})
+
+check('a sampled-out photo indexed by an earlier run keeps its paid-for context', () => {
+  const preserved = getDocumentFileContext(granProject.id, preservedPath)
+  assert.ok(preserved, 'the context survived the low-granularity run')
+  assert.equal(preserved.context, 'A described photo from an earlier full-granularity run.')
+  for (const file of granOut.slice(1)) {
+    assert.equal(getDocumentFileContext(granProject.id, file), null, `never-indexed sampled-out photo stays invisible: ${path.basename(file)}`)
+  }
+})
+
+fs.rmSync(granDir, { recursive: true, force: true })
+
 check('image file contexts round-trip their kind through the database', () => {
   const imagePath = path.join(estimateDir, 'kindcheck.jpg')
   upsertDocumentFileContext({
@@ -1378,7 +1537,10 @@ check('the background timer can never start photo indexing on its own', () => {
 })
 
 check('skipping images preserves existing photo contexts instead of pruning them', () => {
-  const branch = docSource.slice(docSource.indexOf('if (skipImages) {'), docSource.indexOf('await indexImageFile({'))
+  // Sampled-out photos share the skip branch — the same preservation contract
+  // covers both the hourly timer and a low-granularity run.
+  const branch = docSource.slice(docSource.indexOf('if (skipImages || sampledOut.has(filePath)) {'), docSource.indexOf('await indexImageFile({'))
+  assert.ok(branch.length > 0, 'the shared skip branch exists')
   assert.ok(/fileHashes\.set\(filePath, existingImage\.contentHash\)/.test(branch), 'registers the hash so prune keeps the row')
   assert.ok(/!isFailedContext\(existingImage\.context\)/.test(branch), 'a failed context is not preserved as valid')
   assert.ok(!/upsertDocumentFileContext/.test(branch), 'never writes a failure row for an unindexed photo')

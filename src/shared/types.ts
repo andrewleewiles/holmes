@@ -236,6 +236,18 @@ export interface TierModels {
 
 export type ModelTierConfig = Record<ModelTier, TierModels>
 
+// How much of a photo tree an index run reads. Orthogonal to ModelTier (which
+// model looks) — granularity decides how many photos it looks at. Text
+// documents are always indexed in full: sampling only ever drops photos,
+// because photos are where a source's file count explodes into six figures.
+export type IndexGranularity = 'low' | 'medium' | 'full'
+
+export const INDEX_GRANULARITIES: readonly IndexGranularity[] = ['low', 'medium', 'full'] as const
+
+export function normalizeIndexGranularity(value: unknown): IndexGranularity {
+  return INDEX_GRANULARITIES.includes(value as IndexGranularity) ? (value as IndexGranularity) : 'full'
+}
+
 export interface AppSettings {
   provider: ProviderConfig
   theme: 'light' | 'dark' | 'system'
@@ -247,6 +259,12 @@ export interface AppSettings {
   assistantIcon: string
   // Rotating greetings on the welcome screen. Empty means the bundled defaults.
   welcomeLines: string[]
+  /**
+   * The hand-drawn display face's frame-by-frame "boil". Off freezes it on one
+   * frame — the lettering keeps its drawn character without the motion, which
+   * is also what `prefers-reduced-motion` does on its own.
+   */
+  boilEffectEnabled: boolean
   defaultModel: string
   defaultEffort: ReasoningEffort
   modelTiers: ModelTierConfig
@@ -991,6 +1009,40 @@ export interface RecallSearchResponse {
   durationMs: number
 }
 
+/**
+ * One source the stored answer cited, kept so a past answer stays inspectable
+ * and its files stay openable after the live search state is gone.
+ */
+export interface RecallHistorySource {
+  resultId: string
+  title: string
+  context: string
+  path?: string
+  conversationId?: string
+}
+
+/**
+ * A completed Recall search, as kept for the history list.
+ *
+ * The ranked result list is deliberately not stored: it is search state that
+ * goes stale as files change, and re-running the query rebuilds it. What is
+ * worth keeping is the question, the answer, and what the answer was based on.
+ */
+export interface RecallHistoryEntry {
+  id: string
+  createdAt: number
+  query: string
+  source: RecallSearchSource
+  semantic: boolean
+  answer: string | null
+  answerModel: string | null
+  sources: RecallHistorySource[]
+  resultCount: number
+  expandedQueries: string[]
+  notices: string[]
+  durationMs: number
+}
+
 export interface FsListItem {
   name: string
   path: string
@@ -1351,6 +1403,11 @@ export interface DocumentContextResult {
   filesProcessed: number
   filesGenerated: number
   filesCached: number
+  /**
+   * Photos the run's granularity sampled out — counted so "Indexed N items"
+   * can never silently include photos the model was told not to look at.
+   */
+  filesSampledOut?: number
   foldersProcessed: number
   foldersGenerated: number
   rootContextShort: string | null
@@ -1391,11 +1448,15 @@ export interface IndexEstimate {
   projectId: string | null
   projectName: string | null
   tier: ModelTier
+  granularity: IndexGranularity
   textModel: string
   visionModel: string
   textFiles: number
   imageFiles: number
   skippedFiles: number
+  // Photos the selected granularity samples out: never scanned by the model,
+  // never billed. Distinct from cachedFiles (already summarized, also free).
+  sampledOutFiles: number
   cachedFiles: number
   folders: number
   lines: IndexEstimateLine[]
@@ -1638,6 +1699,19 @@ export interface TimelineEra {
   startDate: string
   endDate: string | null
   summary: string
+}
+
+/**
+ * The home screen's "Ideas" prompts — opening lines generated from the user's
+ * own profile, paged three at a time.
+ */
+export interface HomeIdeasResult {
+  ideas: string[]
+  updatedAt: number
+  /** False when these are the built-in starters rather than profile-grounded. */
+  personalized: boolean
+  /** True when a refresh would produce a new set. */
+  stale: boolean
 }
 
 export interface TimelineSummary {
@@ -2378,7 +2452,8 @@ export interface WebSearchSettings {
   apiKey: string
 }
 
-import type { RemoteDevice, RemotePairingOffer, RemoteServerStatus } from './remote'
+import type { RemoteDevice, RemotePairingOffer, RemoteScope, RemoteServerStatus } from './remote'
+import type { RemoteMediaKind, RemoteMediaTicket } from './remoteMedia'
 
 export interface ElectronAPI {
   conversations: {
@@ -2402,7 +2477,7 @@ export interface ElectronAPI {
     retryMessage: (messageId: string, model: string, effort?: ReasoningEffort, memoryMode?: MemoryMode, context?: ContextSelection) => Promise<void>
     setActiveBranch: (messageId: string) => Promise<void>
     abort: () => void
-    previewSystemPrompt: (conversationId: string, memoryMode: MemoryMode, context?: ContextSelection) => Promise<SystemPromptEntry[]>
+    previewSystemPrompt: (conversationId: string, memoryMode: MemoryMode, context?: ContextSelection, roleId?: string | null) => Promise<SystemPromptEntry[]>
     onChunk: (callback: (chunk: StreamChunk) => void) => () => void
     onSystemPrompt: (callback: (messages: SystemPromptEntry[]) => void) => () => void
   }
@@ -2430,6 +2505,9 @@ export interface ElectronAPI {
     startConversation: (model: string, effort: ReasoningEffort) => Promise<Conversation>
     openFile: (path: string) => Promise<void>
     revealFile: (path: string) => Promise<void>
+    history: () => Promise<RecallHistoryEntry[]>
+    deleteHistory: (id: string) => Promise<RecallHistoryEntry[]>
+    clearHistory: () => Promise<number>
   }
   memory: {
     list: () => Promise<MemoryField[]>
@@ -2532,10 +2610,10 @@ export interface ElectronAPI {
     sidecarAvailable: () => Promise<boolean>
   }
   documents: {
-    generate: (projectId: string, tier?: ModelTier, options?: { sourcePath?: string; force?: boolean }) => Promise<DocumentContextResult>
-    generateAll: (options?: { resume?: boolean; tier?: ModelTier; projectIds?: string[]; force?: boolean }) => Promise<DocumentIndexAllResult>
-    estimate: (projectId: string, tier?: ModelTier, options?: { sourcePath?: string; force?: boolean }) => Promise<IndexEstimate>
-    estimateAll: (tier?: ModelTier, options?: { projectIds?: string[]; force?: boolean }) => Promise<IndexEstimate>
+    generate: (projectId: string, tier?: ModelTier, options?: { sourcePath?: string; force?: boolean; granularity?: IndexGranularity }) => Promise<DocumentContextResult>
+    generateAll: (options?: { resume?: boolean; tier?: ModelTier; projectIds?: string[]; force?: boolean; granularity?: IndexGranularity }) => Promise<DocumentIndexAllResult>
+    estimate: (projectId: string, tier?: ModelTier, options?: { sourcePath?: string; force?: boolean; granularity?: IndexGranularity }) => Promise<IndexEstimate>
+    estimateAll: (tier?: ModelTier, options?: { projectIds?: string[]; force?: boolean; granularity?: IndexGranularity }) => Promise<IndexEstimate>
     getSummaries: () => Promise<ProjectIndexSummary[]>
     abort: () => Promise<DocumentIndexState>
     pause: () => Promise<DocumentIndexState>
@@ -2615,6 +2693,13 @@ export interface ElectronAPI {
     getAudiobook: (bookId: string, chapterIndex: number) => Promise<AudiobookChapter | null>
     listAudiobooks: (bookId: string) => Promise<Audiobook[]>
     deleteAudiobook: (bookId: string, chapterIndex: number) => Promise<void>
+    /**
+     * A short-lived, signed HTTP URL for one book file or audiobook segment.
+     * Remote devices only — from the desktop this throws, because the renderer
+     * reads these files through the app's own protocols and does not need a
+     * credential to do it.
+     */
+    getMediaUrl: (kind: RemoteMediaKind, id: string) => Promise<RemoteMediaTicket>
     planOrganize: (projectId: string, tier?: ModelTier) => Promise<OrganizePlan>
     applyOrganize: (plan: OrganizePlan) => Promise<OrganizeResult>
     onAudiobookProgress: (callback: (progress: AudiobookProgress) => void) => () => void
@@ -2664,6 +2749,10 @@ export interface ElectronAPI {
     clear: () => Promise<void>
     onState: (callback: (state: CreditBreakerState) => void) => () => void
   }
+  ideas: {
+    get: () => Promise<HomeIdeasResult>
+    refresh: (force?: boolean) => Promise<HomeIdeasResult>
+  }
   callHistory: {
     list: (filter?: ProviderCallFilter) => Promise<ProviderCallSummary[]>
     get: (id: string) => Promise<ProviderCall | null>
@@ -2673,7 +2762,7 @@ export interface ElectronAPI {
   remote: {
     getStatus: () => Promise<RemoteServerStatus>
     setEnabled: (enabled: boolean) => Promise<RemoteServerStatus>
-    createPairing: () => Promise<RemotePairingOffer>
+    createPairing: (scope: RemoteScope) => Promise<RemotePairingOffer>
     cancelPairing: () => Promise<void>
     listDevices: () => Promise<RemoteDevice[]>
     revokeDevice: (deviceId: string) => Promise<void>

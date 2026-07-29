@@ -10,6 +10,11 @@ import { AnimatedMark, type MarkState } from './AnimatedMark'
 interface MessageBubbleProps {
   message: Message
   isStreaming?: boolean
+  // True while any turn is streaming. The user bubble for the message being
+  // answered still carries its optimistic client-side id at that point — the
+  // main process wrote the row under a different one — so Edit/Retry/branch
+  // would fire at an id the database has never heard of.
+  turnInFlight?: boolean
   toolInteractions?: StreamingToolInteraction[]
   onEdit?: (messageId: string, newContent: string) => void
   onRetry?: (messageId: string) => void
@@ -20,7 +25,7 @@ function formatDate(timestamp: number): string {
   return new Date(timestamp).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
 }
 
-export const MessageBubble: FC<MessageBubbleProps> = ({ message, isStreaming, toolInteractions, onEdit, onRetry, onSetActiveBranch }) => {
+export const MessageBubble: FC<MessageBubbleProps> = ({ message, isStreaming, turnInFlight, toolInteractions, onEdit, onRetry, onSetActiveBranch }) => {
   const isUser = message.role === 'user'
   const isAssistant = message.role === 'assistant'
   const isTool = message.role === 'tool'
@@ -90,7 +95,7 @@ export const MessageBubble: FC<MessageBubbleProps> = ({ message, isStreaming, to
       <span className="mr-1">{formatDate(message.createdAt)}</span>
 
       {/* Branch navigation */}
-      {hasSiblings && (
+      {hasSiblings && !turnInFlight && (
         <div className="flex items-center gap-0.5 mr-1">
           <button
             onClick={() => goToSibling(-1)}
@@ -124,7 +129,7 @@ export const MessageBubble: FC<MessageBubbleProps> = ({ message, isStreaming, to
       </button>
 
       {/* Edit (user messages only) */}
-      {isUser && !isStreaming && onEdit && (
+      {isUser && !isStreaming && !turnInFlight && onEdit && (
         <button
           onClick={startEdit}
           className="px-1.5 py-0.5 rounded hover:text-white/70 hover:bg-white/5 transition-colors cursor-pointer"
@@ -135,7 +140,7 @@ export const MessageBubble: FC<MessageBubbleProps> = ({ message, isStreaming, to
       )}
 
       {/* Retry */}
-      {(isUser || isAssistant) && !isStreaming && onRetry && (
+      {(isUser || isAssistant) && !isStreaming && !turnInFlight && onRetry && (
         <button
           onClick={() => onRetry(message.id)}
           className="px-1.5 py-0.5 rounded hover:text-white/70 hover:bg-white/5 transition-colors cursor-pointer"
@@ -358,7 +363,7 @@ export const MessageBubble: FC<MessageBubbleProps> = ({ message, isStreaming, to
               <div className="whitespace-pre-wrap text-base">{message.content}</div>
             ) : (
               <div className="font-serif-display">
-                <MarkdownRenderer content={message.content} />
+                <MarkdownRenderer content={message.content} className="prose-lg holmes-response" />
               </div>
             )}
 

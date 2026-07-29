@@ -12,12 +12,12 @@ import type {
   ProvenanceClaim,
   ProvenanceEdge,
   ProjectIndexSummary,
+  IndexGranularity,
   IndexStyle,
   SourceExcerpt,
   UserSuperContext,
 } from '../shared/types'
-import { unzipSync, strFromU8 } from 'fflate'
-import { decodeXmlEntities } from '../shared/xmlText'
+import { extractDocxText, extractPptxText, extractXlsxText } from './documentText'
 import { isLibraryProject } from '../shared/defaultProjects'
 import { peoplePromptSection } from '../shared/people'
 import { timelinePromptSection } from '../shared/timeline'
@@ -32,6 +32,7 @@ import { priceCall, type PriceTable } from './modelPricing'
 import { loadPdfjs } from './pdfjs'
 import { createRateLimiter, type RateLimiter } from './rateLimit'
 import { normalizeIndexStyle, stylePrompts, styleVersion } from './indexStyles'
+import { samplePhotosOut } from './indexSampling'
 import { extractSuperContextMemory, isSuperContextMemoryEnabled } from './superContextMemory'
 import { getBaseUrl, getHeaders, hasProviderCredentials, missingCredentialsError } from './providerEndpoint'
 import { callLLMRetrying, type CallOptions, type SpendTracker } from './llmCall'
@@ -620,67 +621,6 @@ async function extractPdfText(filePath: string, maxChars: number, signal?: Abort
   return text
 }
 
-function extractDocxText(filePath: string, maxChars: number): string {
-  const files = unzipSync(new Uint8Array(fs.readFileSync(filePath)))
-  const doc = files['word/document.xml']
-  if (!doc) return ''
-  const xml = strFromU8(doc)
-  // One line per paragraph rather than one blob: a document flattened to a
-  // single line can only ever be cited as "line 1", which tells a reader nothing.
-  const lines: string[] = []
-  let used = 0
-  for (const paragraph of xml.matchAll(/<w:p\b[^>]*>([\s\S]*?)<\/w:p>/g)) {
-    const runs = [...paragraph[1].matchAll(/<w:t[^>]*>([^<]*)<\/w:t>/g)].map((m) => decodeXmlEntities(m[1]))
-    const line = runs.join('')
-    if (!line.trim()) continue
-    lines.push(line)
-    used += line.length + 1
-    if (used > maxChars) break
-  }
-  return lines.join('\n')
-}
-
-function extractXlsxText(filePath: string, maxChars: number): string {
-  const files = unzipSync(new Uint8Array(fs.readFileSync(filePath)))
-  const sharedXml = files['xl/sharedStrings.xml'] ? strFromU8(files['xl/sharedStrings.xml']) : ''
-  const sharedStrings = [...sharedXml.matchAll(/<t[^>]*>([^<]*)<\/t>/g)].map((m) => decodeXmlEntities(m[1]))
-
-  const sheetNames = Object.keys(files)
-    .filter((name) => /^xl\/worksheets\/sheet\d+\.xml$/.test(name))
-    .sort()
-
-  // One line per spreadsheet row, so a citation names a row a reader can find.
-  const out: string[] = []
-  let used = 0
-  for (const name of sheetNames) {
-    const sheetXml = strFromU8(files[name])
-    if (sheetNames.length > 1) out.push(`# ${name.replace(/^xl\/worksheets\//, '')}`)
-    for (const row of sheetXml.matchAll(/<row\b[^>]*>([\s\S]*?)<\/row>/g)) {
-      const values: string[] = []
-      for (const cell of row[1].matchAll(/<c\b([^>]*)>([\s\S]*?)<\/c>/g)) {
-        const attrs = cell[1]
-        const inner = cell[2]
-        let value = ''
-        if (/\bt="s"/.test(attrs)) {
-          const v = inner.match(/<v[^>]*>([^<]*)<\/v>/)
-          if (v) value = sharedStrings[Number(v[1])] ?? ''
-        } else {
-          const t = inner.match(/<t[^>]*>([^<]*)<\/t>/)
-          const v = inner.match(/<v[^>]*>([^<]*)<\/v>/)
-          value = t ? decodeXmlEntities(t[1]) : v ? v[1] : ''
-        }
-        if (value) values.push(value)
-      }
-      if (values.length === 0) continue
-      const line = values.join('\t')
-      out.push(line)
-      used += line.length + 1
-      if (used > maxChars) return out.join('\n')
-    }
-  }
-  return out.join('\n')
-}
-
 // Reads a file's text content for summarization, dispatching by extension.
 // PDF/XLSX/DOCX are decoded to text; everything else is read as bounded UTF-8.
 export async function readDocumentText(filePath: string, maxChars: number, signal?: AbortSignal): Promise<string> {
@@ -688,6 +628,7 @@ export async function readDocumentText(filePath: string, maxChars: number, signa
   if (ext === '.pdf') return (await extractPdfText(filePath, maxChars, signal)).slice(0, maxChars)
   if (ext === '.docx') return extractDocxText(filePath, maxChars).slice(0, maxChars)
   if (ext === '.xlsx') return extractXlsxText(filePath, maxChars).slice(0, maxChars)
+  if (ext === '.pptx') return extractPptxText(filePath, maxChars).slice(0, maxChars)
   return readTextFileBounded(filePath, maxChars).text
 }
 
@@ -931,6 +872,10 @@ export interface GenerateDocumentContextsOptions {
   // Photo indexing is priced, user-authorized work: the hourly background timer
   // sets this so it can never start a six-figure run of vision calls on its own.
   skipImages?: boolean
+  // How much of the photo tree to read: full indexes every photo, medium/low
+  // read a deterministic per-folder sample (see indexSampling.ts). Text
+  // documents are always indexed in full regardless.
+  granularity?: IndexGranularity
   // Shared across a batch so "Index all" respects one budget across projects
   // rather than resetting the window per project.
   limiter?: RateLimiter
@@ -972,6 +917,11 @@ async function indexProjectSource(
   const scan = scanProjectTextFiles(extraFiles, sourcePath, INDEXABLE_EXTENSIONS, { maxFiles: MAX_INDEXED_FILES, maxEntries: MAX_INDEXED_DIRECTORY_ENTRIES })
   const files = scan.files
 
+  // Sampled over EVERY photo the scan saw (cached or not) so the sample is a
+  // pure function of the tree — the estimator computes the identical set, and
+  // a re-run at the same granularity re-picks the same photos and cache-hits.
+  const sampledOut = samplePhotosOut(files.filter(isImageExtension), options.granularity ?? 'full')
+
   // Pruning treats "the scan did not return this file" as "the file is gone", so
   // it is only ever safe after a scan that actually saw the whole tree. A source
   // on a disconnected external drive scans as zero files, and deleting the cache
@@ -1003,6 +953,7 @@ async function indexProjectSource(
   // Per-file contexts (content-hash cached), generated with bounded concurrency.
   let filesGenerated = 0
   let filesCached = 0
+  let filesSampledOut = 0
   let filesDone = 0
   const fileHashes = new Map<string, string>()
 
@@ -1011,16 +962,21 @@ async function indexProjectSource(
     const relativePath = relativeLabel(base, filePath)
 
     if (isImageExtension(filePath)) {
-      if (skipImages) {
+      if (skipImages || sampledOut.has(filePath)) {
         // Preserve an already-generated photo context (and its hash, so the
         // parent folder's child-hash is unchanged) but never create a new one.
         // An un-indexed photo registers no hash, so it stays invisible to this
         // run and still triggers its folder to resynthesize once indexed.
+        // Sampled-out photos share this exact contract: a low-granularity run
+        // after a full one keeps every context the full run paid for.
+        if (!skipImages) filesSampledOut += 1
         const existingImage = database.getDocumentFileContext(projectId, filePath)
         if (existingImage && !isFailedContext(existingImage.context)) {
           fileHashes.set(filePath, existingImage.contentHash)
           backfillImageProvenance(projectId, existingImage, visionModel)
-          filesCached += 1
+          // A sampled-out photo counts once, as sampled out — not also as
+          // cached — so new + cached + sampled out never exceeds processed.
+          if (skipImages) filesCached += 1
         }
         filesDone += 1
         sendProgress?.({ phase: 'file', message: `Indexed ${filesDone}/${files.length} items`, current: filesDone, total: files.length })
@@ -1281,6 +1237,7 @@ async function indexProjectSource(
     filesProcessed: files.length,
     filesGenerated,
     filesCached,
+    filesSampledOut,
     foldersProcessed,
     foldersGenerated,
     rootContextShort: root?.contextShort ?? null,
@@ -1443,7 +1400,7 @@ export async function generateDocumentContexts(
     return { filesProcessed: 0, filesGenerated: 0, filesCached: 0, foldersProcessed: 0, foldersGenerated: 0, rootContextShort: null, rootContext: null }
   }
 
-  const totals = { filesProcessed: 0, filesGenerated: 0, filesCached: 0, foldersProcessed: 0, foldersGenerated: 0 }
+  const totals = { filesProcessed: 0, filesGenerated: 0, filesCached: 0, filesSampledOut: 0, foldersProcessed: 0, foldersGenerated: 0 }
   const unavailable: string[] = []
   for (let i = 0; i < targets.length; i += 1) {
     if (signal?.aborted) throw new Error('Document context generation cancelled')
@@ -1458,6 +1415,7 @@ export async function generateDocumentContexts(
     totals.filesProcessed += result.filesProcessed
     totals.filesGenerated += result.filesGenerated
     totals.filesCached += result.filesCached
+    totals.filesSampledOut += result.filesSampledOut ?? 0
     totals.foldersProcessed += result.foldersProcessed
     totals.foldersGenerated += result.foldersGenerated
   }

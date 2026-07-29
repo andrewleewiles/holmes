@@ -18,6 +18,7 @@ import {
   isLibraryProject,
   isMediaProjectName,
 } from '@shared/defaultProjects'
+import { PageHeader, PAGE_HEADER_ICON } from './PageHeader'
 import { FileScopePanel } from './FileScopePanel'
 import { BooksSourcePanel } from './BooksSourcePanel'
 import { ProjectIcon } from './ProjectIcon'
@@ -924,24 +925,26 @@ export const DataPage: FC<DataPageProps> = ({
 
   return (
     <div className="flex flex-1 flex-col overflow-y-auto bg-holmes-bg">
-      <div className="sticky top-0 z-30 flex items-center gap-3 border-b border-white/[0.06] bg-holmes-bg/95 px-6 py-3.5 backdrop-blur">
-        <FontAwesomeIcon icon={faDatabase} className="text-[25px] text-holmes-primary" />
-        <h1 className="font-serif-display text-[27px] leading-none text-white/85">Data</h1>
-        <div className="ml-auto flex items-center gap-2">
-          <ProjectVisibilityMenu
-            projects={projects}
-            onToggle={(projectId, visible) => void onUpdate(projectId, { visible })}
-          />
-          <button
-            onClick={() => setBulkOpen(true)}
-            title="Index several sources in one run"
-            className="flex h-[30px] items-center gap-2 rounded-md border border-white/10 bg-white/[0.03] px-3 text-[13px] text-white/60 transition-colors hover:border-white/20 hover:text-white/85 cursor-pointer"
-          >
-            <FontAwesomeIcon icon={faMagnifyingGlassChart} className="text-[13px]" />
-            Bulk Index
-          </button>
-        </div>
-      </div>
+      <PageHeader
+        icon={<FontAwesomeIcon icon={faDatabase} className={PAGE_HEADER_ICON} />}
+        title="Data"
+        actions={
+          <>
+            <ProjectVisibilityMenu
+              projects={projects}
+              onToggle={(projectId, visible) => void onUpdate(projectId, { visible })}
+            />
+            <button
+              onClick={() => setBulkOpen(true)}
+              title="Index several sources in one run"
+              className="flex h-[30px] items-center gap-2 rounded-md border border-white/10 bg-white/[0.03] px-3 text-[13px] text-white/60 transition-colors hover:border-white/20 hover:text-white/85 cursor-pointer"
+            >
+              <FontAwesomeIcon icon={faMagnifyingGlassChart} className="text-[13px]" />
+              Bulk Index
+            </button>
+          </>
+        }
+      />
 
       <div className="mx-auto w-full max-w-6xl px-6 py-5">
         {activityNeedsAttention > 0 && (

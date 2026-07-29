@@ -1,7 +1,7 @@
 import { type FC, type ReactNode, useCallback, useEffect, useRef, useState } from 'react'
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
 import { faRefresh, faFolder, faFileLines, faComments, faLayerGroup, faPause, faStop, faPlay, faClockRotateLeft } from '@fortawesome/free-solid-svg-icons'
-import type { ContextProvenance, DocumentContextTree, DocumentContextProgress, DocumentIndexState, IndexEstimate, ModelTier } from '@shared/types'
+import type { ContextProvenance, DocumentContextTree, DocumentContextProgress, DocumentIndexState, IndexEstimate, IndexGranularity, ModelTier } from '@shared/types'
 import { IndexEstimateBar, formatEstimateCost } from './IndexEstimateBar'
 import { ProvenanceExplorer } from './ProvenanceExplorer'
 import { ProvenanceText, claimCoverage } from './ProvenanceText'
@@ -66,6 +66,7 @@ export const DocumentContextPanel: FC<DocumentContextPanelProps> = ({ projectId,
   const [resultStatus, setResultStatus] = useState<string | null>(null)
   const [invoking, setInvoking] = useState(false)
   const [tier, setTier] = useState<ModelTier>(defaultTier)
+  const [granularity, setGranularity] = useState<IndexGranularity>('full')
   const [estimate, setEstimate] = useState<IndexEstimate | null>(null)
   const [estimating, setEstimating] = useState(false)
   const [estimateError, setEstimateError] = useState<string | null>(null)
@@ -102,7 +103,7 @@ export const DocumentContextPanel: FC<DocumentContextPanelProps> = ({ projectId,
     setEstimating(true)
     setEstimateError(null)
     try {
-      setEstimate(await window.electronAPI.documents.estimate(projectId, tier, { sourcePath: sourcePath ?? undefined, force: forceReindex }))
+      setEstimate(await window.electronAPI.documents.estimate(projectId, tier, { sourcePath: sourcePath ?? undefined, force: forceReindex, granularity }))
     } catch (err) {
       setEstimateError(err instanceof Error ? err.message : 'Estimate failed')
     } finally {
@@ -114,7 +115,7 @@ export const DocumentContextPanel: FC<DocumentContextPanelProps> = ({ projectId,
   useEffect(() => {
     setEstimate(null)
     setEstimateError(null)
-  }, [projectId, tier, enabled, hasDirectory, reloadKey, forceReindex])
+  }, [projectId, tier, granularity, enabled, hasDirectory, reloadKey, forceReindex])
 
   const indexState = useDocumentIndexState()
   useDocumentIndexProgress((p) => {
@@ -157,7 +158,7 @@ export const DocumentContextPanel: FC<DocumentContextPanelProps> = ({ projectId,
     setResultStatus(null)
     setProgress(null)
     try {
-      const result = await window.electronAPI.documents.generate(projectId, tier, { sourcePath: sourcePath ?? undefined, force: forceReindex })
+      const result = await window.electronAPI.documents.generate(projectId, tier, { sourcePath: sourcePath ?? undefined, force: forceReindex, granularity })
       await loadTree()
       setHistoryReloadKey((k) => k + 1)
       if (result.outcome === 'paused' || result.outcome === 'stopped') {
@@ -170,7 +171,10 @@ export const DocumentContextPanel: FC<DocumentContextPanelProps> = ({ projectId,
         const spent = result.spent && result.spent.callsMade > 0
           ? ` Spent ${formatEstimateCost(result.spent.costUsd)} across ${result.spent.callsMade.toLocaleString()} calls.`
           : ''
-        setResultStatus(`Indexed ${result.filesProcessed} item${result.filesProcessed === 1 ? '' : 's'} — ${result.filesGenerated} new, ${result.filesCached} cached.${spent}`)
+        const sampled = result.filesSampledOut
+          ? `, ${result.filesSampledOut.toLocaleString()} photo${result.filesSampledOut === 1 ? '' : 's'} sampled out`
+          : ''
+        setResultStatus(`Indexed ${result.filesProcessed} item${result.filesProcessed === 1 ? '' : 's'} — ${result.filesGenerated} new, ${result.filesCached} cached${sampled}.${spent}`)
         onIndexed?.()
       }
     } catch (err) {
@@ -305,6 +309,8 @@ export const DocumentContextPanel: FC<DocumentContextPanelProps> = ({ projectId,
               loading={estimating}
               tier={tier}
               onTierChange={setTier}
+              granularity={granularity}
+              onGranularityChange={setGranularity}
               onEstimate={() => void handleEstimate()}
               disabled={runActive || invoking}
               error={estimateError}

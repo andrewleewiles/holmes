@@ -240,6 +240,7 @@ export const ChatView: FC<ChatViewProps> = ({
               )}
               <MessageBubble
                 message={msg}
+                turnInFlight={isStreaming}
                 onEdit={onEditMessage}
                 onRetry={onRetryMessage}
                 onSetActiveBranch={onSetActiveBranch}

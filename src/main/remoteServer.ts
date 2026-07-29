@@ -7,11 +7,14 @@ import * as settings from './settings'
 import { withProviderCallFeature } from './callLog'
 import { broadcast, getHandler, setRemoteForwarder, type CallerEvent, type CallerSender } from './remoteBridge'
 import { createWebSocketServer, type WsConnection, type WsServer } from './wsServer'
+import { handleRemoteMediaRequest, setRemoteMediaOrigin, startRemoteMedia, stopRemoteMedia } from './remoteMedia'
 import {
+  derivePairingKeys,
   deriveSessionKeys,
   generateEphemeralKeyPair,
   generatePairingCode,
   open as openSealed,
+  pairingBindTag,
   pairingCodeMatches,
   publicKeyToRaw,
   rawToPrivateKey,
@@ -25,10 +28,14 @@ import {
   REMOTE_PROTOCOL_VERSION,
   REMOTE_WS_PATH,
   isRemoteCallable,
+  isRemoteEvent,
   type RemoteErrorCode,
   type RemoteFrame,
   type RemoteMessage,
+  type RemotePairPayload,
+  type RemotePairedPayload,
   type RemotePairingOffer,
+  type RemoteScope,
   type RemoteServerStatus,
 } from '../shared/remote'
 
@@ -40,8 +47,15 @@ const TAILSCALE_PATHS = [
   '/Applications/Tailscale.app/Contents/MacOS/Tailscale',
 ]
 
+/** The half-open pairing exchange, alive only for one socket. */
+interface PairExchange {
+  keys: SessionKeys
+}
+
 interface Session {
   deviceId: string
+  /** Read from the device row at handshake time, never from anything the client sends. */
+  scope: RemoteScope
   connection: WsConnection
   keys: SessionKeys
   sendCounter: number
@@ -97,7 +111,7 @@ function createSender(getSession: () => Session | undefined, destroyListeners: S
 }
 
 async function dispatch(session: Session, id: number, channel: string, args: unknown[]): Promise<void> {
-  if (!isRemoteCallable(channel)) {
+  if (!isRemoteCallable(channel, session.scope)) {
     sealedSend(session, { k: 'res', id, ok: false, error: `${channel} is not available to a remote device`, code: 'channel-denied' })
     return
   }
@@ -108,7 +122,7 @@ async function dispatch(session: Session, id: number, channel: string, args: unk
     return
   }
 
-  const event: CallerEvent = { sender: session.sender, remote: { deviceId: session.deviceId } }
+  const event: CallerEvent = { sender: session.sender, remote: { deviceId: session.deviceId, scope: session.scope } }
 
   try {
     // Same wrapper the renderer path gets from callLog, so a call the phone
@@ -127,40 +141,101 @@ async function dispatch(session: Session, id: number, channel: string, args: unk
   }
 }
 
-function handlePaired(connection: WsConnection, frame: Extract<RemoteFrame, { t: 'pair' }>): void {
+function handlePairHello(connection: WsConnection, frame: Extract<RemoteFrame, { t: 'pair-hello' }>): PairExchange | null {
   if (!pairing) {
-    fail(connection, 'pairing-closed', 'This Mac is not accepting new devices right now')
+    fail(connection, 'pair-not-offered', 'This Mac is not accepting new devices right now')
+    return null
+  }
+  if (Date.now() > pairing.expiresAt) {
+    clearPairing()
+    publishStatus()
+    fail(connection, 'pairing-closed', 'The pairing code expired')
+    return null
+  }
+
+  let clientEphemeralPub: Buffer
+  try {
+    clientEphemeralPub = publicKeyToRaw(rawToPublicKey(frame.clientEphemeralPub))
+  } catch {
+    fail(connection, 'bad-frame', 'The device sent an invalid key')
+    return null
+  }
+
+  const serverKey = settings.getRemoteServerKey()
+  const serverStaticPub = Buffer.from(serverKey.publicKey, 'base64')
+
+  const keys = derivePairingKeys({
+    role: 'server',
+    staticPrivate: rawToPrivateKey(serverKey.privateKey),
+    peerPublic: rawToPublicKey(clientEphemeralPub),
+    serverStaticPub,
+    clientEphemeralPub,
+  })
+
+  connection.send(JSON.stringify({
+    t: 'pair-offer',
+    serverStaticPub: serverKey.publicKey,
+    // Proves to the client that whoever sent this key also knows the code on
+    // the Mac's screen. Without it the key is trust-on-first-use over an
+    // untrusted path.
+    tag: pairingBindTag(pairing.code, serverStaticPub, clientEphemeralPub),
+  }))
+
+  return { keys }
+}
+
+function handlePaired(connection: WsConnection, exchange: PairExchange, frame: Extract<RemoteFrame, { t: 'pair' }>): void {
+  if (!pairing) {
+    fail(connection, 'pair-not-offered', 'This Mac is not accepting new devices right now')
     return
   }
   if (Date.now() > pairing.expiresAt) {
     clearPairing()
+    publishStatus()
     fail(connection, 'pairing-closed', 'The pairing code expired')
     return
   }
-  if (typeof frame.code !== 'string' || !pairingCodeMatches(pairing.code, frame.code)) {
+
+  let payload: RemotePairPayload
+  try {
+    payload = JSON.parse(openSealed(exchange.keys.clientToServer, 1, frame.d).toString('utf8')) as RemotePairPayload
+  } catch {
+    // Only the holder of this Mac's static private key can produce a frame that
+    // opens here, so a failure means the client sealed to somebody else's key.
+    fail(connection, 'pair-untrusted', 'That pairing attempt could not be authenticated')
+    return
+  }
+
+  if (typeof payload.code !== 'string' || !pairingCodeMatches(pairing.code, payload.code)) {
     fail(connection, 'bad-pairing-code', 'That pairing code is not correct')
     return
   }
 
   let publicKey: string
   try {
-    publicKey = publicKeyToRaw(rawToPublicKey(frame.clientStaticPub)).toString('base64')
+    publicKey = publicKeyToRaw(rawToPublicKey(payload.clientStaticPub)).toString('base64')
   } catch {
     fail(connection, 'bad-frame', 'The device sent an invalid key')
     return
   }
 
-  const name = typeof frame.deviceName === 'string' && frame.deviceName.trim() ? frame.deviceName.trim().slice(0, 64) : 'iPhone'
-  const platform = typeof frame.platform === 'string' ? frame.platform.trim().slice(0, 32) : ''
+  const name = typeof payload.deviceName === 'string' && payload.deviceName.trim() ? payload.deviceName.trim().slice(0, 64) : 'iPhone'
+  const platform = typeof payload.platform === 'string' ? payload.platform.trim().slice(0, 32) : ''
 
-  const device = database.createRemoteDevice({ name, platform, publicKey })
+  // The scope comes from the offer the user created, never from the frame: the
+  // device asking to be paired does not get to say what it may reach.
+  const device = database.createRemoteDevice({ name, platform, publicKey, scope: pairing.scope })
   // Single use: a code that stays live is a code that gets shoulder-surfed.
   clearPairing()
 
-  connection.send(JSON.stringify({
-    t: 'paired',
+  const reply: RemotePairedPayload = {
     deviceId: device.id,
     serverStaticPub: settings.getRemoteServerKey().publicKey,
+    scope: device.scope,
+  }
+  connection.send(JSON.stringify({
+    t: 'paired',
+    d: seal(exchange.keys.serverToClient, 1, Buffer.from(JSON.stringify(reply), 'utf8')),
   }))
   connection.close()
   publishStatus()
@@ -205,6 +280,7 @@ function handleHello(connection: WsConnection, frame: Extract<RemoteFrame, { t: 
   const destroyListeners = new Set<() => void>()
   const session: Session = {
     deviceId: device.id,
+    scope: device.scope,
     connection,
     keys,
     sendCounter: 0,
@@ -236,6 +312,7 @@ function handleHello(connection: WsConnection, frame: Extract<RemoteFrame, { t: 
 
 function onConnection(connection: WsConnection): void {
   let session: Session | null = null
+  let pairExchange: PairExchange | null = null
 
   connection.onMessage((raw) => {
     let frame: RemoteFrame
@@ -251,12 +328,29 @@ function onConnection(connection: WsConnection): void {
       return
     }
 
+    if (frame.t === 'pair-hello') {
+      if (frame.v !== REMOTE_PROTOCOL_VERSION) {
+        fail(connection, 'protocol-version', 'This app version cannot pair with this Mac')
+        return
+      }
+      if (pairExchange) {
+        fail(connection, 'bad-frame', 'Pairing already started')
+        return
+      }
+      pairExchange = handlePairHello(connection, frame)
+      return
+    }
+
     if (frame.t === 'pair') {
       if (frame.v !== REMOTE_PROTOCOL_VERSION) {
         fail(connection, 'protocol-version', 'This app version cannot pair with this Mac')
         return
       }
-      handlePaired(connection, frame)
+      if (!pairExchange) {
+        fail(connection, 'bad-frame', 'Say pair-hello first')
+        return
+      }
+      handlePaired(connection, pairExchange, frame)
       return
     }
 
@@ -310,6 +404,10 @@ function onConnection(connection: WsConnection): void {
 
 function forwardToDevices(channel: string, args: unknown[]): void {
   for (const session of sessions.values()) {
+    // Broadcasts fan out to every device, so the scope has to be re-checked per
+    // session — otherwise a guest reading a book receives the owner's chat
+    // stream as it is generated.
+    if (!isRemoteEvent(channel, session.scope)) continue
     sealedSend(session, { k: 'evt', channel, args })
   }
 }
@@ -360,7 +458,7 @@ function publishStatus(): void {
   broadcast(IPC.REMOTE.STATUS, getStatus())
 }
 
-export async function createPairingOffer(): Promise<RemotePairingOffer> {
+export async function createPairingOffer(scope: RemoteScope): Promise<RemotePairingOffer> {
   if (!server) throw new Error('Turn on remote access first')
 
   clearPairing()
@@ -371,6 +469,7 @@ export async function createPairingOffer(): Promise<RemotePairingOffer> {
     host,
     port: server.port,
     serverStaticPub: settings.getRemoteServerKey().publicKey,
+    scope,
   }
 
   pairing = offer
@@ -409,10 +508,20 @@ export async function startRemoteServer(): Promise<void> {
         path: REMOTE_WS_PATH,
         maxPayloadBytes: REMOTE_MAX_FRAME_BYTES,
         onConnection,
+        // Bulk media shares the port but not the protocol: it authenticates
+        // itself with a per-resource token minted over the sealed socket, and
+        // anything it does not claim still gets 426.
+        onRequest: handleRemoteMediaRequest,
       })
       lastError = null
       setRemoteForwarder(forwardToDevices)
-      void detectHost().then(() => publishStatus())
+      // The signing key is minted per run, so turning remote access off and on
+      // again invalidates every URL that was handed out.
+      startRemoteMedia({ host: detectedHost ?? 'localhost', port: server.port })
+      void detectHost().then((host) => {
+        setRemoteMediaOrigin({ host, port: server?.port ?? settings.getRemotePort() })
+        publishStatus()
+      })
     } catch (error) {
       server = null
       lastError = error instanceof Error ? error.message : 'Could not start remote access'
@@ -428,6 +537,7 @@ export async function startRemoteServer(): Promise<void> {
 export async function stopRemoteServer(): Promise<void> {
   clearPairing()
   setRemoteForwarder(null)
+  stopRemoteMedia()
   for (const session of sessions.values()) session.connection.close()
   sessions.clear()
 

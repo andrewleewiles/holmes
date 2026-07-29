@@ -45,6 +45,7 @@ const {
   initDatabase,
   listProjects,
   getProjectById,
+  createProject,
   addProjectSource,
   listBooks,
   getBookById,
@@ -420,6 +421,123 @@ await checkAsync('an unreadable root reports incompleteness and shelves nothing 
   assert.ok(result.unreadableRoots.length > 0)
   // And nothing was pruned on the strength of a partial view.
   assert.equal(listBooks(ghostProject.id).length, 3)
+})
+
+// --- books that move on disk ----------------------------------------------------
+// Its own project, and its own folder: the Books project above now has an
+// unreadable root, and an incomplete scan deliberately decides nothing about
+// what is missing.
+console.log('moved books')
+
+const moveDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'holmes-moved-')))
+const moveProject = createProject({ name: 'Moved Books', icon: 'book-open', color: '#a78bfa' })
+addProjectSource(moveProject.id, moveDir)
+const wanderer = () => listBooks(moveProject.id).find((book) => book.title === 'The Wandering Book')
+
+await checkAsync('a book moved on disk keeps its entry instead of being shelved twice', async () => {
+  fs.writeFileSync(path.join(moveDir, 'wandering.epub'), buildEpub({
+    title: 'The Wandering Book', authors: ['Ada Lovelace'], chapters: FIXTURE_CHAPTERS,
+  }))
+  await scanLibrary(moveProject.id)
+  const before = wanderer()
+  updateReadingState(before.id, { status: 'reading', furthestCharOffset: 99, progressPercent: 40 })
+
+  // What the user does in Finder: the same bytes, a new path.
+  const nested = path.join(moveDir, 'Ada Lovelace')
+  fs.mkdirSync(nested)
+  fs.renameSync(path.join(moveDir, 'wandering.epub'), path.join(nested, 'wandering.epub'))
+
+  const result = await scanLibrary(moveProject.id)
+  assert.equal(result.booksMoved, 1)
+  assert.equal(result.booksAdded, 0, 'a book that moved is not a new book')
+  assert.equal(result.booksMissing, 0, 'and the path it left is not a book that went missing')
+
+  const shelf = listBooks(moveProject.id)
+  assert.equal(shelf.length, 1, 'one book on disk is one book on the shelf')
+  assert.equal(shelf[0].id, before.id, 'the same entry, so the reading record came with it')
+  assert.equal(shelf[0].filePath, path.join(nested, 'wandering.epub'))
+  assert.ok(!shelf[0].missingSince)
+  assert.equal(ensureReadingState(shelf[0].id).furthestCharOffset, 99)
+})
+
+await checkAsync('a second copy of the same book is a second entry, not a move', async () => {
+  const source = path.join(moveDir, 'Ada Lovelace', 'wandering.epub')
+  fs.copyFileSync(source, path.join(moveDir, 'wandering-copy.epub'))
+
+  const result = await scanLibrary(moveProject.id)
+  assert.equal(result.booksAdded, 1, 'the original is still where it was, so this is a copy')
+  assert.equal(result.booksMoved, 0)
+  assert.equal(listBooks(moveProject.id).length, 2)
+})
+
+await checkAsync('entries split by an earlier move are folded back into one', async () => {
+  // The shelf as an older scanner left it: the same book at two paths, one of
+  // them about to become a ghost. Only the ghost carries the reading history.
+  const original = wanderer()
+  const copy = listBooks(moveProject.id).find((book) => book.id !== original.id)
+  updateReadingState(original.id, { status: 'finished', secondsRead: 600, notes: 'Worth rereading' })
+  recordReadingSession({
+    bookId: original.id,
+    startedAt: '2026-01-01T10:00:00.000Z',
+    endedAt: '2026-01-01T10:30:00.000Z',
+    chapterStart: 0, chapterEnd: 1, charsAdvanced: 400, seconds: 1800,
+  })
+  insertBookAnnotation({
+    runId: null, bookId: original.id, chapterIndex: 0, charStart: 0, charEnd: 5,
+    quote: 'It was', prefix: '', suffix: '', kind: 'note', label: '', body: 'mine',
+    origin: 'user', pinned: false, anchorStatus: 'exact',
+  })
+
+  fs.rmSync(original.filePath)
+  const result = await scanLibrary(moveProject.id)
+  assert.equal(result.booksMerged, 1)
+
+  const shelf = listBooks(moveProject.id)
+  assert.equal(shelf.length, 1, 'the book is shown once, not once per path it has had')
+  assert.equal(shelf[0].id, copy.id, 'the entry that survives is the one whose file exists')
+  assert.equal(shelf[0].filePath, path.join(moveDir, 'wandering-copy.epub'))
+
+  // Everything the ghost carried came across: the record is the union of both.
+  const reading = ensureReadingState(copy.id)
+  assert.equal(reading.status, 'finished')
+  assert.equal(reading.furthestCharOffset, 99)
+  assert.equal(reading.secondsRead, 600)
+  assert.equal(reading.notes, 'Worth rereading')
+  assert.equal(listReadingSessions(copy.id).length, 1, 'sessions follow the book they describe')
+  assert.equal(countBookArtifacts([copy.id]).get(copy.id).annotations, 1, 'and so do hand-written notes')
+  assert.equal(listReadingSessions(original.id).length, 0)
+})
+
+await checkAsync('an unreadable file that moved is one entry too, matched on size and name', async () => {
+  // A file that will not parse has no text to hash, so it is matched the only
+  // other way it can be. Nothing is derived from it, so a weaker key is cheap.
+  fs.writeFileSync(path.join(moveDir, 'not-a-book.epub'), Buffer.from('definitely not a zip'))
+  await scanLibrary(moveProject.id)
+  const before = listBooks(moveProject.id).find((book) => book.status === 'failed')
+  assert.ok(before, 'an unreadable file still reaches the shelf')
+
+  fs.renameSync(path.join(moveDir, 'not-a-book.epub'), path.join(moveDir, 'Ada Lovelace', 'not-a-book.epub'))
+  const result = await scanLibrary(moveProject.id)
+  assert.equal(result.booksMerged, 1)
+
+  const failed = listBooks(moveProject.id).filter((book) => book.status === 'failed')
+  assert.equal(failed.length, 1, 'one unreadable file is one unreadable entry')
+  assert.ok(!failed[0].missingSince)
+  assert.equal(failed[0].filePath, path.join(moveDir, 'Ada Lovelace', 'not-a-book.epub'))
+})
+
+await checkAsync('a missing book with no twin on disk is left alone', async () => {
+  fs.writeFileSync(path.join(moveDir, 'only-copy.epub'), buildEpub({
+    title: 'The Only Copy', authors: ['Grace Hopper'], chapters: [FIXTURE_CHAPTERS[0]],
+  }))
+  await scanLibrary(moveProject.id)
+  fs.rmSync(path.join(moveDir, 'only-copy.epub'))
+
+  const result = await scanLibrary(moveProject.id)
+  assert.equal(result.booksMissing, 1)
+  assert.equal(result.booksMerged, 0, 'nothing to fold it into is not a reason to delete it')
+  const gone = listBooks(moveProject.id).find((book) => book.title === 'The Only Copy')
+  assert.ok(gone?.missingSince, 'a book whose file went away still says so')
 })
 
 // --- reading ------------------------------------------------------------------

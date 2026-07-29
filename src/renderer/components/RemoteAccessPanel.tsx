@@ -1,7 +1,13 @@
 import { useCallback, useEffect, useState } from 'react'
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
 import { faMobileScreen, faRotate, faTrash, faTriangleExclamation } from '@fortawesome/free-solid-svg-icons'
-import type { RemoteDevice, RemoteServerStatus } from '@shared/remote'
+import { REMOTE_DEFAULT_PORT } from '@shared/remote'
+import type { RemoteDevice, RemoteScope, RemoteServerStatus } from '@shared/remote'
+
+const SCOPE_OPTIONS: Array<{ value: RemoteScope; label: string; hint: string }> = [
+  { value: 'owner', label: 'Full access', hint: 'Your own phone: chat, memory, health, timeline and the library.' },
+  { value: 'media', label: 'Media only', hint: 'Someone else: browse and read the library. Nothing personal.' },
+]
 
 function formatLastSeen(lastSeenAt: number | null): string {
   if (!lastSeenAt) return 'never connected'
@@ -19,6 +25,10 @@ export function RemoteAccessPanel(): React.ReactElement {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [now, setNow] = useState(Date.now())
+  // Defaults to the narrower scope: pairing a guest with everything must be a
+  // choice, not what happens when the user does not look at this control.
+  const [pairScope, setPairScope] = useState<RemoteScope>('media')
+  const [confirmingEnable, setConfirmingEnable] = useState(false)
 
   const refreshDevices = useCallback(async () => {
     setDevices(await window.electronAPI.remote.listDevices())
@@ -63,10 +73,11 @@ export function RemoteAccessPanel(): React.ReactElement {
         <div className="min-w-0">
           <div className="text-sm font-medium text-white/80">Remote access</div>
           <p className="mt-1 text-xs leading-relaxed text-white/40">
-            Lets the Holmes app on your iPhone talk to this Mac over your tailnet. The phone stores nothing:
+            Lets the Holmes app on a phone talk to this Mac over your tailnet. The phone stores nothing:
             every answer, and your provider key, stay here. <span className="text-white/55">Chat and read-only
-            browsing only</span> — a paired phone cannot read or write files, change your file access scope,
-            see your provider key, or pair another device.
+            browsing only</span> — no paired device can read or write files, change your file access scope,
+            see your provider key, or pair another device. A <span className="text-white/55">Media only</span>
+            device is narrower still: the library, and nothing personal.
           </p>
         </div>
         <label className="relative inline-flex items-center cursor-pointer shrink-0">
@@ -74,7 +85,15 @@ export function RemoteAccessPanel(): React.ReactElement {
             type="checkbox"
             checked={enabled}
             disabled={busy}
-            onChange={(e) => void run(async () => setStatus(await window.electronAPI.remote.setEnabled(e.target.checked)))}
+            onChange={(e) => {
+              if (e.target.checked) {
+                setError(null)
+                setConfirmingEnable(true)
+                return
+              }
+              setConfirmingEnable(false)
+              void run(async () => setStatus(await window.electronAPI.remote.setEnabled(false)))
+            }}
             className="sr-only peer"
           />
           <div className="w-11 h-6 bg-white/10 rounded-full peer peer-checked:bg-sky-500 transition-colors after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-transform peer-checked:after:translate-x-5"></div>
@@ -85,6 +104,55 @@ export function RemoteAccessPanel(): React.ReactElement {
         <div className="mt-3 flex items-start gap-2 rounded-lg border border-red-400/20 bg-red-400/[0.07] p-2.5 text-[11px] text-red-100/70">
           <FontAwesomeIcon icon={faTriangleExclamation} className="mt-0.5 shrink-0" />
           <span className="min-w-0 flex-1">{error}</span>
+        </div>
+      )}
+
+      {confirmingEnable && !enabled && (
+        <div className="mt-3 rounded-lg border border-amber-300/25 bg-amber-300/[0.06] p-3">
+          <div className="flex items-start gap-2">
+            <FontAwesomeIcon icon={faTriangleExclamation} className="mt-0.5 shrink-0 text-amber-200/70" />
+            <div className="min-w-0 flex-1">
+              <div className="text-xs font-medium text-amber-50/85">Turn on remote access?</div>
+              <ul className="mt-2 space-y-1.5 text-[11px] leading-relaxed text-white/45">
+                <li>
+                  This Mac starts listening for connections on port{' '}
+                  <span className="text-white/65">{status?.port ?? REMOTE_DEFAULT_PORT}</span>. It stays
+                  listening until you turn this off.
+                </li>
+                <li>
+                  Only devices you pair can connect, and only to an explicit allowlist of channels.
+                  Everything not on that list is denied, including your provider key.
+                </li>
+                <li>
+                  The session encryption and the server behind it are hand-rolled and have not been
+                  independently audited. Use this on a network you trust.
+                </li>
+              </ul>
+              <div className="mt-3 flex items-center gap-2">
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() =>
+                    void run(async () => {
+                      setStatus(await window.electronAPI.remote.setEnabled(true))
+                      setConfirmingEnable(false)
+                    })
+                  }
+                  className="rounded-md bg-amber-300/15 px-2.5 py-1 text-[11px] text-amber-50/85 transition-colors hover:bg-amber-300/25 disabled:opacity-50"
+                >
+                  Turn on remote access
+                </button>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => setConfirmingEnable(false)}
+                  className="rounded-md px-2.5 py-1 text-[11px] text-white/40 transition-colors hover:text-white/70 disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          </div>
         </div>
       )}
 
@@ -112,6 +180,12 @@ export function RemoteAccessPanel(): React.ReactElement {
               <div className="mt-3 space-y-1 text-[11px] text-white/45">
                 <div>Host <span className="font-mono text-white/70">{pairing.host}</span></div>
                 <div>Port <span className="font-mono text-white/70">{pairing.port}</span></div>
+                <div>
+                  Access{' '}
+                  <span className={pairing.scope === 'owner' ? 'text-amber-200/80' : 'text-white/70'}>
+                    {pairing.scope === 'owner' ? 'Full access' : 'Media only'}
+                  </span>
+                </div>
               </div>
               <div className="mt-3 flex items-center justify-between gap-3">
                 <span className="text-[11px] text-white/30">
@@ -126,13 +200,36 @@ export function RemoteAccessPanel(): React.ReactElement {
               </div>
             </div>
           ) : (
-            <button
-              disabled={busy || !status.listening}
-              onClick={() => void run(() => window.electronAPI.remote.createPairing())}
-              className="flex items-center gap-2 rounded-lg bg-white/[0.06] px-3 py-2 text-xs text-white/70 transition-colors hover:bg-white/10 disabled:opacity-40 cursor-pointer"
-            >
-              <FontAwesomeIcon icon={faMobileScreen} /> Pair a device
-            </button>
+            <div className="space-y-2.5">
+              <div className="text-[10px] font-medium uppercase tracking-wider text-white/35">
+                What this device may reach
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                {SCOPE_OPTIONS.map((option) => (
+                  <button
+                    key={option.value}
+                    onClick={() => setPairScope(option.value)}
+                    className={`rounded-lg border px-3 py-2 text-left transition-colors cursor-pointer ${
+                      pairScope === option.value
+                        ? 'border-sky-400/30 bg-sky-500/[0.08]'
+                        : 'border-white/[0.07] bg-white/[0.02] hover:bg-white/[0.05]'
+                    }`}
+                  >
+                    <div className={`text-xs ${pairScope === option.value ? 'text-white/85' : 'text-white/60'}`}>
+                      {option.label}
+                    </div>
+                    <div className="mt-0.5 text-[10px] leading-relaxed text-white/35">{option.hint}</div>
+                  </button>
+                ))}
+              </div>
+              <button
+                disabled={busy || !status.listening}
+                onClick={() => void run(() => window.electronAPI.remote.createPairing(pairScope))}
+                className="flex items-center gap-2 rounded-lg bg-white/[0.06] px-3 py-2 text-xs text-white/70 transition-colors hover:bg-white/10 disabled:opacity-40 cursor-pointer"
+              >
+                <FontAwesomeIcon icon={faMobileScreen} /> Pair a device
+              </button>
+            </div>
           )}
 
           <div>
@@ -162,6 +259,15 @@ export function RemoteAccessPanel(): React.ReactElement {
                         <div className="flex items-center gap-2 text-xs text-white/70">
                           {connected && <span className="h-1.5 w-1.5 rounded-full bg-sky-400" />}
                           <span className="truncate">{device.name}</span>
+                          <span
+                            className={`shrink-0 rounded px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wider ${
+                              device.scope === 'owner'
+                                ? 'bg-amber-400/[0.12] text-amber-200/70'
+                                : 'bg-white/[0.06] text-white/40'
+                            }`}
+                          >
+                            {device.scope === 'owner' ? 'Full access' : 'Media only'}
+                          </span>
                         </div>
                         <div className="mt-0.5 text-[10px] text-white/30">
                           {connected ? 'connected now' : formatLastSeen(device.lastSeenAt)}

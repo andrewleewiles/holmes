@@ -53,6 +53,9 @@ export const IPC = {
     START_CONVERSATION: 'recall:start-conversation',
     OPEN_FILE: 'recall:open-file',
     REVEAL_FILE: 'recall:reveal-file',
+    HISTORY: 'recall:history',
+    DELETE_HISTORY: 'recall:delete-history',
+    CLEAR_HISTORY: 'recall:clear-history',
   },
   MEMORY: {
     LIST: 'memory:list',
@@ -178,6 +181,10 @@ export const IPC = {
     GET_STATE: 'people:get-state',
     STATE: 'people:state',
   },
+  IDEAS: {
+    GET: 'ideas:get',
+    REFRESH: 'ideas:refresh',
+  },
   CONTEXT_VERSIONS: {
     LIST: 'context-versions:list',
     GET: 'context-versions:get',
@@ -260,6 +267,9 @@ export const IPC = {
     LIST_AUDIOBOOKS: 'library:list-audiobooks',
     DELETE_AUDIOBOOK: 'library:delete-audiobook',
     AUDIOBOOK_PROGRESS: 'library:audiobook-progress',
+    // bulk media over HTTP, for bytes that do not belong in a JSON frame.
+    // Remote devices only — see docs/ios-app.md "Bulk media".
+    GET_MEDIA_URL: 'library:get-media-url',
     // file organisation
     PLAN_ORGANIZE: 'library:plan-organize',
     APPLY_ORGANIZE: 'library:apply-organize',

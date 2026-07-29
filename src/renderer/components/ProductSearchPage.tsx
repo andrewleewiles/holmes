@@ -23,6 +23,7 @@ import type {
   ReasoningEffort,
 } from '@shared/types'
 import { ModelSelector } from './ModelSelector'
+import { PageHeader, PAGE_HEADER_ICON } from './PageHeader'
 import { useAssistantIdentity } from '../hooks/useAssistantIdentity'
 
 interface ProductSearchPageProps {
@@ -228,24 +229,16 @@ export const ProductSearchPage: FC<ProductSearchPageProps> = ({
   }
 
   return (
-    <div className="flex-1 overflow-y-auto bg-holmes-bg">
+    <div className="flex flex-1 flex-col overflow-y-auto bg-holmes-bg">
+      <PageHeader
+        icon={<FontAwesomeIcon icon={faBagShopping} className={PAGE_HEADER_ICON} />}
+        title="Product Search"
+      />
+
       <div className="mx-auto w-full max-w-6xl p-6 sm:p-8">
-        <header className="mb-7 flex items-start gap-3">
-          <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-holmes-primary/15 text-holmes-primary">
-            <FontAwesomeIcon icon={faBagShopping} className="text-lg" />
-          </span>
-          <div className="min-w-0 flex-1">
-            <div className="flex flex-wrap items-center gap-2">
-              <h1 className="text-xl font-medium text-white/85 font-serif-display">Product Search</h1>
-              <span className="rounded-full border border-holmes-primary/25 bg-holmes-primary/10 px-2 py-0.5 text-[9px] font-semibold tracking-[0.13em] text-holmes-primary-light">
-                LIVE WEB RESEARCH
-              </span>
-            </div>
-            <p className="mt-1 max-w-2xl text-xs leading-relaxed text-white/40">
-              Compare current products across retailers, manufacturer specifications, and independent reviews. {assistantName} ranks the evidence using your priorities.
-            </p>
-          </div>
-        </header>
+        <p className="mb-6 max-w-2xl text-xs leading-relaxed text-white/40">
+          Compare current products across retailers, manufacturer specifications, and independent reviews. {assistantName} ranks the evidence using your priorities.
+        </p>
 
         <section className="overflow-hidden rounded-2xl border border-white/10 bg-holmes-surface">
           <div className="border-b border-white/[0.06] p-5">

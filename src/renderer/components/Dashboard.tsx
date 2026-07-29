@@ -5,6 +5,7 @@ import type { Project, HealthRecord, HealthLiveStatus, ActivityRecord, ActivityS
 import lifeIconGreen from '../../../assets/lifeIconGreen.svg'
 import { isDashboardProject } from '@shared/defaultProjects'
 import { ProjectIcon } from './ProjectIcon'
+import { PageHeader } from './PageHeader'
 import { UserSuperContextCard } from './UserSuperContextCard'
 import { PeopleWidget } from './PeopleWidget'
 import { useSettings } from '../hooks/useSettings'
@@ -162,21 +163,21 @@ export const Dashboard: FC<DashboardProps> = ({
 
   return (
     <div className="flex-1 flex flex-col min-h-0 overflow-hidden bg-holmes-bg">
-      <div className="shrink-0 px-8 pt-8 pb-6">
-        <div className="max-w-5xl w-full mx-auto flex items-center gap-3">
-          <img src={lifeIconGreen} alt="" className="w-6 h-6" />
-          <h1 className="text-xl font-medium text-white/80 font-serif-display">Life Dashboard</h1>
+      <PageHeader
+        icon={<img src={lifeIconGreen} alt="" className="h-[25px] w-[25px]" />}
+        title="Life Dashboard"
+        actions={
           <button
             onClick={onRestoreDefaults}
-            className="ml-auto text-xs text-white/30 hover:text-holmes-primary-light transition-colors cursor-pointer"
+            className="flex h-[30px] items-center rounded-md border border-white/10 bg-white/[0.03] px-3 text-[13px] text-white/60 transition-colors hover:border-white/20 hover:text-white/85 cursor-pointer"
             title="Restore missing default projects"
           >
             Restore defaults
           </button>
-        </div>
-      </div>
+        }
+      />
 
-      <div className="flex-1 min-h-0 overflow-y-auto px-8 pb-8">
+      <div className="flex-1 min-h-0 overflow-y-auto px-8 pt-6 pb-8">
         {/* Everything below is one domain at a time; the unified profile that
             combines them belongs at the top of the page that shows the life. */}
         <div className="max-w-5xl w-full mx-auto mb-5">

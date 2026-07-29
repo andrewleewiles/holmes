@@ -1,0 +1,18 @@
+{
+  "name": "holmes-relay",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Untrusted rendezvous relay for Holmes remote access. Forwards opaque bytes; never parses Holmes frames.",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "tail": "wrangler tail",
+    "relay-id": "node --experimental-strip-types tools/relay-id.mjs"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250109.0",
+    "typescript": "^5.9.0",
+    "wrangler": "^3.99.0"
+  }
+}

@@ -181,6 +181,11 @@ export interface LibraryScanResult {
   booksUnchanged: number
   booksFailed: number
   booksMissing: number
+  /** Files found at a new path and recognised as a book already on the shelf,
+   *  which keeps its id and everything attached to it. */
+  booksMoved: number
+  /** Entries that had already been split in two by a move, folded back together. */
+  booksMerged: number
   /** Pruning only runs on a complete scan — see the scanner. */
   pruned: number
   scanComplete: boolean
@@ -516,6 +521,106 @@ export interface OrganizeResult {
   moved: number
   skipped: number
   failed: Array<{ bookId: string; title: string; error: string }>
+}
+
+// --- guest redaction ---------------------------------------------------------
+// A `media`-scoped device is a stranger the owner shared the shelf with. The
+// Library types were designed for one reader — the owner — so they carry the
+// owner's reading record and the Mac's filesystem layout alongside the
+// bibliographic data a shelf actually needs. These helpers are the narrowing,
+// and they live here rather than in the handler so they are pure and testable.
+//
+// The rule: a guest sees what is printed on the book, plus enough structure to
+// read it. Nothing about the owner and nothing about the disk.
+
+/** Blanked rather than deleted, so the shape stays assignable to `Book`. */
+export const GUEST_BLANKED_BOOK_FIELDS = [
+  'sourcePath', 'filePath', 'relativePath', 'identityHash', 'textHash',
+] as const
+
+/**
+ * A guest-safe `Book`: title, subtitle, authors, publisher, dates, language,
+ * format, cover, counts and scan status survive; every path and every identity
+ * or text hash is blanked.
+ *
+ * The hashes go for two separate reasons. `identityHash` is
+ * sha256(realpath + size + mtime), which is an offline oracle for the file's
+ * location on the Mac. `textHash` is the hash of the exact canonical text, which
+ * confirms possession of a specific copy. Neither is needed to read a book.
+ */
+export function redactBookForGuest(book: Book): Book {
+  return {
+    ...book,
+    sourcePath: '',
+    filePath: '',
+    relativePath: '',
+    identityHash: '',
+    textHash: '',
+  }
+}
+
+/**
+ * The reading record is the OWNER's — there is one row per book and per-guest
+ * reading state does not exist. So a guest is handed a neutral, unstarted
+ * record rather than the owner's rating, private notes, progress and dates.
+ *
+ * This is deliberately not "hide the notes and keep the progress": "73% read,
+ * finished 3 March" is a statement about the owner's month, and the reading
+ * record feeds the life timeline. A guest's reader opens at the beginning,
+ * which is the correct behaviour for a copy they have never read.
+ */
+export function guestReadingState(bookId: string): BookReadingState {
+  return {
+    bookId,
+    status: 'unread',
+    lastChapterIndex: 0,
+    lastCharOffset: 0,
+    furthestCharOffset: 0,
+    progressPercent: 0,
+    rating: null,
+    startedAt: null,
+    finishedAt: null,
+    secondsRead: 0,
+    notes: '',
+    updatedAt: 0,
+  }
+}
+
+/**
+ * A shelf entry for a guest. The lesson and annotation counts are zeroed too:
+ * they count artifacts the owner paid a model to produce, the channels that
+ * would fetch them are denied to a guest, and the number alone still reports
+ * how much attention the owner gave that book.
+ */
+/**
+ * `reading` is the GUEST's own position when they have one, never the owner's.
+ * Omitting it yields a neutral unstarted record, which is what a guest who has
+ * not opened the book should see.
+ */
+export function redactLibraryBookForGuest(entry: LibraryBook, reading?: BookReadingState | null): LibraryBook {
+  return {
+    book: redactBookForGuest(entry.book),
+    reading: reading ?? guestReadingState(entry.book.id),
+    lessonCount: 0,
+    annotationCount: 0,
+  }
+}
+
+/** A guest-safe narration record: no text hash, and no provider error text. */
+export function redactAudiobookForGuest(audiobook: Audiobook): Audiobook {
+  return {
+    ...audiobook,
+    textHash: '',
+    // Provider errors quote the owner's plan and quota back at them.
+    error: audiobook.error ? 'Narration is unavailable for this chapter' : null,
+  }
+}
+
+export function redactAudiobookChapterForGuest(chapter: AudiobookChapter): AudiobookChapter {
+  return {
+    ...chapter,
+    audiobook: redactAudiobookForGuest(chapter.audiobook),
+  }
 }
 
 // --- discussion handoff ----------------------------------------------------

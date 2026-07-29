@@ -1,0 +1,4 @@
+wrangler.toml
+.assetsignore
+._*
+.DS_Store

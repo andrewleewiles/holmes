@@ -69,6 +69,7 @@ export const SettingsPanel: FC<SettingsPanelProps> = ({
   const [showIconPicker, setShowIconPicker] = useState(false)
   const [welcomeLines, setWelcomeLines] = useState<string[]>([])
   const [showWelcomeEditor, setShowWelcomeEditor] = useState(false)
+  const [boilEffectEnabled, setBoilEffectEnabled] = useState(true)
   const [welcomeDraft, setWelcomeDraft] = useState('')
   const [defaultEffort, setDefaultEffort] = useState<ReasoningEffort>('medium')
   const [modelTiers, setModelTiers] = useState<ModelTierConfig>(EMPTY_MODEL_TIERS)
@@ -135,6 +136,7 @@ export const SettingsPanel: FC<SettingsPanelProps> = ({
       setAssistantName(settings.assistantName || DEFAULT_ASSISTANT_NAME)
       setAssistantIcon(settings.assistantIcon ?? '')
       setWelcomeLines(settings.welcomeLines ?? [])
+      setBoilEffectEnabled(settings.boilEffectEnabled ?? true)
       setDefaultEffort(settings.defaultEffort || 'medium')
       setModelTiers(settings.modelTiers ?? EMPTY_MODEL_TIERS)
       setDefaultTier(settings.defaultTier ?? 'mid')
@@ -192,6 +194,7 @@ export const SettingsPanel: FC<SettingsPanelProps> = ({
       assistantName,
       assistantIcon,
       welcomeLines,
+      boilEffectEnabled,
       defaultEffort,
       modelTiers,
       defaultTier,
@@ -778,6 +781,31 @@ export const SettingsPanel: FC<SettingsPanelProps> = ({
                   {t}
                 </button>
               ))}
+            </div>
+          </div>
+
+          {/* Boiling type */}
+          <div className="rounded-xl border border-white/10 bg-white/[0.03] p-4">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="font-serif-display text-sm font-medium text-white/80">Boiling line</div>
+                <p className="mt-1 text-xs leading-relaxed text-white/40">
+                  Headings and greetings are set in a hand-drawn face redrawn ten times over, cycling at eight frames a
+                  second so the letters shimmer like ink still settling. Icons drawn in the green boil the same way,
+                  from ten roughened copies of their own outline. Turning it off freezes both on a single
+                  frame — they keep their drawn character, they simply stop moving. Off is also what
+                  {' '}{assistantName} does automatically when your system asks for reduced motion.
+                </p>
+              </div>
+              <label className="relative inline-flex items-center cursor-pointer shrink-0">
+                <input
+                  type="checkbox"
+                  checked={boilEffectEnabled}
+                  onChange={(e) => setBoilEffectEnabled(e.target.checked)}
+                  className="sr-only peer"
+                />
+                <div className="w-11 h-6 bg-white/10 rounded-full peer peer-checked:bg-holmes-primary transition-colors after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-transform peer-checked:after:translate-x-5"></div>
+              </label>
             </div>
           </div>
 

@@ -132,3 +132,67 @@ export async function open(key: CryptoKey, counter: number, payload: string): Pr
   )
   return new TextDecoder().decode(opened)
 }
+
+const PAIR_HKDF_INFO = 'holmes-pair-v2'
+const PAIR_TRANSCRIPT_LABEL = 'holmes-pair-transcript-v2'
+const PAIR_BIND_LABEL = 'holmes-pair-bind-v2'
+
+/**
+ * Recomputes the tag the Mac sent alongside its static key, using the code the
+ * user typed. A mismatch means the key did not come from the Mac showing that
+ * code, and pairing MUST be abandoned — this check is the only thing standing
+ * between a relayed pairing and a permanent man in the middle.
+ */
+export async function pairingBindTag(
+  code: string,
+  serverStaticPub: Uint8Array,
+  clientEphemeralPub: Uint8Array
+): Promise<string> {
+  const key = await crypto.subtle.importKey(
+    'raw',
+    encoder.encode(code) as BufferSource,
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign']
+  )
+  const message = new Uint8Array(
+    PAIR_BIND_LABEL.length + serverStaticPub.length + clientEphemeralPub.length
+  )
+  message.set(encoder.encode(PAIR_BIND_LABEL), 0)
+  message.set(serverStaticPub, PAIR_BIND_LABEL.length)
+  message.set(clientEphemeralPub, PAIR_BIND_LABEL.length + serverStaticPub.length)
+
+  return toBase64(new Uint8Array(await crypto.subtle.sign('HMAC', key, message as BufferSource)))
+}
+
+/** Mirrors derivePairingKeys in src/main/remoteCrypto.ts. */
+export async function derivePairingKeys(params: {
+  ephemeralPrivate: Uint8Array
+  serverStaticPub: Uint8Array
+  clientEphemeralPub: Uint8Array
+}): Promise<SessionKeys> {
+  const shared = x25519.getSharedSecret(params.ephemeralPrivate, params.serverStaticPub)
+
+  const salt = await sha256([
+    encoder.encode(PAIR_TRANSCRIPT_LABEL),
+    params.serverStaticPub,
+    params.clientEphemeralPub,
+  ])
+
+  const hkdfKey = await crypto.subtle.importKey('raw', shared as BufferSource, 'HKDF', false, ['deriveBits'])
+  const okm = new Uint8Array(
+    await crypto.subtle.deriveBits(
+      { name: 'HKDF', hash: 'SHA-256', salt: salt as BufferSource, info: encoder.encode(PAIR_HKDF_INFO) },
+      hkdfKey,
+      KEY_BYTES * 2 * 8
+    )
+  )
+
+  const importAes = (raw: Uint8Array): Promise<CryptoKey> =>
+    crypto.subtle.importKey('raw', raw as BufferSource, 'AES-GCM', false, ['encrypt', 'decrypt'])
+
+  return {
+    clientToServer: await importAes(okm.slice(0, KEY_BYTES)),
+    serverToClient: await importAes(okm.slice(KEY_BYTES, KEY_BYTES * 2)),
+  }
+}

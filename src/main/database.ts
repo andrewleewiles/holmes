@@ -119,8 +119,11 @@ import type {
   ProviderCallSummary,
   ProviderType,
   CalledService,
+  RecallHistoryEntry,
+  RecallHistorySource,
+  RecallSearchSource,
 } from '../shared/types'
-import type { RemoteDevice } from '../shared/remote'
+import type { RemoteDevice, RemoteScope } from '../shared/remote'
 import { BOOK_READING_STATUSES } from '../shared/books'
 import { MEMORY_FIELDS } from '../shared/memoryCatalog'
 import { flattenContextSelection, normalizeContextSelection } from '../shared/contextSelection'
@@ -302,6 +305,15 @@ export function initDatabase(): void {
       id INTEGER PRIMARY KEY CHECK(id = 1),
       summary TEXT NOT NULL DEFAULT '',
       field_hash TEXT NOT NULL DEFAULT '',
+      updated_at INTEGER NOT NULL DEFAULT 0
+    );
+
+    -- The home screen's "Ideas" prompts. One row: the whole set is regenerated
+    -- together, so there is nothing to key by.
+    CREATE TABLE IF NOT EXISTS home_ideas (
+      id INTEGER PRIMARY KEY CHECK(id = 1),
+      ideas TEXT NOT NULL DEFAULT '[]',
+      input_hash TEXT NOT NULL DEFAULT '',
       updated_at INTEGER NOT NULL DEFAULT 0
     );
 
@@ -1114,6 +1126,47 @@ export function initDatabase(): void {
     CREATE INDEX IF NOT EXISTS idx_provider_calls_created
       ON provider_calls(created_at DESC);
 
+    -- One row per completed Recall search, so a question and the answer it
+    -- produced survive the page being navigated away from. The ranked results
+    -- are not kept: they go stale as files change, and re-running the query
+    -- rebuilds them. Pruned to MAX_RECALL_SEARCH_ROWS.
+    CREATE TABLE IF NOT EXISTS recall_searches (
+      id TEXT PRIMARY KEY,
+      created_at INTEGER NOT NULL,
+      query TEXT NOT NULL,
+      source TEXT NOT NULL DEFAULT 'all',
+      semantic INTEGER NOT NULL DEFAULT 1,
+      answer TEXT,
+      answer_model TEXT,
+      sources_json TEXT NOT NULL DEFAULT '[]',
+      result_count INTEGER NOT NULL DEFAULT 0,
+      expanded_queries_json TEXT NOT NULL DEFAULT '[]',
+      notices_json TEXT NOT NULL DEFAULT '[]',
+      duration_ms INTEGER NOT NULL DEFAULT 0
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_recall_searches_created
+      ON recall_searches(created_at DESC);
+
+    -- A guest's place in a book. Deliberately NOT book_reading_state: that row is
+    -- the owner's, carries their rating and notes, and feeds the life timeline.
+    -- A guest's position is per-device and disposable, and the cascade means
+    -- revoking a device erases it.
+    CREATE TABLE IF NOT EXISTS remote_device_reading_state (
+      device_id TEXT NOT NULL REFERENCES remote_devices(id) ON DELETE CASCADE,
+      book_id TEXT NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+      status TEXT NOT NULL DEFAULT 'unread',
+      last_chapter_index INTEGER NOT NULL DEFAULT 0,
+      last_char_offset INTEGER NOT NULL DEFAULT 0,
+      furthest_char_offset INTEGER NOT NULL DEFAULT 0,
+      progress_percent REAL NOT NULL DEFAULT 0,
+      seconds_read INTEGER NOT NULL DEFAULT 0,
+      started_at TEXT,
+      finished_at TEXT,
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY (device_id, book_id)
+    );
+
     -- One row per paired mobile client. public_key is the device's long-term
     -- X25519 key: deleting the row is what revocation means, so a revoked
     -- device can no longer complete a session handshake.
@@ -1122,6 +1175,7 @@ export function initDatabase(): void {
       name TEXT NOT NULL,
       platform TEXT NOT NULL DEFAULT '',
       public_key TEXT NOT NULL UNIQUE,
+      scope TEXT NOT NULL DEFAULT 'owner',
       created_at INTEGER NOT NULL,
       last_seen_at INTEGER
     );
@@ -1489,6 +1543,13 @@ export function initDatabase(): void {
   // Runs after the role-CHECK rebuild above so the rebuild's explicit column list can't drop it.
   try {
     db.exec('ALTER TABLE messages ADD COLUMN attachments_json TEXT')
+  } catch { /* column already exists */ }
+
+  // Devices paired before scopes existed were the owner's own phone, so they
+  // keep every channel they already had. New guests must be paired as 'media'
+  // deliberately — this default is a migration, not a policy.
+  try {
+    db.exec("ALTER TABLE remote_devices ADD COLUMN scope TEXT NOT NULL DEFAULT 'owner'")
   } catch { /* column already exists */ }
 
   // Backfill parent_id for existing messages: chain by created_at within each conversation
@@ -2101,6 +2162,113 @@ export function getRecallConversationContext(messageId: string): string {
   }).join('\n\n')
 }
 
+/**
+ * How many past searches are kept. Recall history is a personal record the user
+ * reads, not a log, so the window is generous but finite.
+ */
+export const MAX_RECALL_SEARCH_ROWS = 500
+
+export interface RecallSearchInsert {
+  query: string
+  source: RecallSearchSource
+  semantic: boolean
+  answer: string | null
+  answerModel: string | null
+  sources: RecallHistorySource[]
+  resultCount: number
+  expandedQueries: string[]
+  notices: string[]
+  durationMs: number
+}
+
+interface RecallSearchRow {
+  id: string
+  created_at: number
+  query: string
+  source: string
+  semantic: number
+  answer: string | null
+  answer_model: string | null
+  sources_json: string
+  result_count: number
+  expanded_queries_json: string
+  notices_json: string
+  duration_ms: number
+}
+
+// Stored JSON is only ever written by this module, but a corrupt row must not
+// take the whole history list down with it — parseJsonArray (below) is lenient.
+function toRecallHistoryEntry(row: RecallSearchRow): RecallHistoryEntry {
+  return {
+    id: row.id,
+    createdAt: row.created_at,
+    query: row.query,
+    source: (row.source === 'files' || row.source === 'conversations' ? row.source : 'all') as RecallSearchSource,
+    semantic: row.semantic === 1,
+    answer: row.answer,
+    answerModel: row.answer_model,
+    sources: parseJsonArray<RecallHistorySource>(row.sources_json),
+    resultCount: row.result_count,
+    expandedQueries: parseJsonArray<string>(row.expanded_queries_json),
+    notices: parseJsonArray<string>(row.notices_json),
+    durationMs: row.duration_ms,
+  }
+}
+
+export function insertRecallSearch(input: RecallSearchInsert): RecallHistoryEntry {
+  const id = uuidv4()
+  const createdAt = Date.now()
+  db.prepare(
+    `INSERT INTO recall_searches
+     (id, created_at, query, source, semantic, answer, answer_model, sources_json,
+      result_count, expanded_queries_json, notices_json, duration_ms)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(
+    id,
+    createdAt,
+    input.query,
+    input.source,
+    input.semantic ? 1 : 0,
+    input.answer,
+    input.answerModel,
+    JSON.stringify(input.sources),
+    Math.max(0, Math.trunc(input.resultCount)),
+    JSON.stringify(input.expandedQueries),
+    JSON.stringify(input.notices),
+    Math.max(0, Math.trunc(input.durationMs))
+  )
+  pruneRecallSearches()
+  return toRecallHistoryEntry(
+    db.prepare('SELECT * FROM recall_searches WHERE id = ?').get(id) as RecallSearchRow
+  )
+}
+
+export function listRecallSearches(limit: number = 100): RecallHistoryEntry[] {
+  const safeLimit = Math.max(1, Math.min(Math.floor(limit), MAX_RECALL_SEARCH_ROWS))
+  const rows = db
+    .prepare('SELECT * FROM recall_searches ORDER BY created_at DESC, rowid DESC LIMIT ?')
+    .all(safeLimit) as RecallSearchRow[]
+  return rows.map(toRecallHistoryEntry)
+}
+
+export function deleteRecallSearch(id: string): void {
+  db.prepare('DELETE FROM recall_searches WHERE id = ?').run(id)
+}
+
+export function clearRecallSearches(): number {
+  return db.prepare('DELETE FROM recall_searches').run().changes
+}
+
+function pruneRecallSearches(): number {
+  return db
+    .prepare(
+      `DELETE FROM recall_searches WHERE id IN (
+         SELECT id FROM recall_searches ORDER BY created_at DESC, rowid DESC LIMIT -1 OFFSET ?
+       )`
+    )
+    .run(MAX_RECALL_SEARCH_ROWS).changes
+}
+
 export function searchMessages(query: string): Message[] {
   const rows = db
     .prepare(
@@ -2633,6 +2801,29 @@ export function setMemorySummary(summary: string, fieldHash: string): void {
     `INSERT INTO memory_summaries (id, summary, field_hash, updated_at) VALUES (1, ?, ?, ?)
      ON CONFLICT(id) DO UPDATE SET summary = excluded.summary, field_hash = excluded.field_hash, updated_at = excluded.updated_at`
   ).run(summary, fieldHash, now)
+}
+
+export function getHomeIdeas(): { ideas: string[]; inputHash: string; updatedAt: number } {
+  const row = db.prepare('SELECT ideas, input_hash, updated_at FROM home_ideas WHERE id = 1').get() as
+    | { ideas: string; input_hash: string; updated_at: number }
+    | undefined
+  let ideas: string[] = []
+  if (row?.ideas) {
+    try {
+      const parsed = JSON.parse(row.ideas)
+      if (Array.isArray(parsed)) ideas = parsed.filter((entry): entry is string => typeof entry === 'string')
+    } catch {
+      // A corrupt row just means no ideas yet; the next run overwrites it.
+    }
+  }
+  return { ideas, inputHash: row?.input_hash ?? '', updatedAt: row?.updated_at ?? 0 }
+}
+
+export function setHomeIdeas(ideas: string[], inputHash: string): void {
+  db.prepare(
+    `INSERT INTO home_ideas (id, ideas, input_hash, updated_at) VALUES (1, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET ideas = excluded.ideas, input_hash = excluded.input_hash, updated_at = excluded.updated_at`
+  ).run(JSON.stringify(ideas), inputHash, Date.now())
 }
 
 export function computeMemoryFieldHash(): string {
@@ -6746,6 +6937,16 @@ export function listBooks(projectId?: string): Book[] {
   return rows.map(mapBook)
 }
 
+/** Every shelf entry in one project whose canonical text hashes the same way —
+ *  the question "is this the same book, sitting at a different path?". */
+export function listBooksByTextHash(projectId: string, textHash: string): Book[] {
+  if (!textHash) return []
+  const rows = db
+    .prepare(`SELECT ${BOOK_COLUMNS} FROM books WHERE project_id = ? AND text_hash = ? ORDER BY added_at ASC`)
+    .all(projectId, textHash) as BookRow[]
+  return rows.map(mapBook)
+}
+
 export interface BookUpsert {
   projectId: string
   sourcePath: string
@@ -6845,6 +7046,98 @@ export function markBookMissing(id: string, missingSince: string): void {
 
 export function deleteBook(id: string): void {
   db.prepare('DELETE FROM books WHERE id = ?').run(id)
+}
+
+/** A row that has never been read from says nothing, so there is nothing in it
+ *  worth carrying across a merge. */
+function readingStateIsSilent(state: BookReadingState): boolean {
+  return state.status === 'unread' && state.progressPercent === 0 && state.furthestCharOffset === 0
+    && state.secondsRead === 0 && state.rating === null && !state.startedAt && !state.notes.trim()
+}
+
+/** Two rows are the same book read at two paths, so the record of it is the
+ *  union of both: whichever went further, started earlier, finished at all. */
+function mergeReadingState(sourceId: string, targetId: string): void {
+  const source = getReadingState(sourceId)
+  if (!source || readingStateIsSilent(source)) return
+  const target = ensureReadingState(targetId)
+  if (readingStateIsSilent(target)) {
+    updateReadingState(targetId, {
+      status: source.status,
+      lastChapterIndex: source.lastChapterIndex,
+      lastCharOffset: source.lastCharOffset,
+      furthestCharOffset: source.furthestCharOffset,
+      progressPercent: source.progressPercent,
+      rating: source.rating,
+      startedAt: source.startedAt,
+      finishedAt: source.finishedAt,
+      secondsRead: source.secondsRead,
+      notes: source.notes,
+    })
+    return
+  }
+  // Both rows were read from. The last position is a single fact rather than
+  // something to combine, so it comes from whichever row was written last;
+  // everything else is a high-water mark or a date, and takes the wider value.
+  const newer = source.updatedAt > target.updatedAt ? source : target
+  const older = newer === source ? target : source
+  const notes = target.notes.trim() && source.notes.trim() && target.notes.trim() !== source.notes.trim()
+    ? `${target.notes.trim()}\n\n${source.notes.trim()}`
+    : target.notes.trim() || source.notes
+  updateReadingState(targetId, {
+    // 'unread' is the default a row is created with, so it is an absence of a
+    // statement rather than a later one.
+    status: newer.status === 'unread' ? older.status : newer.status,
+    lastChapterIndex: newer.lastChapterIndex,
+    lastCharOffset: newer.lastCharOffset,
+    furthestCharOffset: Math.max(source.furthestCharOffset, target.furthestCharOffset),
+    progressPercent: Math.max(source.progressPercent, target.progressPercent),
+    rating: target.rating ?? source.rating,
+    startedAt: [source.startedAt, target.startedAt].filter(Boolean).sort()[0] ?? null,
+    finishedAt: [source.finishedAt, target.finishedAt].filter(Boolean).sort().at(-1) ?? null,
+    secondsRead: source.secondsRead + target.secondsRead,
+    notes,
+  })
+}
+
+/**
+ * Folds one shelf entry into another and deletes the first.
+ *
+ * Only ever called for two rows with the same text_hash: lessons, annotations
+ * and narration are all anchored to canonical offsets and chapter indices, so
+ * identical text is exactly what makes moving them across sound. Where a UNIQUE
+ * would collide the target's row wins and the source's goes with the source
+ * book — that is a second generation of the same lesson, not a loss.
+ *
+ * Audio FILES are the caller's problem: they live on disk under the book id.
+ */
+export function mergeBookInto(sourceId: string, targetId: string): void {
+  if (sourceId === targetId) return
+  runInTransaction(() => {
+    mergeReadingState(sourceId, targetId)
+    db.prepare('UPDATE book_reading_sessions SET book_id = ? WHERE book_id = ?').run(targetId, sourceId)
+    db.prepare('UPDATE OR IGNORE book_lessons SET book_id = ? WHERE book_id = ?').run(targetId, sourceId)
+    db.prepare('UPDATE OR IGNORE book_annotation_runs SET book_id = ? WHERE book_id = ?').run(targetId, sourceId)
+    // Annotations follow their run — one left behind on a run that could not
+    // move is cascade-deleted with it anyway. A hand-written note carries no
+    // run and always moves.
+    db.prepare(
+      `UPDATE book_annotations SET book_id = ?
+       WHERE book_id = ?
+         AND (run_id IS NULL OR run_id IN (SELECT id FROM book_annotation_runs WHERE book_id = ?))`
+    ).run(targetId, sourceId, targetId)
+    db.prepare('UPDATE OR IGNORE book_conversations SET book_id = ? WHERE book_id = ?').run(targetId, sourceId)
+    db.prepare('UPDATE OR IGNORE audiobook_chapters SET book_id = ? WHERE book_id = ?').run(targetId, sourceId)
+    db.prepare(
+      `UPDATE audiobook_segments SET book_id = ?
+       WHERE book_id = ? AND audiobook_id IN (SELECT id FROM audiobook_chapters WHERE book_id = ?)`
+    ).run(targetId, sourceId, targetId)
+    db.prepare('UPDATE OR IGNORE remote_device_reading_state SET book_id = ? WHERE book_id = ?')
+      .run(targetId, sourceId)
+    // Chapters are re-derived from the file and identical by construction, so
+    // the source's are dropped with its row rather than moved.
+    db.prepare('DELETE FROM books WHERE id = ?').run(sourceId)
+  })
 }
 
 export function replaceBookChapters(bookId: string, chapters: Array<Omit<BookChapter, 'id' | 'bookId'>>): void {
@@ -7831,6 +8124,12 @@ export function deleteAudiobookSegments(audiobookId: string): void {
   db.prepare('DELETE FROM audiobook_segments WHERE audiobook_id = ?').run(audiobookId)
 }
 
+/** Audio files are stored under the book's id, so a segment whose book id
+ *  changes is a file that moved on disk with it. */
+export function updateAudiobookSegmentPath(id: string, filePath: string): void {
+  db.prepare('UPDATE audiobook_segments SET file_path = ? WHERE id = ?').run(filePath, id)
+}
+
 /**
  * Re-points a shelf entry after its file was moved on disk.
  *
@@ -7852,6 +8151,7 @@ function mapRemoteDevice(row: {
   name: string
   platform: string
   public_key: string
+  scope: string | null
   created_at: number
   last_seen_at: number | null
 }): RemoteDevice {
@@ -7860,6 +8160,9 @@ function mapRemoteDevice(row: {
     name: row.name,
     platform: row.platform,
     publicKey: row.public_key,
+    // Only the literal 'media' grants the guest scope; anything else — including
+    // a row written before the column existed — is the owner's own device.
+    scope: row.scope === 'media' ? 'media' : 'owner',
     createdAt: row.created_at,
     lastSeenAt: row.last_seen_at,
   }
@@ -7879,13 +8182,26 @@ export function getRemoteDeviceById(id: string): RemoteDevice | null {
   return row ? mapRemoteDevice(row) : null
 }
 
-export function createRemoteDevice(input: { name: string; platform: string; publicKey: string }): RemoteDevice {
+export function createRemoteDevice(input: {
+  name: string
+  platform: string
+  publicKey: string
+  scope: RemoteScope
+}): RemoteDevice {
   const id = uuidv4()
   const now = Date.now()
   db.prepare(
-    'INSERT INTO remote_devices (id, name, platform, public_key, created_at, last_seen_at) VALUES (?, ?, ?, ?, ?, NULL)'
-  ).run(id, input.name, input.platform, input.publicKey, now)
-  return { id, name: input.name, platform: input.platform, publicKey: input.publicKey, createdAt: now, lastSeenAt: null }
+    'INSERT INTO remote_devices (id, name, platform, public_key, scope, created_at, last_seen_at) VALUES (?, ?, ?, ?, ?, ?, NULL)'
+  ).run(id, input.name, input.platform, input.publicKey, input.scope, now)
+  return {
+    id,
+    name: input.name,
+    platform: input.platform,
+    publicKey: input.publicKey,
+    scope: input.scope,
+    createdAt: now,
+    lastSeenAt: null,
+  }
 }
 
 export function touchRemoteDevice(id: string): void {
@@ -7898,4 +8214,91 @@ export function renameRemoteDevice(id: string, name: string): void {
 
 export function deleteRemoteDevice(id: string): void {
   db.prepare('DELETE FROM remote_devices WHERE id = ?').run(id)
+}
+
+function mapDeviceReadingState(row: {
+  book_id: string
+  status: string
+  last_chapter_index: number
+  last_char_offset: number
+  furthest_char_offset: number
+  progress_percent: number
+  seconds_read: number
+  started_at: string | null
+  finished_at: string | null
+  updated_at: number
+}): BookReadingState {
+  return {
+    bookId: row.book_id,
+    status: (BOOK_READING_STATUSES as readonly string[]).includes(row.status)
+      ? (row.status as BookReadingStatus)
+      : 'unread',
+    lastChapterIndex: row.last_chapter_index,
+    lastCharOffset: row.last_char_offset,
+    furthestCharOffset: row.furthest_char_offset,
+    progressPercent: row.progress_percent,
+    // A guest has no rating and no notes: those are the owner's, and the
+    // channels that set them are not media-callable.
+    rating: null,
+    startedAt: row.started_at,
+    finishedAt: row.finished_at,
+    secondsRead: row.seconds_read,
+    notes: '',
+    updatedAt: row.updated_at,
+  }
+}
+
+export function getDeviceReadingState(deviceId: string, bookId: string): BookReadingState | null {
+  const row = db
+    .prepare('SELECT * FROM remote_device_reading_state WHERE device_id = ? AND book_id = ?')
+    .get(deviceId, bookId) as Parameters<typeof mapDeviceReadingState>[0] | undefined
+  return row ? mapDeviceReadingState(row) : null
+}
+
+export function listDeviceReadingStates(deviceId: string): Map<string, BookReadingState> {
+  const rows = db
+    .prepare('SELECT * FROM remote_device_reading_state WHERE device_id = ?')
+    .all(deviceId) as Array<Parameters<typeof mapDeviceReadingState>[0]>
+  return new Map(rows.map((row) => [row.book_id, mapDeviceReadingState(row)]))
+}
+
+export function setDeviceReadingProgress(
+  deviceId: string,
+  bookId: string,
+  input: { lastChapterIndex: number; lastCharOffset: number; furthestCharOffset: number; progressPercent: number }
+): BookReadingState {
+  const now = Date.now()
+  const existing = getDeviceReadingState(deviceId, bookId)
+  // Furthest is monotonic for a guest too: re-reading an earlier chapter must
+  // not walk their progress backwards.
+  const furthest = Math.max(existing?.furthestCharOffset ?? 0, input.furthestCharOffset)
+  const status = input.progressPercent >= 99 ? 'finished' : 'reading'
+
+  db.prepare(
+    `INSERT INTO remote_device_reading_state
+       (device_id, book_id, status, last_chapter_index, last_char_offset, furthest_char_offset,
+        progress_percent, seconds_read, started_at, finished_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
+     ON CONFLICT(device_id, book_id) DO UPDATE SET
+       status = excluded.status,
+       last_chapter_index = excluded.last_chapter_index,
+       last_char_offset = excluded.last_char_offset,
+       furthest_char_offset = excluded.furthest_char_offset,
+       progress_percent = excluded.progress_percent,
+       finished_at = excluded.finished_at,
+       updated_at = excluded.updated_at`
+  ).run(
+    deviceId, bookId, status,
+    Math.max(0, Math.trunc(input.lastChapterIndex)),
+    Math.max(0, Math.trunc(input.lastCharOffset)),
+    furthest,
+    input.progressPercent,
+    existing?.startedAt ?? new Date(now).toISOString(),
+    status === 'finished' ? new Date(now).toISOString() : existing?.finishedAt ?? null,
+    now
+  )
+
+  const saved = getDeviceReadingState(deviceId, bookId)
+  if (!saved) throw new Error('Could not save reading progress')
+  return saved
 }

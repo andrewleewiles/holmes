@@ -1,5 +1,5 @@
 import { createHash } from 'crypto'
-import { createServer, type IncomingMessage, type Server } from 'http'
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'http'
 import type { Duplex } from 'stream'
 import type { Socket } from 'net'
 
@@ -34,6 +34,15 @@ export interface WsServerOptions {
   path: string
   maxPayloadBytes: number
   onConnection: (connection: WsConnection, request: IncomingMessage) => void
+  /**
+   * Plain HTTP on the same port, for bulk bytes that have no business inside a
+   * JSON frame. Return true to claim the request; anything not claimed still
+   * gets 426, so the upgrade path is exactly as narrow as it was. The hook is
+   * deliberately synchronous-or-void and receives the raw request: it is
+   * expected to authenticate for itself, because an HTTP connection carries
+   * none of the session's proof.
+   */
+  onRequest?: (request: IncomingMessage, response: ServerResponse) => boolean
 }
 
 export interface WsServer {
@@ -267,8 +276,20 @@ class Connection implements WsConnection {
 
 export function createWebSocketServer(options: WsServerOptions): Promise<WsServer> {
   return new Promise((resolve, reject) => {
-    const server: Server = createServer((_req, res) => {
-      // The phone ships its own bundle; nothing is served over HTTP.
+    const server: Server = createServer((req, res) => {
+      try {
+        if (options.onRequest?.(req, res)) return
+      } catch {
+        // A throwing handler must not leave the socket hanging open.
+        if (!res.headersSent) {
+          res.writeHead(500, { 'Content-Type': 'text/plain' })
+          res.end('Internal error')
+        } else {
+          res.destroy()
+        }
+        return
+      }
+      // The phone ships its own bundle; nothing else is served over HTTP.
       res.writeHead(426, { 'Content-Type': 'text/plain' })
       res.end('Upgrade required')
     })

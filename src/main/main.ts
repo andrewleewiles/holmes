@@ -15,6 +15,7 @@ import { installProviderCallLog, withProviderCallFeature } from './callLog'
 import { isAllowedExternalUrl } from './externalUrls'
 import { isLibraryProject } from '../shared/defaultProjects'
 import { installAudioProtocol, registerAudioScheme } from './audioProtocol'
+import { OFFICE_SCHEME, installOfficeProtocol, registerOfficeScheme } from './officeProtocol'
 import * as settings from './settings'
 // Every background pass is gated on this rather than on the key alone: a key
 // the provider is answering with 402 buys nothing, and a pass that starts anyway
@@ -65,6 +66,7 @@ let peopleTimer: NodeJS.Timeout | null = null
 // Must run before app ready: Chromium reads the privileged-scheme table when
 // the renderer process is set up, not when the handler is installed.
 registerAudioScheme()
+registerOfficeScheme()
 
 function createMenu(): void {
   const isMac = process.platform === 'darwin'
@@ -150,6 +152,10 @@ function createWindow(): void {
     title: getAssistantName(),
     autoHideMenuBar: false,
     titleBarStyle: 'hiddenInset',
+    // The traffic lights sit inside the sidebar enclosure, which is inset 6px
+    // with a 1px border — so 21 leaves the same 14px of padding above them as
+    // to their left. The toolbar icons in App.tsx are centred on this row.
+    trafficLightPosition: { x: 21, y: 21 },
     webPreferences: {
       preload: join(__dirname, '../preload/preload.js'),
       sandbox: false,
@@ -168,6 +174,14 @@ function createWindow(): void {
   })
   mainWindow.webContents.on('will-navigate', (event) => event.preventDefault())
   mainWindow.webContents.on('will-redirect', (event) => event.preventDefault())
+  // will-navigate is main-frame only, so neither line above constrains the
+  // editor frame. This does: it may move around inside the bundle and nowhere
+  // else, so a crafted document cannot navigate it off to a URL of its choosing.
+  mainWindow.webContents.on('will-frame-navigate', (event) => {
+    if (event.isMainFrame) return
+    if (event.url.startsWith(`${OFFICE_SCHEME}://editor/`)) return
+    event.preventDefault()
+  })
 
   if (!app.isPackaged && process.env['ELECTRON_RENDERER_URL']) {
     mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
@@ -193,6 +207,7 @@ app.whenReady().then(() => {
   // After the database: the handler resolves a segment id through it, so it must
   // not be able to answer a request before there is anything to resolve against.
   installAudioProtocol()
+  installOfficeProtocol()
   // Before the handlers: installing it wraps ipcMain.handle, so a channel
   // registered earlier would go unlabelled.
   installProviderCallLog()

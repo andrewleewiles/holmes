@@ -1,7 +1,10 @@
 import { Preferences } from '@capacitor/preferences'
+import type { RemoteScope } from '@shared/remote'
 
 export interface PairedIdentity {
   deviceId: string
+  /** Assigned by the Mac at pairing. The phone reports it; it never asserts it. */
+  scope: RemoteScope
   host: string
   port: number
   serverStaticPub: string

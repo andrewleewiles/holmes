@@ -1,0 +1,751 @@
+<!DOCTYPE html>
+<!--
+  Holmes — alternate landing page, "what's in the export" angle.
+  Sibling of index.html; both are hand-written and share assets/ and fonts/.
+
+  BEFORE PUBLISHING, fill in every href="#REPO".
+
+  Ground rule for this page: it states what an export CONTAINS and that the
+  company holds it — both verifiable by requesting the file. It makes no claim
+  about what any named company does with the data internally. Keep it that way.
+  Contents and delivery times come from src/shared/activityProviders.ts;
+  file names and event kinds come from src/main/activityExports/.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>What's in the file they keep on you — Holmes</title>
+<meta name="description" content="Thirteen services will mail you an archive of what they hold about you. Here is what is inside each one, how to request it, and what it takes to actually read it.">
+<link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+
+<!-- The boiling display face; see index.html. This page is complete in EB
+     Garamond, and boil.js swaps the headings over once the faces load. -->
+<link rel="stylesheet" href="boil.css">
+<script src="boil.js" defer></script>
+
+<style>
+@font-face{
+  font-family:'EB Garamond';font-style:normal;font-weight:400 800;font-display:swap;
+  src:url(fonts/ebgaramond-variable.woff2) format('woff2');
+}
+@font-face{
+  font-family:'EB Garamond';font-style:italic;font-weight:400 800;font-display:swap;
+  src:url(fonts/ebgaramond-italic-variable.woff2) format('woff2');
+}
+@font-face{
+  font-family:'IBM Plex Mono';font-style:normal;font-weight:400;font-display:swap;
+  src:url(fonts/plexmono-400-latin.woff2) format('woff2');
+  unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD;
+}
+@font-face{
+  font-family:'IBM Plex Mono';font-style:normal;font-weight:400;font-display:swap;
+  src:url(fonts/plexmono-400-latin-ext.woff2) format('woff2');
+  unicode-range:U+0100-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+0304,U+0308,U+0329,U+1D00-1DBF,U+1E00-1E9F,U+1EF2-1EFF,U+2020,U+20A0-20AB,U+20AD-20C0,U+2113,U+2C60-2C7F,U+A720-A7FF;
+}
+@font-face{
+  font-family:'IBM Plex Mono';font-style:normal;font-weight:500;font-display:swap;
+  src:url(fonts/plexmono-500-latin.woff2) format('woff2');
+  unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD;
+}
+@font-face{
+  font-family:'IBM Plex Mono';font-style:normal;font-weight:500;font-display:swap;
+  src:url(fonts/plexmono-500-latin-ext.woff2) format('woff2');
+  unicode-range:U+0100-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+0304,U+0308,U+0329,U+1D00-1DBF,U+1E00-1E9F,U+1EF2-1EFF,U+2020,U+20A0-20AB,U+20AD-20C0,U+2113,U+2C60-2C7F,U+A720-A7FF;
+}
+
+/* ---------------------------------------------------------------
+   This page is the inverse of index.html. That page is the product,
+   dark and serif-led. This one is the document — paper, and carried
+   by the mono face, because the subject is a file manifest.
+   --------------------------------------------------------------- */
+:root{
+  --paper:#eceae3;
+  --raise:#f6f4ef;
+  --sink:#e3e0d8;
+  --ink:#171614;
+  --ink-2:#3d3a35;
+  --dim:#6f6c65;
+  --rule:#d3d0c7;
+  --rule-soft:#e0ddd4;
+  --pine:#2b6a5f;
+  --pine-deep:#1f5049;
+  --pine-tint:rgba(43,106,95,.10);
+  --flag:#8a5a12;
+  --flag-tint:rgba(138,90,18,.10);
+  --ease:cubic-bezier(.22,.61,.36,1);
+  --sans:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Oxygen,Ubuntu,Cantarell,sans-serif;
+  --mono:'IBM Plex Mono',ui-monospace,SFMono-Regular,Menlo,monospace;
+  --display:'EB Garamond',Palatino,'Palatino Linotype',Georgia,'Times New Roman',serif;
+}
+
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html{scroll-behavior:smooth;-webkit-text-size-adjust:100%}
+body{
+  background:var(--paper);color:var(--ink);
+  font-family:var(--sans);font-size:17px;line-height:1.62;
+  -webkit-font-smoothing:antialiased;overflow-x:hidden;
+}
+img,svg{display:block;max-width:100%}
+a{color:inherit}
+:focus-visible{outline:2px solid var(--pine);outline-offset:3px;border-radius:3px}
+
+/* ---------- primitives ---------- */
+.wrap{width:min(1180px,92vw);margin-inline:auto}
+.band{padding:clamp(66px,8.5vw,110px) 0;position:relative}
+.tag{
+  font-family:var(--mono);font-size:11px;font-weight:500;
+  letter-spacing:.2em;text-transform:uppercase;color:var(--pine);
+  overflow-wrap:break-word;
+}
+.tag-dim{color:var(--dim)}
+.tag-flag{color:var(--flag)}
+.display{font-family:var(--display);font-weight:400;line-height:1.06;letter-spacing:-.005em}
+.h2{font-size:clamp(30px,4vw,48px)}
+.lede{color:var(--ink-2);font-size:clamp(16px,1.5vw,19px);max-width:62ch}
+.small{font-size:14px;color:var(--dim);line-height:1.66;max-width:70ch}
+.mt-s{margin-top:14px}.mt-m{margin-top:20px}.mt-l{margin-top:40px}
+
+/* ---------- nav ---------- */
+.nav{padding:22px 0;border-bottom:1px solid var(--rule)}
+.nav-in{display:flex;align-items:center;justify-content:space-between;gap:18px}
+.lock img{height:34px;width:auto}
+.nav-links{display:flex;align-items:center;gap:8px}
+.nlink{
+  font-family:var(--mono);font-size:12.5px;text-decoration:none;
+  padding:8px 15px;border-radius:999px;border:1px solid var(--rule);
+  color:var(--ink-2);white-space:nowrap;
+  transition:background .22s var(--ease),border-color .22s var(--ease),color .22s var(--ease);
+}
+.nlink:hover{background:var(--raise);border-color:var(--dim);color:var(--ink)}
+.nlink-solid{background:var(--ink);border-color:var(--ink);color:var(--paper)}
+.nlink-solid:hover{background:var(--pine-deep);border-color:var(--pine-deep);color:var(--paper)}
+
+/* ---------- hero ---------- */
+.hero{padding:clamp(56px,7vw,88px) 0 clamp(34px,4vw,48px)}
+.hero h1{
+  font-family:var(--display);font-weight:400;
+  font-size:clamp(38px,6vw,80px);line-height:1;letter-spacing:-.018em;
+  max-width:15ch;margin-top:20px;
+}
+.hero h1 em{font-style:italic}
+.hero-lede{color:var(--ink-2);font-size:clamp(17px,1.7vw,21px);max-width:56ch;margin-top:22px}
+.hero-kicker{
+  font-family:var(--display);font-style:italic;font-weight:400;
+  font-size:clamp(19px,2vw,25px);line-height:1.35;color:var(--pine-deep);
+  max-width:42ch;margin-top:18px;
+}
+
+/* ---------------------------------------------------------------
+   SIGNATURE — the archive browser.
+   An export is a zip of folders, so the page is shaped like one.
+   --------------------------------------------------------------- */
+.arch{
+  border:1px solid var(--rule);border-radius:12px;overflow:hidden;
+  background:var(--raise);margin-top:clamp(32px,4vw,48px);
+  box-shadow:0 26px 60px -40px rgba(23,22,20,.5);
+}
+.arch-bar{
+  display:flex;align-items:center;gap:12px;flex-wrap:wrap;
+  padding:11px 18px;background:var(--sink);border-bottom:1px solid var(--rule);
+  font-family:var(--mono);font-size:11px;letter-spacing:.18em;text-transform:uppercase;color:var(--dim);
+}
+.arch-bar .lit{color:var(--ink)}
+.arch-body{display:grid;grid-template-columns:236px 1fr}
+
+.arch-list{
+  border-right:1px solid var(--rule);background:var(--sink);
+  padding:8px;display:flex;flex-direction:column;gap:1px;
+}
+.svc{
+  display:flex;align-items:baseline;gap:9px;width:100%;
+  font-family:var(--mono);font-size:13px;text-align:left;
+  padding:8px 10px;border:0;border-radius:6px;background:transparent;
+  color:var(--ink-2);cursor:pointer;
+  transition:background .18s var(--ease),color .18s var(--ease);
+}
+.svc:hover{background:rgba(23,22,20,.05);color:var(--ink)}
+.svc[aria-selected="true"]{background:var(--ink);color:var(--paper)}
+.svc .ico{color:var(--pine);align-self:center}
+.svc[aria-selected="true"] .ico{color:#79c9b8}
+
+/* Font Awesome glyphs, inlined as <use> — sized in em so they track the text. */
+.ico{
+  width:1em;height:1em;flex:none;fill:currentColor;
+  display:inline-block;vertical-align:-.125em;
+}
+
+.arch-pane{padding:clamp(22px,3vw,34px)}
+.pane-head{display:flex;align-items:baseline;justify-content:space-between;gap:16px;flex-wrap:wrap}
+.pane-name{
+  font-family:var(--display);font-weight:500;font-size:clamp(25px,3vw,34px);letter-spacing:-.01em;
+  display:flex;align-items:center;gap:13px;
+}
+.pane-name .ico{font-size:.66em;color:var(--pine)}
+.pane-meta{font-family:var(--mono);font-size:11.5px;color:var(--dim);display:flex;gap:14px;flex-wrap:wrap}
+.pane-meta b{font-weight:500;color:var(--flag)}
+.pane-blurb{
+  font-family:var(--display);font-style:italic;font-size:clamp(18px,1.9vw,22px);
+  line-height:1.4;color:var(--ink);margin-top:14px;max-width:48ch;
+}
+
+.pane-sub{
+  font-family:var(--mono);font-size:10.5px;letter-spacing:.2em;text-transform:uppercase;
+  color:var(--dim);margin:26px 0 11px;display:flex;align-items:center;gap:12px;
+}
+.pane-sub::after{content:"";flex:1;height:1px;background:var(--rule)}
+
+.files{list-style:none;font-family:var(--mono);font-size:13px;color:var(--ink-2)}
+.files li{padding:5px 0;overflow-wrap:anywhere}
+.files li::before{content:"› ";color:var(--pine)}
+
+.kinds{display:flex;flex-wrap:wrap;gap:7px}
+.kind{
+  font-family:var(--mono);font-size:12px;padding:4px 10px;border-radius:5px;
+  background:var(--pine-tint);color:var(--pine-deep);
+}
+
+.pane-cta{
+  display:inline-flex;align-items:center;gap:8px;margin-top:26px;
+  font-family:var(--mono);font-size:12.5px;text-decoration:none;
+  padding:10px 17px;border-radius:8px;background:var(--ink);color:var(--paper);
+  transition:background .22s var(--ease);
+}
+.pane-cta:hover{background:var(--pine-deep)}
+.pane-note{font-size:13.5px;color:var(--dim);margin-top:18px;line-height:1.6;max-width:52ch}
+
+/* ---------- argument ---------- */
+.moves{display:grid;grid-template-columns:repeat(3,1fr);gap:0;margin-top:44px;border-top:1px solid var(--rule)}
+.move{padding:26px 26px 30px;border-right:1px solid var(--rule);border-bottom:1px solid var(--rule)}
+.move:last-child{border-right:0}
+.move h3{font-family:var(--display);font-weight:500;font-size:23px;margin:12px 0 10px;letter-spacing:-.005em}
+.move p{font-size:14.5px;color:var(--ink-2);line-height:1.64}
+
+.pull{
+  font-family:var(--display);font-weight:400;font-size:clamp(24px,3.4vw,42px);
+  line-height:1.22;letter-spacing:-.01em;max-width:22ch;
+}
+.pull em{font-style:italic;color:var(--pine-deep)}
+
+/* ---------- request table ---------- */
+.reqs{width:100%;border-collapse:collapse;margin-top:36px;font-size:15px}
+.reqs caption{text-align:left;font-size:14px;color:var(--dim);padding-bottom:14px}
+.reqs th{
+  font-family:var(--mono);font-size:10.5px;letter-spacing:.18em;text-transform:uppercase;
+  color:var(--dim);text-align:left;font-weight:500;
+  padding:0 14px 10px 0;border-bottom:1px solid var(--rule);
+}
+.reqs td{padding:12px 14px 12px 0;border-bottom:1px solid var(--rule-soft);vertical-align:baseline}
+.reqs tr:hover td{background:rgba(43,106,95,.045)}
+.reqs .svc-cell{font-weight:500;white-space:nowrap}
+.reqs .svc-cell .ico{color:var(--pine);margin-right:10px;font-size:.9em}
+.reqs .fmt,.reqs .eta{font-family:var(--mono);font-size:12.5px;color:var(--dim)}
+.reqs .go a{
+  font-family:var(--mono);font-size:12.5px;color:var(--pine-deep);
+  text-decoration:none;border-bottom:1px solid rgba(43,106,95,.35);white-space:nowrap;
+}
+.reqs .go a:hover{border-color:var(--pine-deep)}
+.reqs .go span{font-family:var(--mono);font-size:12.5px;color:var(--dim)}
+
+/* ---------- bridge ---------- */
+.bridge{background:var(--ink);color:var(--paper)}
+.bridge .display{color:var(--paper)}
+.bridge .lede{color:rgba(236,234,227,.72)}
+.bridge .tag{color:#5bbaa8}
+.bridge .small{color:rgba(236,234,227,.5)}
+.bridge-cta{display:flex;flex-wrap:wrap;gap:11px;margin-top:30px}
+.bbtn{
+  display:inline-flex;align-items:center;padding:13px 24px;border-radius:10px;
+  text-decoration:none;font-size:15px;font-weight:500;border:1px solid transparent;
+  transition:transform .2s var(--ease),background .22s var(--ease),border-color .22s var(--ease);
+}
+.bbtn:hover{transform:translateY(-2px)}
+.bbtn-1{background:var(--paper);color:var(--ink)}
+.bbtn-2{border-color:rgba(236,234,227,.32);color:var(--paper)}
+.bbtn-2:hover{border-color:var(--paper)}
+.bridge-list{list-style:none;margin-top:6px}
+.bridge-list li{
+  padding:13px 0;border-bottom:1px solid rgba(236,234,227,.14);
+  font-size:15px;color:rgba(236,234,227,.82);
+}
+.bridge-list li:first-child{border-top:1px solid rgba(236,234,227,.14)}
+.bridge-list b{color:var(--paper);font-weight:500}
+
+/* ---------- footer ---------- */
+.foot{padding:44px 0 58px;border-top:1px solid var(--rule);font-size:13.5px;color:var(--dim)}
+.foot-in{display:flex;justify-content:space-between;gap:30px;flex-wrap:wrap;align-items:flex-start}
+.foot-in a{color:var(--ink-2);text-decoration:none;border-bottom:1px solid var(--rule)}
+.foot-in a:hover{border-color:var(--pine)}
+.foot-in a.lock{border-bottom:0;width:max-content}
+.foot-cols{display:flex;gap:48px;flex-wrap:wrap}
+.foot-cols div{display:flex;flex-direction:column;gap:8px;align-items:flex-start}
+.foot-cols strong{color:var(--ink);font-weight:500}
+.foot .lock img{height:26px;opacity:.7}
+.foot-sig{
+  margin-top:36px;padding-top:22px;border-top:1px solid var(--rule);
+  display:flex;justify-content:flex-end;
+}
+.sig{
+  display:inline-flex;align-items:center;gap:15px;text-decoration:none;
+  opacity:.6;transition:opacity .25s var(--ease);
+}
+.sig:hover,.sig:focus-visible{opacity:1}
+.sig span{
+  font-family:var(--mono);font-size:11px;letter-spacing:.18em;
+  text-transform:uppercase;color:var(--dim);
+}
+/* The mark ships white on transparent; invert it for the paper page. */
+.sig img{height:27px;width:auto;filter:invert(1)}
+
+/* ---------- responsive ---------- */
+@media (max-width:980px){
+  .arch-body{grid-template-columns:1fr}
+  .arch-list{
+    flex-direction:row;overflow-x:auto;border-right:0;border-bottom:1px solid var(--rule);
+    gap:4px;padding:8px;scrollbar-width:thin;
+  }
+  .svc{width:auto;white-space:nowrap}
+  .moves{grid-template-columns:1fr}
+  .move{border-right:0}
+}
+@media (max-width:720px){
+  .reqs{display:block;overflow-x:auto;white-space:nowrap}
+}
+@media (max-width:560px){
+  body{font-size:16px}
+  .lock img{height:26px}
+  .nlink{padding:7px 12px;font-size:11.5px}
+  .arch-pane{padding:20px 16px}
+  .foot-cols{gap:26px}
+}
+@media (prefers-reduced-motion:reduce){
+  html{scroll-behavior:auto}
+  *,*::before,*::after{animation-duration:.001ms!important;transition-duration:.001ms!important}
+}
+</style>
+</head>
+<body>
+
+<!--
+  Font Awesome Free 7 (CC BY 4.0, fontawesome.com/license/free) — only the
+  icons this page uses, inlined rather than loaded, so the page stays
+  self-contained. Each id matches the `icon` field that service carries in
+  src/shared/activityProviders.ts, so the web page and the Data page show
+  the same glyph for the same service.
+-->
+<svg width="0" height="0" aria-hidden="true" focusable="false" style="position:absolute">
+  <symbol id="i-magnifying-glass" viewBox="0 0 512 512"><path d="M368 208A160 160 0 1 0 48 208a160 160 0 1 0 320 0zM337.1 371.1C301.7 399.2 256.8 416 208 416 93.1 416 0 322.9 0 208S93.1 0 208 0 416 93.1 416 208c0 48.8-16.8 93.7-44.9 129.1L505 471c9.4 9.4 9.4 24.6 0 33.9s-24.6 9.4-33.9 0L337.1 371.1z"/></symbol>
+  <symbol id="i-play" viewBox="0 0 384 512"><path d="M64 480c-11.1 0-21.4-5.7-27.2-15.2s-6.4-21.2-1.4-31.1L192 128 35.4 78.3c-5-9.9-4.4-21.6 1.4-31.1S52.9 32 64 32c5.9 0 11.8 1.6 16.9 4.9l288 184c6.9 4.4 11.1 12 11.1 20.2s-4.2 15.8-11.1 20.2l-288 184C75.8 478.4 69.9 480 64 480z"/></symbol>
+  <symbol id="i-envelope" viewBox="0 0 512 512"><path d="M64 64C28.7 64 0 92.7 0 128l0 26.1 234.3 156.2c13.4 8.9 30.9 8.9 44.4 0L512 154.1 512 128c0-35.3-28.7-64-64-64L64 64zM512 210.7L305.2 350.1c-29.8 19.9-68.7 19.9-98.5 0L0 210.7 0 384c0 35.3 28.7 64 64 64l384 0c35.3 0 64-28.7 64-64l0-173.3z"/></symbol>
+  <symbol id="i-cart-shopping" viewBox="0 0 576 512"><path d="M24 0C10.7 0 0 10.7 0 24S10.7 48 24 48l45.9 0c5.7 0 10.7 4 11.8 9.6l51.6 271c6.5 34 36.2 58.4 70.8 58.4L488 387c13.3 0 24-10.7 24-24s-10.7-24-24-24l-283.9 0c-11.5 0-21.4-8.2-23.6-19.5L175.6 293l268.8 0c32.6 0 60.6-23.2 66.4-55.3l24.6-136c1.3-7-.6-14.2-5.2-19.7S518.6 73 511.4 73L128.3 73l-.2-1C123.2 46.2 100.5 27 74.3 27L24 27 24 0zM176 512a48 48 0 1 0 0-96 48 48 0 1 0 0 96zm288 0a48 48 0 1 0 0-96 48 48 0 1 0 0 96z"/></symbol>
+  <symbol id="i-camera" viewBox="0 0 512 512"><path d="M164.5 64C146.6 64 130.2 74 122 89.9L107.2 118.6 64 118.6c-35.3 0-64 28.7-64 64L0 384c0 35.3 28.7 64 64 64l384 0c35.3 0 64-28.7 64-64l0-201.4c0-35.3-28.7-64-64-64l-43.2 0-14.8-28.7C381.8 74 365.4 64 347.5 64l-183 0zM256 187.4a99.3 99.3 0 1 1 0 198.6 99.3 99.3 0 1 1 0-198.6z"/></symbol>
+  <symbol id="i-thumbs-up" viewBox="0 0 512 512"><path d="M323.8 34.8c-38.2-10.9-78 11.2-88.9 49.4l-4 14C219.3 131.6 200 165.6 174.5 194L120 254.7c-8.8 9.8-13.2 22.4-13.2 35.1L106.8 448c0 35.3 28.7 64 64 64l176.2 0c30.6 0 57.1-21.7 62.9-51.7l32.1-166.4c7.2-37.3-19.4-72.9-57.4-72.9l-83.5 0 8.8-31.1c10.9-38.2-11.2-78-49.4-88.9l-16.7-4.8c-2.6-.7-5.3-.9-8-.5zM32 224c-17.7 0-32 14.3-32 32L0 480c0 17.7 14.3 32 32 32s32-14.3 32-32l0-224c0-17.7-14.3-32-32-32z"/></symbol>
+  <symbol id="i-music" viewBox="0 0 512 512"><path d="M499.1 6.3c8.1 6 12.9 15.6 12.9 25.7l0 320c0 44.2-43 80-96 80s-96-35.8-96-80 43-80 96-80c11.2 0 22 1.6 32 4.6L448 155.4 192 224l0 208c0 44.2-43 80-96 80S0 476.2 0 432s43-80 96-80c11.2 0 22 1.6 32 4.6L128 128c0-14.5 9.8-27.2 23.8-30.9l320-88c9.7-2.7 20.2-.7 28.3 5.3z"/></symbol>
+  <symbol id="i-ghost" viewBox="0 0 384 512"><path d="M40.6 501.6c8.2 5.9 18.9 6.6 27.8 1.9L128 471.8l59.6 31.8c9.4 5 20.8 5 30.2 0l59.6-31.8 59.6 31.8c8.9 4.7 19.6 4 27.8-1.9s12.3-16 10.6-26L384 208C384 93.1 298 0 192 0S0 93.1 0 208L30 475.6c-1.7 10 2.4 20.1 10.6 26zM128 224a32 32 0 1 1 0-64 32 32 0 1 1 0 64zm128 0a32 32 0 1 1 0-64 32 32 0 1 1 0 64z"/></symbol>
+  <symbol id="i-hashtag" viewBox="0 0 448 512"><path d="M181.3 32.4c17.4 2.9 29.2 19.4 26.3 36.8L197.8 128l95.1 0 11.5-69.3c2.9-17.4 19.4-29.2 36.8-26.3s29.2 19.4 26.3 36.8L357.8 128l58.2 0c17.7 0 32 14.3 32 32s-14.3 32-32 32l-68.9 0L325.8 320l58.2 0c17.7 0 32 14.3 32 32s-14.3 32-32 32l-68.9 0-11.5 69.3c-2.9 17.4-19.4 29.2-36.8 26.3s-29.2-19.4-26.3-36.8l9.8-58.7-95.1 0-11.5 69.3c-2.9 17.4-19.4 29.2-36.8 26.3s-29.2-19.4-26.3-36.8L90.2 384 32 384c-17.7 0-32-14.3-32-32s14.3-32 32-32l68.9 0 21.3-128L64 192c-17.7 0-32-14.3-32-32s14.3-32 32-32l68.9 0 11.5-69.3c2.9-17.4 19.4-29.2 36.8-26.3zM187.1 192L165.8 320l95.1 0 21.3-128-95.1 0z"/></symbol>
+  <symbol id="i-briefcase" viewBox="0 0 512 512"><path d="M184 48l144 0c4.4 0 8 3.6 8 8l0 40L176 96l0-40c0-4.4 3.6-8 8-8zm-56 8l0 40L64 96C28.7 96 0 124.7 0 160l0 96 192 0 128 0 192 0 0-96c0-35.3-28.7-64-64-64l-64 0 0-40c0-30.9-25.1-56-56-56L184 0c-30.9 0-56 25.1-56 56zM512 288l-192 0 0 32c0 17.7-14.3 32-32 32l-64 0c-17.7 0-32-14.3-32-32l0-32L0 288 0 416c0 35.3 28.7 64 64 64l384 0c35.3 0 64-28.7 64-64l0-128z"/></symbol>
+  <symbol id="i-fire" viewBox="0 0 448 512"><path d="M159.1 30.2c2.8-4.6 7.6-7.6 13-8.1s10.6 1.6 14.2 5.6C233 79.6 288 168.6 288 240c0 17.7 14.3 32 32 32s32-14.3 32-32c0-19.8-3.4-40.1-9-60.1 27.1 27.6 50.5 62.8 65.6 99.4 12.2 29.6 19.4 60.8 19.4 90.7 0 79.5-64.5 144-144 144l-96 0C107.5 514 43 449.5 43 370c0-45.6 15.8-88.5 42.4-124.9 3.4-4.7 9.1-7.2 14.8-6.6s10.7 4.4 13 9.7c6.2 14 15 26.4 25.7 36.6 .5-38.5 8.5-77.5 20.1-113.7 8.6-26.9 19.6-52.7 32-72.5 .1-.1 .1-.2 .2-.3z"/></symbol>
+  <symbol id="i-heart" viewBox="0 0 512 512"><path d="M241 87.1l15 20.7 15-20.7C296 52.5 336.2 32 378.9 32 452.4 32 512 91.6 512 165.1l0 2.6c0 112.2-139.9 242.5-212.9 298.2-12.4 9.4-27.6 14.1-43.1 14.1s-30.8-4.6-43.1-14.1C139.9 410.2 0 279.9 0 167.7l0-2.6C0 91.6 59.6 32 133.1 32 175.8 32 216 52.5 241 87.1z"/></symbol>
+  <symbol id="i-comment" viewBox="0 0 512 512"><path d="M512 240c0 132.5-114.6 240-256 240-37.1 0-72.3-7.4-104.1-20.7L33.5 510.1c-9.4 4-20.2 1.7-27.1-5.8S-2 485.8 2.8 476.8l48.8-92.2C19.2 344.3 0 294.3 0 240 0 107.5 114.6 0 256 0S512 107.5 512 240z"/></symbol>
+</svg>
+
+<nav class="nav">
+  <div class="wrap nav-in">
+    <a class="lock" href="index.html" aria-label="Holmes, home">
+      <img src="assets/logo-ink.svg" alt="Holmes" width="795" height="236">
+    </a>
+    <div class="nav-links">
+      <a class="nlink" href="#request">Request yours</a>
+      <a class="nlink" href="https://ko-fi.com/wilescreativestudio" target="_blank" rel="noopener">Donate</a>
+      <a class="nlink nlink-solid" href="index.html">What Holmes does with it</a>
+    </div>
+  </div>
+</nav>
+
+<header class="hero">
+  <div class="wrap">
+    <p class="tag">The file with your name on it</p>
+    <h1>Every one of them will mail you <em>a copy of you.</em></h1>
+    <p class="hero-lede">Thirteen services on this page hold a record of what you did on them. Ask, and most will send it to you inside a week, as a zip. Below is what is actually in each one.</p>
+    <p class="hero-kicker">The contents are not the surprising part. The surprising part is that the file exists at all, ready to be assembled on request.</p>
+
+    <!-- ===== SIGNATURE ===== -->
+    <section class="arch" aria-label="What is in each export">
+      <div class="arch-bar">
+        <span class="lit">archive/</span>
+        <span aria-hidden="true">·</span>
+        <span>13 services</span>
+        <span aria-hidden="true">·</span>
+        <span>select one to open it</span>
+      </div>
+      <div class="arch-body">
+        <div class="arch-list" role="tablist" aria-label="Services" id="svc-list"></div>
+        <div class="arch-pane" role="tabpanel" id="pane" tabindex="0">
+          <div class="pane-head">
+            <h2 class="pane-name" id="p-name"></h2>
+            <p class="pane-meta" id="p-meta"></p>
+          </div>
+          <p class="pane-blurb" id="p-blurb"></p>
+
+          <p class="pane-sub">In the archive</p>
+          <ul class="files" id="p-files"></ul>
+
+          <p class="pane-sub" id="p-kinds-head">Recorded as</p>
+          <div class="kinds" id="p-kinds"></div>
+
+          <a class="pane-cta" id="p-cta" href="#" target="_blank" rel="noopener noreferrer">Request yours ↗</a>
+          <p class="pane-note" id="p-note"></p>
+        </div>
+      </div>
+    </section>
+  </div>
+</header>
+
+<section class="band">
+  <div class="wrap">
+    <p class="tag tag-flag">None of this leaked</p>
+    <h2 class="display h2 mt-s" style="max-width:24ch">You agreed to all of it. That is what makes it useful to them.</h2>
+    <div class="moves">
+      <div class="move">
+        <p class="tag tag-dim">01 — It exists</p>
+        <h3>The export is the receipt</h3>
+        <p>A company can only send you an archive of something it already keeps. The request button is not a courtesy feature; it is a listing of inventory. Everything on this page is verifiable by anyone willing to click it and wait.</p>
+      </div>
+      <div class="move">
+        <p class="tag tag-dim">02 — It is structured</p>
+        <h3>It arrives query-ready</h3>
+        <p>Not screenshots. Timestamped rows: what, when, with whom, from where. Tinder counts how many times you opened the app, by day. Snapchat keeps location history. LinkedIn keeps every job you applied for and every time you logged in.</p>
+      </div>
+      <div class="move">
+        <p class="tag tag-dim">03 — It is being used</p>
+        <h3>Data is collected to be used</h3>
+        <p>Nobody stores a per-day count of app opens with no plan for it. Storage costs money and retention carries legal risk; both are accepted because the record earns its keep. You do not have to guess at motive to see that.</p>
+      </div>
+    </div>
+    <p class="pull mt-l">So the asymmetry was never about what they know.<br><em>It is that they can ask it questions, and you got a zip file.</em></p>
+  </div>
+</section>
+
+<section class="band" id="request" style="border-top:1px solid var(--rule);background:var(--raise)">
+  <div class="wrap">
+    <p class="tag">Get yours</p>
+    <h2 class="display h2 mt-s" style="max-width:20ch">Thirteen requests, one afternoon, then a wait.</h2>
+    <p class="lede mt-m">Every link goes to that service's own data-request page. Start them all in one sitting — the archives arrive on their own schedule and several take weeks.</p>
+    <table class="reqs">
+      <caption>Formats and delivery times as Holmes has them recorded. Services change both without notice.</caption>
+      <thead>
+        <tr><th scope="col">Service</th><th scope="col">Format</th><th scope="col">Typical wait</th><th scope="col">Request</th></tr>
+      </thead>
+      <tbody id="req-rows"></tbody>
+    </table>
+    <p class="small mt-m">Ask for JSON wherever a service offers a choice — Meta's HTML option is styled for reading and much harder to parse. TikTok deletes the archive four days after it is ready, so watch for that one.</p>
+  </div>
+</section>
+
+<section class="band bridge">
+  <div class="wrap" style="display:grid;grid-template-columns:1fr 1fr;gap:clamp(32px,6vw,72px);align-items:start">
+    <div>
+      <p class="tag">Then what</p>
+      <h2 class="display h2 mt-s">A zip you can’t read is not much better than no zip.</h2>
+      <p class="lede mt-m">Thirteen archives is tens of gigabytes across a dozen incompatible schemas, searchable only by filename. Holmes is the other half: it reads all of it on your Mac, into one dated record you can ask questions of.</p>
+      <div class="bridge-cta">
+        <a class="bbtn bbtn-1" href="index.html">See what Holmes does with it</a>
+        <!-- #REPO -->
+        <a class="bbtn bbtn-2" href="#REPO">Read the source</a>
+      </div>
+    </div>
+    <div>
+      <p class="tag tag-dim" style="color:rgba(236,234,227,.5)">What it adds to the archives</p>
+      <ul class="bridge-list">
+        <li><b>Photos and documents</b> — the folders on your own disk, which no service will mail you</li>
+        <li><b>Apple Health, MyChart and bloodwork</b> — parsed, not summarized</li>
+        <li><b>iMessage</b> — already on your Mac, no request needed</li>
+        <li><b>One dated timeline</b> — every source normalized onto a single spine</li>
+        <li><b>A citation on every claim</b> — back to the file and the line it came from</li>
+      </ul>
+      <p class="small mt-m">Holmes is open source and runs locally. Reading the archives takes a language model, and you choose which one — including a local one, in which case nothing leaves the machine at all.</p>
+    </div>
+  </div>
+</section>
+
+<footer class="foot">
+  <div class="wrap foot-in">
+    <div style="max-width:34ch">
+      <a class="lock" href="index.html" aria-label="Holmes, home">
+        <img src="assets/logo-ink.svg" alt="Holmes" width="795" height="236">
+      </a>
+      <p style="margin-top:12px">Ask your own archive.</p>
+      <p style="margin-top:10px;font-family:var(--mono);font-size:11.5px;line-height:1.7">Contents and delivery times on this page are drawn from Holmes’ own provider registry. Nothing here describes what a company does with your data internally — only what it will hand back when asked.</p>
+      <p style="margin-top:10px;font-family:var(--mono);font-size:11.5px;line-height:1.7">Icons: <a href="https://fontawesome.com/license/free" target="_blank" rel="noopener noreferrer">Font Awesome Free</a>, CC BY 4.0.</p>
+    </div>
+    <div class="foot-cols">
+      <div>
+        <strong>Holmes</strong>
+        <a href="index.html">What it is</a><a href="index.html#how">How it reads</a><a href="index.html#honest">What leaves your Mac</a>
+      </div>
+      <div>
+        <strong>This page</strong>
+        <a href="#request">Request your archives</a>
+        <!-- #REPO -->
+        <a href="#REPO">Source for these figures</a>
+      </div>
+    </div>
+  </div>
+  <div class="wrap foot-sig">
+    <a class="sig" href="https://wilescreative.studio" target="_blank" rel="noopener noreferrer">
+      <span>Design and build</span>
+      <img src="assets/aWiles.png" alt="Wiles Creative Studio" width="8697" height="2579" loading="lazy">
+    </a>
+  </div>
+</footer>
+
+<script>
+/* Straight from src/shared/activityProviders.ts (label, format, exportEta,
+   exportUrl, blurb) and src/main/activityExports/ (paths and event kinds). */
+const SERVICES = [
+  {
+    id:'google-search', icon:'magnifying-glass', label:'Google Search history', fmt:'Takeout', eta:'minutes to hours',
+    url:'https://takeout.google.com/',
+    blurb:'What you searched for, and when.',
+    files:['Takeout/My Activity/Search/MyActivity.json','Takeout/My Activity/Search/MyActivity.html'],
+    kinds:['Search','Discover'],
+    note:'Google has never offered an API for My Activity, so the export is the only way in. Takeout can deliver on a schedule — every two months for a year — into a synced folder.'
+  },
+  {
+    id:'youtube', icon:'play', label:'YouTube', fmt:'Takeout', eta:'minutes to hours',
+    url:'https://takeout.google.com/',
+    blurb:'What you watched, and when.',
+    files:['Takeout/YouTube and YouTube Music/history/watch-history.json','.../search-history.json'],
+    kinds:['Watched','Search'],
+    note:'Watch history has been unreachable through the YouTube Data API since 2016. Takeout is the only path to it.'
+  },
+  {
+    id:'gmail', icon:'envelope', label:'Gmail', fmt:'mbox', eta:'minutes to hours',
+    url:'https://takeout.google.com/',
+    blurb:'Message envelopes — who, when, subject.',
+    files:['Takeout/Mail/All mail Including Spam and Trash.mbox'],
+    kinds:['Email sent','Email received'],
+    note:'Holmes can also read this live over IMAP with an app password, in which case it fetches envelopes only and never message bodies.'
+  },
+  {
+    id:'amazon', icon:'cart-shopping', label:'Amazon', fmt:'CSV', eta:'1–30 days',
+    url:'https://www.amazon.com/hz/privacy-central/data-requests/preview.html',
+    blurb:'Every order, every item, every total.',
+    files:['Your Orders/Retail.OrderHistory.1.csv'],
+    kinds:['Purchase'],
+    note:'Request "Your Orders" rather than "Request All" unless you want the whole thing — the order history CSVs are the useful part.'
+  },
+  {
+    id:'instagram', icon:'camera', label:'Instagram', fmt:'JSON', eta:'hours to a few days',
+    url:'https://accountscenter.instagram.com/info_and_permissions/dyi/',
+    blurb:'Posts, likes, saved items, searches, DM metadata and the ad-interest list they built for you.',
+    files:['your_instagram_activity/likes/liked_posts.json','your_instagram_activity/saved/saved_posts.json','your_instagram_activity/messages/inbox/<thread>/message_1.json','ads_information/'],
+    kinds:['Post','Like','Comment','Saved','Search','Follow','Login','Recently viewed'],
+    note:'Choose JSON, not HTML. The HTML option is formatted for reading and far harder to parse.'
+  },
+  {
+    id:'facebook', icon:'thumbs-up', label:'Facebook', fmt:'JSON', eta:'hours to a few days',
+    url:'https://accountscenter.facebook.com/info_and_permissions/dyi/',
+    blurb:'Posts, comments, reactions, groups, events, and the ad-interest list they built for you.',
+    files:['posts/your_posts_1.json','likes_and_reactions/','search/your_search_history.json','security_and_login_information/'],
+    kinds:['Post','Comment','Reaction','Search','Follow','Login'],
+    note:'Same request flow as Instagram, and the same advice: JSON, not HTML.'
+  },
+  {
+    id:'tiktok', icon:'music', label:'TikTok', fmt:'JSON', eta:'up to 4 days',
+    url:'https://www.tiktok.com/setting/download-your-data',
+    blurb:'Watch history, searches, likes, follows and DM metadata — in one file.',
+    files:['user_data.json'],
+    kinds:['Watched','Search','Like','Comment','Follow','Direct message','Purchase','Login'],
+    note:'Download it within four days of it being ready. TikTok deletes the archive after that and you start the wait again.'
+  },
+  {
+    id:'snapchat', icon:'ghost', label:'Snapchat', fmt:'JSON', eta:'up to 24 hours',
+    url:'https://accounts.snapchat.com/accounts/downloadmydata',
+    blurb:'Snap and chat history metadata, friends, and location history.',
+    files:['json/snap_history.json','json/chat_history.json','json/talk_history.json','json/story_history.json','json/friends.json','json/account_history.json'],
+    kinds:['Snap','Chat','Story','Friend','Purchase','Search','Login'],
+    note:'The app that sells disappearing messages keeps a per-category history and a location record. The messages go; the metadata does not.'
+  },
+  {
+    id:'discord', icon:'hashtag', label:'Discord', fmt:'CSV', eta:'up to 30 days',
+    url:'https://discord.com/app',
+    blurb:'Every message you sent, per channel, with timestamps and attachments.',
+    files:['messages/index.json','messages/<channel-id>/messages.csv'],
+    kinds:['Message'],
+    note:'Tick "include Messages" when you request it, or you get activity counts and nothing else. This is the slowest archive on the list.'
+  },
+  {
+    id:'linkedin', icon:'briefcase', label:'LinkedIn', fmt:'CSV', eta:'10 minutes to 24 hours',
+    url:'https://www.linkedin.com/mypreferences/d/download-my-data',
+    blurb:'Connections, message metadata, searches, every job you applied for, and every login.',
+    files:['Connections.csv','messages.csv','Searches.csv','Job Applications.csv','Logins.csv','Shares.csv','Comments.csv'],
+    kinds:['Connection','Message','Post','Comment','Search','Job application','Login'],
+    note:'Ask for the larger archive, not the fast one. The fast one omits most of this.'
+  },
+  {
+    id:'tinder', icon:'fire', label:'Tinder', fmt:'JSON', eta:'1–7 days',
+    url:'https://account.gotinder.com/data',
+    blurb:'Matches, message counts, and a per-day tally of swipes and app opens.',
+    files:['data.json'],
+    kinds:['Match','Message sent','Message received','Swiped right','Swiped left','Opened app','Purchase'],
+    note:'The usage block is a calendar: for each day you used it, how many times you opened the app and how many times you swiped each way.'
+  },
+  {
+    id:'bumble', icon:'heart', label:'Bumble', fmt:'JSON', eta:'1–30 days',
+    url:'https://bumble.com/en/help/contact',
+    blurb:'Matches, message metadata and account history.',
+    files:['(least structured of the dating exports)'],
+    kinds:['Match','Message','Login'],
+    note:'Requested in-app under Settings → Contact & FAQ. The archive has no stable shape, so Holmes parses what it can find in it.'
+  },
+  {
+    id:'imessage', icon:'comment', label:'iMessage', fmt:'No request', eta:'already here',
+    url:'',
+    blurb:'Who you talk to, how often, and what was said.',
+    files:['~/Library/Messages/chat.db'],
+    kinds:['Message'],
+    note:'The odd one out: no request, no wait, no company to ask. It is a SQLite database already on your Mac, and reading it needs Full Disk Access and nothing else. Holmes stores message text as a 500-character excerpt, redacted like every other field.'
+  }
+];
+
+const list = document.getElementById('svc-list');
+const pane = document.getElementById('pane');
+const elName = document.getElementById('p-name');
+const elMeta = document.getElementById('p-meta');
+const elBlurb = document.getElementById('p-blurb');
+const elFiles = document.getElementById('p-files');
+const elKinds = document.getElementById('p-kinds');
+const elKindsHead = document.getElementById('p-kinds-head');
+const elCta = document.getElementById('p-cta');
+const elNote = document.getElementById('p-note');
+
+let current = 0;
+
+/* One <use> into the inlined Font Awesome sprite at the top of the body. */
+function icon(name) {
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('class', 'ico');
+  svg.setAttribute('aria-hidden', 'true');
+  svg.setAttribute('focusable', 'false');
+  const use = document.createElementNS('http://www.w3.org/2000/svg', 'use');
+  use.setAttribute('href', '#i-' + name);
+  svg.append(use);
+  return svg;
+}
+
+SERVICES.forEach((s, i) => {
+  const b = document.createElement('button');
+  b.type = 'button';
+  b.className = 'svc';
+  b.setAttribute('role', 'tab');
+  b.id = 'tab-' + s.id;
+  b.setAttribute('aria-selected', String(i === 0));
+  b.tabIndex = i === 0 ? 0 : -1;
+  const t = document.createElement('span');
+  t.textContent = s.label;
+  b.append(icon(s.icon), t);
+  b.addEventListener('click', () => select(i));
+  b.addEventListener('keydown', e => {
+    const step = e.key === 'ArrowDown' || e.key === 'ArrowRight' ? 1
+               : e.key === 'ArrowUp' || e.key === 'ArrowLeft' ? -1 : 0;
+    if (!step) return;
+    e.preventDefault();
+    const next = (i + step + SERVICES.length) % SERVICES.length;
+    select(next);
+    list.children[next].focus();
+  });
+  list.append(b);
+});
+
+function select(i) {
+  current = i;
+  const s = SERVICES[i];
+
+  [...list.children].forEach((b, n) => {
+    b.setAttribute('aria-selected', String(n === i));
+    b.tabIndex = n === i ? 0 : -1;
+  });
+  pane.setAttribute('aria-labelledby', 'tab-' + s.id);
+
+  const nameText = document.createElement('span');
+  nameText.textContent = s.label;
+  elName.replaceChildren(icon(s.icon), nameText);
+  elMeta.replaceChildren();
+  const fmt = document.createElement('span');
+  fmt.textContent = s.fmt;
+  const eta = document.createElement('span');
+  eta.append('wait ');
+  const b = document.createElement('b');
+  b.textContent = s.eta;
+  eta.append(b);
+  elMeta.append(fmt, eta);
+
+  elBlurb.textContent = s.blurb;
+
+  elFiles.replaceChildren(...s.files.map(f => {
+    const li = document.createElement('li');
+    li.textContent = f;
+    return li;
+  }));
+
+  elKinds.replaceChildren(...s.kinds.map(k => {
+    const span = document.createElement('span');
+    span.className = 'kind';
+    span.textContent = k;
+    return span;
+  }));
+  elKindsHead.hidden = false;
+
+  if (s.url) {
+    elCta.href = s.url;
+    elCta.hidden = false;
+    elCta.textContent = 'Request yours ↗';
+  } else {
+    elCta.hidden = true;
+  }
+  elNote.textContent = s.note;
+}
+
+/* The request table reads from the same list — one source, two views. */
+document.getElementById('req-rows').replaceChildren(...SERVICES.map(s => {
+  const tr = document.createElement('tr');
+
+  const name = document.createElement('td');
+  name.className = 'svc-cell';
+  const nameLabel = document.createElement('span');
+  nameLabel.textContent = s.label;
+  name.append(icon(s.icon), nameLabel);
+
+  const fmt = document.createElement('td');
+  fmt.className = 'fmt';
+  fmt.textContent = s.fmt;
+
+  const eta = document.createElement('td');
+  eta.className = 'eta';
+  eta.textContent = s.eta;
+
+  const go = document.createElement('td');
+  go.className = 'go';
+  if (s.url) {
+    const a = document.createElement('a');
+    a.href = s.url;
+    a.target = '_blank';
+    a.rel = 'noopener noreferrer';
+    a.textContent = 'Request ↗';
+    a.setAttribute('aria-label', 'Request your ' + s.label + ' archive');
+    go.append(a);
+  } else {
+    const span = document.createElement('span');
+    span.textContent = 'already on your Mac';
+    go.append(span);
+  }
+
+  tr.append(name, fmt, eta, go);
+  return tr;
+}));
+
+select(0);
+</script>
+</body>
+</html>

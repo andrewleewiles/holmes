@@ -21,8 +21,8 @@ import * as database from './database'
 import * as settings from './settings'
 import { assertPathAllowed, getResolvedRoots, isPathEverywhere } from './fileScope'
 import { streamChatCompletion, listModels, analyzePsychology, analyzeHealth, answerRecallQuestion, expandRecallQuery, researchProducts, extractMemoryCandidates, generateImage, generateVideo, generateConversationTitle, fallbackConversationTitle } from './provider'
-import { hasProviderCredentials } from './providerEndpoint'
-import { clearProviderCreditBlock, getProviderCreditState, onProviderCreditChange } from './providerCredit'
+import { describeProvider, hasProviderCredentials } from './providerEndpoint'
+import { clearProviderCreditBlock, getProviderCreditState, isProviderCreditBlocked, onProviderCreditChange } from './providerCredit'
 import { getAssistantName, renderAssistantPrompt } from '../shared/assistantIdentity'
 import type { ChatMessageContent, ContentPart } from './provider'
 import { detectGenerationIntent } from './generationIntent'
@@ -45,7 +45,7 @@ import { MEMORY_CATALOG } from '../shared/memoryCatalog'
 import { buildMemoryContext } from './memoryContext'
 import { parseProductSearchRequest } from './productSearch'
 import { parseWebSearchRequest, executeWebSearch } from './webSearch'
-import { authorizeRecallFiles, buildLocalRecallExpansions, buildRecallCandidateTerms, buildRecallConversationSystemPrompt, buildRecallGroundingSources, clearAuthorizedRecallFiles, isAuthorizedRecallFile, parseRecallSearchRequest, searchRecall, shouldAnswerRecallQuery } from './recall'
+import { authorizeRecallFiles, authorizeRecallFilesFromHistory, buildLocalRecallExpansions, buildRecallCandidateTerms, buildRecallConversationSystemPrompt, buildRecallGroundingSources, clearAuthorizedRecallFiles, isAuthorizedRecallFile, parseRecallSearchRequest, searchRecall, shouldAnswerRecallQuery } from './recall'
 import type { RecallFileScope, RecallGroundingSource } from './recall'
 import { parseMemoryCreateFieldRequest, parseMemoryExtractionRequest, parseMemorySuggestionReviewRequest, parseMemoryUpdateRequest, redactMemoryContent } from './memory'
 import { collectMemoryEvidence } from './memorySources'
@@ -65,6 +65,7 @@ import { syncPhotosMetadata } from './activityPhotos'
 import { detectSubscriptionsFromEmail, ingestSubscriptionFile } from './activitySubscriptions'
 import { generateActivitySummary, shouldUpdateActivitySummary, getActivitySummary, estimateActivityAnalysis } from './activitySummary'
 import { generateDocumentContexts, getDocumentContextTree, listProjectIndexSummaries, generateUserSuperContext, getUserSuperContext, createSpendTracker, resolveProvenanceChain, readSourceExcerpt } from './documentContext'
+import { getHomeIdeas, refreshHomeIdeas } from './homeIdeas'
 import { estimateProjectIndex, combineEstimates } from './indexEstimate'
 import { getPriceTable } from './modelPricing'
 import {
@@ -102,7 +103,16 @@ import { normalizeTimelineCategory, normalizeTimelinePrecision, parseDateSpec } 
 import { buildPeopleContext, rebuildPeople } from './people'
 import { getRole, isRoleId, ROLES, roleSystemMessage } from '../shared/roles'
 import { buildSessionNotesContext, generateRoleSessionNote } from './roleSessions'
-import { BOOK_READING_STATUSES } from '../shared/books'
+import {
+  BOOK_READING_STATUSES,
+  guestReadingState,
+  redactAudiobookChapterForGuest,
+  redactAudiobookForGuest,
+  redactBookForGuest,
+  redactLibraryBookForGuest,
+} from '../shared/books'
+import { mintMediaTicket } from './remoteMedia'
+import { isRemoteMediaKind, type RemoteMediaTicket } from '../shared/remoteMedia'
 import { isLibraryProject } from '../shared/defaultProjects'
 import { getBookResource, getCanonicalText, getChapterContent, scanLibrary } from './library'
 import { createManualAnnotation, generateBookAnnotations, MAX_ANNOTATION_INPUT_CHARS } from './bookAnnotations'
@@ -161,9 +171,9 @@ import { setAmazonCookies, clearAmazonCookies, setSecret, clearSecret } from './
 import { listAccounts, syncAccount, importAccountExport, scanAccountWatchFolders } from './activityAccounts'
 import { activityProviderOrNull } from '../shared/activityProviders'
 import { fetchCurrentLocation, isHolmesSidecarAvailable } from './sidecarLive'
-import { isActivitySourceType } from '../shared/types'
+import { isActivitySourceType, normalizeIndexGranularity } from '../shared/types'
 import type { AccountEvent, ActivityAccountConfig, ActivityAccountUpdate } from '../shared/types'
-import type { ChatAttachment, StreamChunk, ReasoningEffort, Project, ProjectInput, PsychologyAnalysis, HealthAnalysis, HealthRecord, HealthObservation, HealthSummary, HealthIngestProgress, HealthLiveStatus, HealthLiveSyncProgress, HealthSyncResult, PsychologicalTestId, ClaudeImportProgress, MemoryMode, ContextSelection, FsReadResult, FsWriteRequest, FsWriteResult, FsListItem, ToolCall, ToolResult, ProviderConfig, WebSearchRequest, ActivityRecord, ActivitySourceType, ActivityIngestProgress, ActivityEventsBySource, ActivitySummary, ActivityLiveStatus, ActivityLiveStatusSource, ActivitySyncResult, ActivitySyncResultItem, BrowserEvent, YoutubeEvent, AmazonEvent, EmailEvent, KnowledgeEvent, PhotoEvent, LocationEvent, WeatherEvent, SubscriptionEvent, DocumentContextProgress, DocumentIndexState, SystemPromptEntry, TimelineEvent, TimelineEventInput, TimelineFilter, TimelineRebuildProgress, TimelineRunState, ContextVersionFilter, ProviderCallFilter, PeopleFilter, PeopleRebuildProgress, PersonRelation, Book, BookChapter, BookChapterContent, BookReadingState, BookReadingStatus, BookResource, LibraryBook, LibraryRunState, LibraryScanProgress, LibraryScanResult, IndexEstimate, BookAnnotation, BookAnnotationRun, BookLesson, BookLessonAttempt, BookConversationLink, BookDiscussionScope, Audiobook, AudiobookChapter, AudiobookEstimate, SpeechModel, SpeechProviderInfo, SpeechVoice } from '../shared/types'
+import type { ChatAttachment, StreamChunk, ReasoningEffort, Project, ProjectInput, PsychologyAnalysis, HealthAnalysis, HealthRecord, HealthObservation, HealthSummary, HealthIngestProgress, HealthLiveStatus, HealthLiveSyncProgress, HealthSyncResult, PsychologicalTestId, ClaudeImportProgress, MemoryMode, ContextSelection, FsReadResult, FsWriteRequest, FsWriteResult, FsListItem, ToolCall, ToolResult, ProviderConfig, WebSearchRequest, ActivityRecord, ActivitySourceType, ActivityIngestProgress, ActivityEventsBySource, ActivitySummary, ActivityLiveStatus, ActivityLiveStatusSource, ActivitySyncResult, ActivitySyncResultItem, BrowserEvent, YoutubeEvent, AmazonEvent, EmailEvent, KnowledgeEvent, PhotoEvent, LocationEvent, WeatherEvent, SubscriptionEvent, DocumentContextProgress, DocumentIndexState, SystemPromptEntry, TimelineEvent, TimelineEventInput, TimelineFilter, TimelineRebuildProgress, TimelineRunState, ContextVersionFilter, ProviderCallFilter, PeopleFilter, PeopleRebuildProgress, PersonRelation, Book, BookChapter, BookChapterContent, BookReadingState, BookReadingStatus, BookResource, LibraryBook, LibraryRunState, LibraryScanProgress, LibraryScanResult, IndexEstimate, BookAnnotation, BookAnnotationRun, BookLesson, BookLessonAttempt, BookConversationLink, BookDiscussionScope, Audiobook, AudiobookChapter, AudiobookEstimate, SpeechModel, SpeechProviderInfo, SpeechVoice, RecallSearchResponse, RecallHistorySource } from '../shared/types'
 
 let abortController: AbortController | null = null
 const productSearchControllers = new Map<number, AbortController>()
@@ -191,8 +201,8 @@ const recallConversationContexts = new Map<number, {
 /**
  * Registers a channel for both callers: the renderer through `ipcMain`, and a
  * paired device through the registry the remote server dispatches against.
- * Registration alone grants a device nothing — REMOTE_CALLABLE_CHANNELS decides
- * that, and it is default-deny.
+ * Registration alone grants a device nothing — the callable set for that
+ * device's scope decides, and both sets are default-deny.
  */
 function handle(channel: string, handler: IpcHandler): void {
   registerHandler(channel, handler)
@@ -222,9 +232,44 @@ function assertTrustedSender(event: CallerEvent, feature: string): void {
   if (!trusted) throw new Error(`${feature} is unavailable from this page`)
 }
 
+/**
+ * True only for a `media`-scoped remote device — a guest the owner shared the
+ * Library with. A renderer call and an `owner` device both read false, so the
+ * desktop's own behaviour is unchanged by every redaction gated on this.
+ */
+function isGuestCaller(event: CallerEvent): boolean {
+  return event.remote?.scope === 'media'
+}
+
+// Only failures that shrinking the payload can actually fix. A malformed or
+// truncated reply is not one of them: retrying it with a single source produced
+// an answer drawn from the weakest evidence found, stated with full confidence
+// — worse than reporting that the answer could not be generated.
+/**
+ * The results the stored answer cited, so a past answer can still say what it
+ * was based on and still open those files.
+ *
+ * When there is no answer there is nothing to cite, and the ranked result list
+ * is not history — it is search state that re-running the query rebuilds.
+ */
+function recallHistorySources(result: RecallSearchResponse): RecallHistorySource[] {
+  if (!result.answer) return []
+  const cited = new Set(result.answer.sourceIds)
+  return result.results
+    .filter((searchResult) => cited.has(searchResult.id))
+    .map((searchResult) => ({
+      resultId: searchResult.id,
+      title: searchResult.title,
+      context: searchResult.context,
+      path: searchResult.path,
+      conversationId: searchResult.conversationId,
+    }))
+}
+
 function shouldRetryRecallAnswer(error: unknown): boolean {
   if (!(error instanceof Error)) return false
-  return /answer|citation|context|json|large|source|token/i.test(error.message)
+  if (/ran out of output space/i.test(error.message)) return false
+  return /context length|context_length|too large|too many tokens|maximum context|unexpectedly large/i.test(error.message)
 }
 
 function createTimedStage(parentSignal: AbortSignal, timeoutMs: number): {
@@ -252,12 +297,25 @@ function createTimedStage(parentSignal: AbortSignal, timeoutMs: number): {
   }
 }
 
+// An empty balance is the one failure the user can act on, and it is also the
+// one the generic branches below paraphrase into nothing ("provider request
+// failed"). So it is checked first, and answered in the provider's own words.
+function isCreditFailure(error: unknown): boolean {
+  if (isProviderCreditBlocked()) return true
+  if (!(error instanceof Error)) return false
+  return /402|insufficient credit|out of credit|lack of credit|add more using/i.test(error.message)
+}
+
 function describeRecallAnswerError(error: unknown): string {
+  if (isCreditFailure(error)) return 'the provider is out of credit'
   if (!(error instanceof Error)) return 'provider request failed'
   const message = error.message.toLocaleLowerCase()
   if (/401|403|api key|authentication|unauthorized/.test(message)) return 'provider authentication failed'
   if (/429|rate limit|too many requests/.test(message)) return 'provider rate limit was reached'
   if (/answer.*timed out/.test(message)) return 'the answer model timed out'
+  if (/ran out of output space/.test(message)) {
+    return 'the System Model used its whole output budget reasoning and never finished the answer'
+  }
   if (/context|token|too large|unexpectedly large/.test(message)) return 'the selected model could not fit the source context'
   if (/answer|citation|json|source/.test(message)) return 'the model returned an unsupported answer format'
   if (/fetch|network|socket|timed out|timeout/.test(message)) return 'the provider connection failed'
@@ -476,12 +534,22 @@ function buildApiMessagesFromHistory(
 }
 
 const NO_VISION_MODEL_ERROR =
-  'This message has attachments, but no Vision (VLM) model is configured. Open Settings and choose a Vision Model that supports image input, then send again. Your message and its attachments have been kept.'
+  'This conversation contains images, but no Vision (VLM) model is configured. Open Settings and choose a Vision Model that supports image input, then send again. Your message has been kept.'
 
-// Attachments force the configured vision model; without one the request would be
-// silently broken, so the caller surfaces NO_VISION_MODEL_ERROR instead.
-function resolveVisionModel(attachments: ChatAttachment[] | undefined): { model: string | null; error?: string } {
-  if (!attachments || attachments.length === 0) return { model: null }
+// Images anywhere in the outgoing history force the configured vision model, not
+// just images on the newest message: buildApiMessagesFromHistory re-sends an
+// image_url part for every user image in the conversation, so a text-only
+// follow-up (or retry) after an image still needs an image-capable endpoint —
+// a text model would be rejected with "No endpoints found that support image
+// input". Without a configured vision model the request would be silently
+// broken, so the caller surfaces NO_VISION_MODEL_ERROR instead.
+function resolveVisionModel(
+  messages: Array<{ role: string; attachments?: ChatAttachment[] }>,
+): { model: string | null; error?: string } {
+  const hasImages = messages.some(
+    (msg) => msg.role === 'user' && msg.attachments?.some((attachment) => attachment.kind === 'image'),
+  )
+  if (!hasImages) return { model: null }
   const visionModel = settings.getVisionModel()
   if (!visionModel) return { model: null, error: NO_VISION_MODEL_ERROR }
   return { model: visionModel }
@@ -614,7 +682,10 @@ const LONG_PROJECT_CONTEXT_LIMIT = 3
 async function buildSystemMessages(
   conversationId: string,
   memoryMode: MemoryMode,
-  context: ContextSelection | undefined
+  context: ContextSelection | undefined,
+  // A draft conversation has no row to read the role off yet, so the preview
+  // passes the pending selection. `undefined` keeps the stored role.
+  roleId?: string | null
 ): Promise<SystemPromptEntry[]> {
   const identityPrompt = await getStablePrompt()
   const conversation = database.listConversations().find((c) => c.id === conversationId)
@@ -631,7 +702,7 @@ async function buildSystemMessages(
   // The role sits above the context blocks: it says how to be, and everything
   // below it is what to know. Placed after the user's own custom prompt so a
   // conversation-specific instruction still outranks a catalog default.
-  const role = getRole(conversation?.roleId)
+  const role = getRole(roleId === undefined ? conversation?.roleId : roleId)
   if (role) {
     systemMessages.push({ role: 'system', content: roleSystemMessage(role), label: `Role: ${role.name}` })
 
@@ -1100,13 +1171,13 @@ export function registerIpcHandlers(): void {
       return
     }
 
-    const vision = resolveVisionModel(attachments)
+    const messages = database.getMessages(conversationId)
+    const vision = resolveVisionModel(messages)
     if (vision.error) {
       broadcast(IPC.CHAT.STREAM_DONE, { text: '', done: true, error: vision.error })
       return
     }
 
-    const messages = database.getMessages(conversationId)
     const systemMessages = await buildSystemMessages(conversationId, memoryMode || 'detailed', context)
     broadcast(IPC.CHAT.SYSTEM_PROMPT, systemMessages)
 
@@ -1143,13 +1214,13 @@ export function registerIpcHandlers(): void {
       return
     }
 
-    const vision = resolveVisionModel(original.attachments)
+    const messages = database.getMessages(original.conversationId)
+    const vision = resolveVisionModel(messages)
     if (vision.error) {
       broadcast(IPC.CHAT.STREAM_DONE, { text: '', done: true, error: vision.error })
       return
     }
 
-    const messages = database.getMessages(original.conversationId)
     const systemMessages = await buildSystemMessages(original.conversationId, memoryMode || 'detailed', context)
     broadcast(IPC.CHAT.SYSTEM_PROMPT, systemMessages)
     const apiMessages = buildApiMessagesFromHistory(systemMessages, messages)
@@ -1182,13 +1253,13 @@ export function registerIpcHandlers(): void {
       return
     }
 
-    const vision = resolveVisionModel(userMessage.attachments)
+    const messages = database.getMessagesUpTo(userMessage.conversationId, userMessage.id)
+    const vision = resolveVisionModel(messages)
     if (vision.error) {
       broadcast(IPC.CHAT.STREAM_DONE, { text: '', done: true, error: vision.error })
       return
     }
 
-    const messages = database.getMessagesUpTo(userMessage.conversationId, userMessage.id)
     const systemMessages = await buildSystemMessages(userMessage.conversationId, memoryMode || 'detailed', context)
     broadcast(IPC.CHAT.SYSTEM_PROMPT, systemMessages)
     const apiMessages = buildApiMessagesFromHistory(systemMessages, messages)
@@ -1205,8 +1276,8 @@ export function registerIpcHandlers(): void {
     database.setActiveBranch(messageId)
   })
 
-  handle(IPC.CHAT.PREVIEW_SYSTEM_PROMPT, async (_event, conversationId: string, memoryMode: MemoryMode, context?: ContextSelection) => {
-    return buildSystemMessages(conversationId, memoryMode, context)
+  handle(IPC.CHAT.PREVIEW_SYSTEM_PROMPT, async (_event, conversationId: string, memoryMode: MemoryMode, context?: ContextSelection, roleId?: string | null) => {
+    return buildSystemMessages(conversationId, memoryMode, context, roleId === undefined ? undefined : sanitizeRoleId(roleId))
   })
 
   handle(IPC.CHAT.ABORT, () => {
@@ -1372,7 +1443,12 @@ export function registerIpcHandlers(): void {
             const matchingMode = localExpansionCount > 0 ? 'local concept matching' : 'exact local matching'
             notices.push(expansionStage.timedOut()
               ? `Semantic expansion timed out, so Recall used ${matchingMode}.`
-              : `Semantic expansion was unavailable, so Recall used ${matchingMode}.`)
+              : isCreditFailure(error)
+                // Without this the only symptom is the absence of the expansion
+                // chips, which reads as a broken feature rather than an empty
+                // account the user can top up.
+                ? `Semantic expansion needs provider credit, and ${describeProvider(providerConfig)} refused the call for lack of it. Recall used ${matchingMode}. Add credit, then use "Try again" in Settings.`
+                : `Semantic expansion was unavailable, so Recall used ${matchingMode}.`)
           } finally {
             expansionStage.dispose()
           }
@@ -1433,11 +1509,16 @@ export function registerIpcHandlers(): void {
                   : error
                 if (!answerStage.timedOut() && groundingSources.length > 1 && shouldRetryRecallAnswer(error)) {
                   try {
+                    // Halve the evidence rather than discard all but one source:
+                    // the point is to fit the model's context, and the sources
+                    // are already ordered strongest first.
                     result.answer = await answerRecallQuestion(
                       providerConfig,
                       settings.getTextModel(),
                       request.query,
-                      groundingSources.slice(0, 1),
+                      groundingSources
+                        .slice(0, Math.max(1, Math.ceil(groundingSources.length / 2)))
+                        .map((source) => ({ ...source, content: source.content.slice(0, 20_000) })),
                       answerStage.signal
                     )
                     answerError = null
@@ -1479,6 +1560,27 @@ export function registerIpcHandlers(): void {
 
       result.durationMs = Date.now() - startedAt
       authorizeRecallFiles(senderId, result.results)
+      // Recorded here rather than in the renderer so a search that finished is
+      // kept even if the page is navigated away from while it was running.
+      // A cancelled or failed search throws above and is never recorded.
+      try {
+        database.insertRecallSearch({
+          query: request.query,
+          source: request.source,
+          semantic: request.semantic,
+          answer: result.answer?.text ?? null,
+          answerModel: result.answer?.model ?? null,
+          sources: recallHistorySources(result),
+          resultCount: result.results.length,
+          expandedQueries: result.expandedQueries,
+          notices: result.notices,
+          durationMs: result.durationMs,
+        })
+      } catch (historyError) {
+        // History is a convenience; failing to record one must not fail the
+        // search the user is waiting on.
+        console.error('Could not record Recall search history:', historyError)
+      }
       return result
     } catch (error) {
       if (controller.signal.aborted) {
@@ -1502,6 +1604,28 @@ export function registerIpcHandlers(): void {
     recallControllers.get(event.sender.id)?.abort()
     clearAuthorizedRecallFiles(event.sender.id)
     recallConversationContexts.delete(event.sender.id)
+  })
+
+  handle(IPC.RECALL.HISTORY, (event) => {
+    assertTrustedSender(event, 'Recall')
+    const entries = database.listRecallSearches()
+    // A file cited by a past answer stays openable from the history list, which
+    // means it has to be authorized the same way a live result is. Only paths
+    // Holmes itself recorded are added, and the live results stay authorized.
+    authorizeRecallFilesFromHistory(event.sender.id, entries)
+    return entries
+  })
+
+  handle(IPC.RECALL.DELETE_HISTORY, (event, id: unknown) => {
+    assertTrustedSender(event, 'Recall')
+    if (typeof id !== 'string' || !id.trim()) throw new Error('A history entry id is required')
+    database.deleteRecallSearch(id)
+    return database.listRecallSearches()
+  })
+
+  handle(IPC.RECALL.CLEAR_HISTORY, (event) => {
+    assertTrustedSender(event, 'Recall')
+    return database.clearRecallSearches()
   })
 
   handle(IPC.RECALL.START_CONVERSATION, (event, model: unknown, effort: unknown) => {
@@ -2453,6 +2577,7 @@ export function registerIpcHandlers(): void {
             ? (runOptions as { sourcePath: string }).sourcePath
             : undefined,
           force: Boolean((runOptions as { force?: unknown })?.force),
+          granularity: normalizeIndexGranularity((runOptions as { granularity?: unknown })?.granularity),
         }
       )
       // Roll the updated project super-context up into the unified user super-context.
@@ -2512,6 +2637,9 @@ export function registerIpcHandlers(): void {
       ? new Set(rawSelection.filter((id): id is string => typeof id === 'string'))
       : null
     const forceAll = Boolean(options && typeof options === 'object' && (options as { force?: unknown }).force)
+    const batchGranularity = normalizeIndexGranularity(
+      options && typeof options === 'object' ? (options as { granularity?: unknown }).granularity : undefined
+    )
 
     const run = beginDocumentIndexRun({ scope: 'all' })
     const abortOnDestroy = () => run.controller.abort()
@@ -2546,7 +2674,7 @@ export function registerIpcHandlers(): void {
         setDocumentIndexRunProject(run, project.id, project.name)
         sendProgress({ phase: 'scanning', message: `Indexing ${project.name}…`, current: startIndex + i, total: all.length, batchLabel })
         try {
-          await generateDocumentContexts(project.id, providerConfig, model, run.signal, (p) => sendProgress({ ...p, batchLabel }), { visionModel, spend, force: forceAll })
+          await generateDocumentContexts(project.id, providerConfig, model, run.signal, (p) => sendProgress({ ...p, batchLabel }), { visionModel, spend, force: forceAll, granularity: batchGranularity })
           indexed += 1
         } catch {
           if (run.signal.aborted) break
@@ -2609,11 +2737,12 @@ export function registerIpcHandlers(): void {
     assertTrustedSender(event, 'Document context')
     if (typeof projectId !== 'string' || !projectId.trim()) throw new Error('Project ID is required')
     const tier = settings.normalizeModelTier(tierArg ?? settings.getDefaultTier())
+    const granularity = normalizeIndexGranularity((estimateOptions as { granularity?: unknown })?.granularity)
     const estimateTarget = database.getProjectById(projectId)
     if (estimateTarget && isLibraryProject(estimateTarget)) {
       // Zero calls, zero cost — and crucially no folder walk, which would
       // otherwise quote a price for indexing books that will never be indexed.
-      return combineEstimates([], tier, settings.getTextModel(tier), settings.getIndexVisionModel(tier))
+      return combineEstimates([], tier, settings.getTextModel(tier), settings.getIndexVisionModel(tier), granularity)
     }
     return estimateProjectIndex(
       projectId,
@@ -2627,6 +2756,7 @@ export function registerIpcHandlers(): void {
           ? (estimateOptions as { sourcePath: string }).sourcePath
           : undefined,
         force: Boolean((estimateOptions as { force?: unknown })?.force),
+        granularity,
       }
     )
   })
@@ -2642,15 +2772,16 @@ export function registerIpcHandlers(): void {
       ? new Set(rawSelection.filter((id): id is string => typeof id === 'string'))
       : null
     const force = Boolean((estimateOptions as { force?: unknown })?.force)
+    const granularity = normalizeIndexGranularity((estimateOptions as { granularity?: unknown })?.granularity)
     // Estimate exactly what the batch would run, so the quoted cost matches.
     const projects = database
       .listProjects()
       .filter((p) => p.path && p.visible && !isLibraryProject(p) && (!selection || selection.has(p.id)))
     const estimates = []
     for (const project of projects) {
-      estimates.push(await estimateProjectIndex(project.id, tier, textModel, visionModel, providerConfig, settings.getRequestsPerMinute(), { force }))
+      estimates.push(await estimateProjectIndex(project.id, tier, textModel, visionModel, providerConfig, settings.getRequestsPerMinute(), { force, granularity }))
     }
-    return combineEstimates(estimates, tier, textModel, visionModel)
+    return combineEstimates(estimates, tier, textModel, visionModel, granularity)
   })
 
   handle(IPC.DOCUMENTS.GET_TREE, (event, projectId: unknown) => {
@@ -2935,6 +3066,18 @@ export function registerIpcHandlers(): void {
       throw new Error('Unknown relation')
     }
     database.setPeopleOverride('relation', personKey, relation)
+  })
+
+  // The home screen's opening prompts. GET never calls a model; REFRESH makes at
+  // most one budget-tier call, and only when the profile it draws on has moved.
+  handle(IPC.IDEAS.GET, (event) => {
+    assertTrustedSender(event, 'Ideas')
+    return getHomeIdeas()
+  })
+
+  handle(IPC.IDEAS.REFRESH, (event, force: unknown) => {
+    assertTrustedSender(event, 'Ideas')
+    return refreshHomeIdeas(settings.getProvider(), settings.getTextModel('budget'), undefined, force === true)
   })
 
   handle(IPC.CONTEXT_VERSIONS.LIST, (event, filter: unknown) => {
@@ -3633,12 +3776,18 @@ export function registerIpcHandlers(): void {
     const ids = books.map((book) => book.id)
     const reading = database.listReadingStates(ids)
     const counts = database.countBookArtifacts(ids)
-    return books.map((book) => ({
+    const shelf = books.map((book) => ({
       book,
       reading: reading.get(book.id) ?? database.ensureReadingState(book.id),
       lessonCount: counts.get(book.id)?.lessons ?? 0,
       annotationCount: counts.get(book.id)?.annotations ?? 0,
     }))
+    // A guest gets the shelf, not the owner's copy of it: none of the owner's
+    // rating, notes, dates or filesystem layout — but their OWN reading
+    // position, so a shared book can be resumed.
+    if (!isGuestCaller(event)) return shelf
+    const guestReading = database.listDeviceReadingStates(event.remote!.deviceId)
+    return shelf.map((entry) => redactLibraryBookForGuest(entry, guestReading.get(entry.book.id) ?? null))
   })
 
   handle(IPC.LIBRARY.GET_BOOK, (event, bookId: unknown): { book: Book; chapters: BookChapter[]; reading: BookReadingState } => {
@@ -3646,7 +3795,14 @@ export function registerIpcHandlers(): void {
     if (typeof bookId !== 'string' || !bookId.trim()) throw new Error('A book id is required')
     const book = database.getBookById(bookId)
     if (!book) throw new Error('That book is no longer on the shelf')
-    return { book, chapters: database.listBookChapters(bookId), reading: database.ensureReadingState(bookId) }
+    const chapters = database.listBookChapters(bookId)
+    if (isGuestCaller(event)) {
+      // Chapter structure survives — the reader cannot work without it — while
+      // the owner's reading record is replaced by this guest's own.
+      const mine = database.getDeviceReadingState(event.remote!.deviceId, bookId)
+      return { book: redactBookForGuest(book), chapters, reading: mine ?? guestReadingState(bookId) }
+    }
+    return { book, chapters, reading: database.ensureReadingState(bookId) }
   })
 
   handle(IPC.LIBRARY.DELETE_BOOK, (event, bookId: unknown): void => {
@@ -3704,6 +3860,22 @@ export function registerIpcHandlers(): void {
     if (typeof chapterIndex !== 'number' || typeof charOffset !== 'number') throw new Error('A position is required')
     const book = database.getBookById(bookId)
     if (!book) throw new Error('That book is no longer on the shelf')
+
+    // A guest's position is theirs. This branch is the only reason
+    // library:set-progress is media-callable at all: without it the write would
+    // land on the owner's row and on the life timeline.
+    if (isGuestCaller(event)) {
+      const chapters = database.listBookChapters(bookId)
+      const total = chapters.length > 0 ? chapters[chapters.length - 1].charEnd : 0
+      const offset = Math.max(0, Math.trunc(charOffset))
+      return database.setDeviceReadingProgress(event.remote!.deviceId, bookId, {
+        lastChapterIndex: Math.max(0, Math.trunc(chapterIndex)),
+        lastCharOffset: offset,
+        furthestCharOffset: offset,
+        progressPercent: total > 0 ? Math.min(100, (offset / total) * 100) : 0,
+      })
+    }
+
     const current = database.ensureReadingState(bookId)
     const chapters = database.listBookChapters(bookId)
     const total = chapters.length > 0 ? chapters[chapters.length - 1].charEnd : 0
@@ -3765,11 +3937,14 @@ export function registerIpcHandlers(): void {
       projectId,
       projectName: database.getProjectById(projectId)?.name ?? null,
       tier,
+      // No photos in a library snapshot, so granularity has nothing to sample.
+      granularity: 'full',
       textModel,
       visionModel: '',
       textFiles: manifest.bookCount,
       imageFiles: 0,
       skippedFiles: 0,
+      sampledOutFiles: 0,
       cachedFiles: 0,
       folders: 0,
       lines,
@@ -3858,11 +4033,13 @@ export function registerIpcHandlers(): void {
       projectId: book?.projectId ?? null,
       projectName: book?.title ?? null,
       tier,
+      granularity: 'full',
       textModel,
       visionModel: '',
       textFiles: chapterEnd - chapterStart + 1,
       imageFiles: 0,
       skippedFiles: 0,
+      sampledOutFiles: 0,
       cachedFiles: 0,
       folders: 0,
       lines: [{ label: 'Annotations', fileCount: chapterEnd - chapterStart + 1, callCount: 1, inputTokens, outputTokens, costUsd }],
@@ -4009,11 +4186,13 @@ export function registerIpcHandlers(): void {
       projectId: book?.projectId ?? null,
       projectName: book?.title ?? null,
       tier,
+      granularity: 'full',
       textModel,
       visionModel: '',
       textFiles: chapterEnd - chapterStart + 1,
       imageFiles: 0,
       skippedFiles: 0,
+      sampledOutFiles: 0,
       cachedFiles: 0,
       folders: 0,
       lines: [{ label: segments > 1 ? `Lesson (${segments} segments)` : 'Lesson', fileCount: chapterEnd - chapterStart + 1, callCount: calls, inputTokens, outputTokens, costUsd }],
@@ -4253,13 +4432,50 @@ export function registerIpcHandlers(): void {
     assertTrustedSender(event, 'Library')
     if (typeof bookId !== 'string' || !bookId.trim()) throw new Error('A book id is required')
     if (typeof chapterIndex !== 'number') throw new Error('A chapter is required')
-    return readAudiobook(bookId, chapterIndex)
+    const chapter = readAudiobook(bookId, chapterIndex)
+    if (!chapter) return null
+
+    const remote = event.remote
+    if (!remote) return chapter
+
+    // `holmes-audio://` is a scheme only this process serves, so it means
+    // nothing on a phone. A remote caller gets absolute, token-bearing HTTP URLs
+    // for the same segments instead — one round trip, not one per segment.
+    const segments = chapter.segments.map((segment) => {
+      try {
+        return { ...segment, url: mintMediaTicket({ kind: 'segment', id: segment.id, deviceId: remote.deviceId, scope: remote.scope }).url }
+      } catch {
+        // A segment whose file has gone gets no URL rather than a broken one.
+        return { ...segment, url: '' }
+      }
+    })
+    const withUrls: AudiobookChapter = { ...chapter, segments }
+    return remote.scope === 'media' ? redactAudiobookChapterForGuest(withUrls) : withUrls
   })
 
   handle(IPC.LIBRARY.LIST_AUDIOBOOKS, (event, bookId: unknown): Audiobook[] => {
     assertTrustedSender(event, 'Library')
     if (typeof bookId !== 'string' || !bookId.trim()) throw new Error('A book id is required')
-    return listBookAudiobooks(bookId)
+    const audiobooks = listBookAudiobooks(bookId)
+    return isGuestCaller(event) ? audiobooks.map(redactAudiobookForGuest) : audiobooks
+  })
+
+  /**
+   * The only way to obtain a bulk-media URL. It is remote-only on purpose: the
+   * desktop reads these files off its own disk, and minting a signed URL for it
+   * would be inventing a credential nobody needs.
+   *
+   * The token is a delegation of a right the caller already proved over the
+   * sealed socket, bound to this device, this resource and a short expiry — see
+   * `src/main/remoteMedia.ts`.
+   */
+  handle(IPC.LIBRARY.GET_MEDIA_URL, (event, kind: unknown, id: unknown): RemoteMediaTicket => {
+    assertTrustedSender(event, 'Library')
+    const remote = event.remote
+    if (!remote) throw new Error('Bulk media URLs are only issued to paired devices')
+    if (!isRemoteMediaKind(kind)) throw new Error('That media kind does not exist')
+    if (typeof id !== 'string' || !id.trim()) throw new Error('A media id is required')
+    return mintMediaTicket({ kind, id, deviceId: remote.deviceId, scope: remote.scope })
   })
 
   handle(IPC.LIBRARY.DELETE_AUDIOBOOK, (event, bookId: unknown, chapterIndex: unknown): void => {
@@ -4309,8 +4525,8 @@ export function registerIpcHandlers(): void {
     return applyOrganizePlan(request)
   })
 
-  // Remote access. None of these are in REMOTE_CALLABLE_CHANNELS: a paired
-  // phone must not be able to pair another phone or revoke its own revocation.
+  // Remote access. None of these are callable in any scope: a paired phone must
+  // not be able to pair another phone or revoke its own revocation.
   handle(IPC.REMOTE.GET_STATUS, (event): RemoteServerStatus => {
     assertTrustedSender(event, 'Remote access')
     return getRemoteStatus()
@@ -4321,9 +4537,10 @@ export function registerIpcHandlers(): void {
     return await setRemoteServerEnabled(enabled === true)
   })
 
-  handle(IPC.REMOTE.CREATE_PAIRING, async (event): Promise<RemotePairingOffer> => {
+  handle(IPC.REMOTE.CREATE_PAIRING, async (event, scope: unknown): Promise<RemotePairingOffer> => {
     assertTrustedSender(event, 'Remote access')
-    return await createPairingOffer()
+    // An unrecognised scope pairs the narrower device, never the wider one.
+    return await createPairingOffer(scope === 'owner' ? 'owner' : 'media')
   })
 
   handle(IPC.REMOTE.CANCEL_PAIRING, (event): void => {

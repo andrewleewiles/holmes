@@ -3,23 +3,28 @@ import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
 import {
   faArrowRight,
   faArrowUpRightFromSquare,
+  faChevronDown,
   faClockRotateLeft,
   faComments,
   faFileLines,
   faFolderOpen,
   faLaptop,
   faMagnifyingGlass,
+  faRotateRight,
   faShieldHalved,
   faSpinner,
+  faTrash,
   faWandMagicSparkles,
 } from '@fortawesome/free-solid-svg-icons'
 import type {
+  RecallHistoryEntry,
   RecallSearchRequest,
   RecallSearchResponse,
   RecallSearchResult,
   RecallSearchSource,
 } from '@shared/types'
 import { useSettingsStore } from '../store/settingsStore'
+import { PageHeader, PAGE_HEADER_ICON } from './PageHeader'
 
 interface RecallPageProps {
   onSelectConversation: (id: string) => void
@@ -50,6 +55,10 @@ function readableError(error: unknown): string {
   return error.message.replace(/^Error invoking remote method '[^']+': Error: /, '')
 }
 
+function formatDuration(durationMs: number): string {
+  return durationMs < 1000 ? `${durationMs} ms` : `${(durationMs / 1000).toFixed(1)} s`
+}
+
 function formatDate(timestamp: number): string {
   const date = new Date(timestamp)
   const now = new Date()
@@ -70,6 +79,9 @@ export const RecallPage: FC<RecallPageProps> = ({ onSelectConversation, onFollow
   const [followUp, setFollowUp] = useState('')
   const [startingChat, setStartingChat] = useState(false)
   const [followUpError, setFollowUpError] = useState<string | null>(null)
+  const [history, setHistory] = useState<RecallHistoryEntry[]>([])
+  const [expandedHistoryId, setExpandedHistoryId] = useState<string | null>(null)
+  const [confirmingClear, setConfirmingClear] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
   const searchingRef = useRef(false)
   const cancelRequestedRef = useRef(false)
@@ -104,6 +116,18 @@ export const RecallPage: FC<RecallPageProps> = ({ onSelectConversation, onFollow
     void window.electronAPI.recall.clear()
   }, [])
 
+  const loadHistory = async () => {
+    try {
+      setHistory(await window.electronAPI.recall.history())
+    } catch (historyError) {
+      setError(readableError(historyError))
+    }
+  }
+
+  useEffect(() => {
+    void loadHistory()
+  }, [])
+
   const runSearch = async (overrides: SearchOverrides = {}) => {
     const nextQuery = (overrides.query ?? query).trim()
     const nextSource = overrides.source ?? source
@@ -133,7 +157,12 @@ export const RecallPage: FC<RecallPageProps> = ({ onSelectConversation, onFollow
 
     try {
       const result = await window.electronAPI.recall.search(request)
-      if (requestId === requestIdRef.current && !cancelRequestedRef.current) setResponse(result)
+      if (requestId === requestIdRef.current && !cancelRequestedRef.current) {
+        setResponse(result)
+        // The search is recorded by the main process; re-read rather than
+        // guessing at the row it wrote.
+        void loadHistory()
+      }
     } catch (searchError) {
       if (requestId === requestIdRef.current && !cancelRequestedRef.current) {
         setError(readableError(searchError))
@@ -199,29 +228,65 @@ export const RecallPage: FC<RecallPageProps> = ({ onSelectConversation, onFollow
     }
   }
 
+  const rerunHistoryEntry = (entry: RecallHistoryEntry) => {
+    setQuery(entry.query)
+    setSource(entry.source)
+    setSemantic(entry.semantic)
+    void runSearch({ query: entry.query, source: entry.source, semantic: entry.semantic })
+  }
+
+  const deleteHistoryEntry = async (id: string) => {
+    setError(null)
+    try {
+      setHistory(await window.electronAPI.recall.deleteHistory(id))
+      if (expandedHistoryId === id) setExpandedHistoryId(null)
+    } catch (deleteError) {
+      setError(readableError(deleteError))
+    }
+  }
+
+  const clearHistory = async () => {
+    setError(null)
+    try {
+      await window.electronAPI.recall.clearHistory()
+      setHistory([])
+      setExpandedHistoryId(null)
+    } catch (clearError) {
+      setError(readableError(clearError))
+    } finally {
+      setConfirmingClear(false)
+    }
+  }
+
+  const openHistorySource = async (source: RecallHistoryEntry['sources'][number]) => {
+    setError(null)
+    if (source.conversationId) {
+      onSelectConversation(source.conversationId)
+      return
+    }
+    if (!source.path) return
+    try {
+      await window.electronAPI.recall.openFile(source.path)
+    } catch (openError) {
+      setError(readableError(openError))
+    }
+  }
+
   const resultSummary = response
     ? `${response.results.length} ranked ${response.results.length === 1 ? 'result' : 'results'} in ${response.durationMs < 1000 ? `${response.durationMs} ms` : `${(response.durationMs / 1000).toFixed(1)} s`}`
     : ''
 
   return (
-    <div className="scrollbar-thin flex-1 overflow-y-auto bg-holmes-bg">
+    <div className="scrollbar-thin flex flex-1 flex-col overflow-y-auto bg-holmes-bg">
+      <PageHeader
+        icon={<FontAwesomeIcon icon={faClockRotateLeft} className={PAGE_HEADER_ICON} />}
+        title="Recall"
+      />
+
       <div className="mx-auto w-full max-w-6xl px-5 py-6 sm:px-8 sm:py-8">
-        <header className="mb-7 flex items-start gap-3">
-          <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-holmes-primary/15 text-holmes-primary">
-            <FontAwesomeIcon icon={faClockRotateLeft} className="text-lg" />
-          </span>
-          <div className="min-w-0 flex-1">
-            <div className="flex flex-wrap items-center gap-2">
-              <h1 className="text-xl font-medium text-white/85 font-serif-display">Recall</h1>
-              <span className="rounded-full border border-holmes-primary/25 bg-holmes-primary/10 px-2 py-0.5 text-[9px] font-semibold tracking-[0.13em] text-holmes-primary-light">
-                LOCAL MEMORY SEARCH
-              </span>
-            </div>
-            <p className="mt-1 max-w-2xl text-xs leading-relaxed text-white/40">
-              Find ideas, decisions, and details across Holmes conversations and documents indexed by Spotlight on this Mac.
-            </p>
-          </div>
-        </header>
+        <p className="mb-6 max-w-2xl text-xs leading-relaxed text-white/40">
+          Find ideas, decisions, and details across Holmes conversations and documents indexed by Spotlight on this Mac.
+        </p>
 
         <section className="overflow-hidden rounded-2xl border border-white/10 bg-holmes-surface shadow-[0_18px_60px_rgba(0,0,0,0.14)]">
           <form
@@ -530,6 +595,171 @@ export const RecallPage: FC<RecallPageProps> = ({ onSelectConversation, onFollow
               </p>
             </section>
           </div>
+        )}
+
+        {history.length > 0 && (
+          <section className="mt-7">
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-3 px-1">
+              <div className="flex items-center gap-2 text-[10px] font-medium uppercase tracking-[0.12em] text-white/30">
+                <FontAwesomeIcon icon={faClockRotateLeft} className="text-holmes-primary/70" />
+                Past searches
+                <span className="text-white/20">({history.length})</span>
+              </div>
+              {confirmingClear ? (
+                <div className="flex items-center gap-2 text-[10px] text-white/40">
+                  <span>Delete every past search?</span>
+                  <button
+                    type="button"
+                    onClick={() => void clearHistory()}
+                    className="rounded-md border border-red-300/25 bg-red-400/[0.1] px-2 py-1 text-red-100/75 transition-colors hover:bg-red-400/[0.16] cursor-pointer"
+                  >
+                    Delete all
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setConfirmingClear(false)}
+                    className="rounded-md border border-white/[0.08] px-2 py-1 text-white/40 transition-colors hover:text-white/70 cursor-pointer"
+                  >
+                    Keep
+                  </button>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setConfirmingClear(true)}
+                  className="text-[10px] text-white/25 transition-colors hover:text-white/55 cursor-pointer"
+                >
+                  Clear history
+                </button>
+              )}
+            </div>
+
+            <div className="overflow-hidden rounded-2xl border border-white/10 bg-holmes-surface">
+              {history.map((entry, index) => {
+                const expanded = expandedHistoryId === entry.id
+                return (
+                  <article key={entry.id} className={index > 0 ? 'border-t border-white/[0.06]' : ''}>
+                    <div className="group flex items-stretch">
+                      <button
+                        type="button"
+                        onClick={() => setExpandedHistoryId(expanded ? null : entry.id)}
+                        aria-expanded={expanded}
+                        className="flex min-w-0 flex-1 items-start gap-3 px-4 py-3.5 text-left transition-colors hover:bg-white/[0.035] sm:px-5 cursor-pointer"
+                      >
+                        <FontAwesomeIcon
+                          icon={faChevronDown}
+                          className={`mt-1 shrink-0 text-[10px] text-white/20 transition-transform ${expanded ? 'rotate-0' : '-rotate-90'}`}
+                        />
+                        <span className="min-w-0 flex-1">
+                          <span className="flex flex-wrap items-center gap-2">
+                            <span className="max-w-full truncate text-sm text-white/72">{entry.query}</span>
+                            {entry.answer && (
+                              <span className="rounded border border-holmes-primary/20 bg-holmes-primary/[0.08] px-1.5 py-0.5 text-[8px] font-medium tracking-wider text-holmes-primary-light/60">
+                                ANSWERED
+                              </span>
+                            )}
+                          </span>
+                          {!expanded && entry.answer && (
+                            <span className="mt-1 block line-clamp-1 text-xs leading-relaxed text-white/42">{entry.answer}</span>
+                          )}
+                          <span className="mt-1.5 flex flex-wrap items-center gap-2 text-[9px] text-white/22">
+                            <span>{formatDate(entry.createdAt)}</span>
+                            <span>{entry.resultCount} {entry.resultCount === 1 ? 'result' : 'results'}</span>
+                            <span>{formatDuration(entry.durationMs)}</span>
+                            {entry.source !== 'all' && <span className="capitalize">{entry.source}</span>}
+                          </span>
+                        </span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => rerunHistoryEntry(entry)}
+                        disabled={searching}
+                        className="flex w-11 shrink-0 items-center justify-center border-l border-white/[0.05] text-white/18 transition-colors hover:bg-white/[0.035] hover:text-holmes-primary-light/70 disabled:opacity-30 cursor-pointer"
+                        aria-label={`Search for "${entry.query}" again`}
+                        title="Search again"
+                      >
+                        <FontAwesomeIcon icon={faRotateRight} />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void deleteHistoryEntry(entry.id)}
+                        className="flex w-11 shrink-0 items-center justify-center border-l border-white/[0.05] text-white/18 transition-colors hover:bg-red-400/[0.08] hover:text-red-200/70 cursor-pointer"
+                        aria-label={`Delete "${entry.query}" from history`}
+                        title="Delete from history"
+                      >
+                        <FontAwesomeIcon icon={faTrash} />
+                      </button>
+                    </div>
+
+                    {expanded && (
+                      <div className="border-t border-white/[0.05] bg-black/10 px-4 py-4 sm:px-5">
+                        {entry.answer ? (
+                          <>
+                            <p className="whitespace-pre-wrap text-sm leading-relaxed text-white/72">{entry.answer}</p>
+                            {entry.answerModel && (
+                              <div className="mt-2 text-[9px] text-white/22">Answered by {entry.answerModel}</div>
+                            )}
+                          </>
+                        ) : (
+                          <p className="text-xs leading-relaxed text-white/35">
+                            No grounded answer was generated for this search.
+                          </p>
+                        )}
+
+                        {entry.sources.length > 0 && (
+                          <div className="mt-4">
+                            <div className="mb-1.5 text-[9px] font-medium uppercase tracking-[0.12em] text-white/25">
+                              Based on
+                            </div>
+                            <div className="flex flex-col gap-1">
+                              {entry.sources.map((source) => (
+                                <button
+                                  key={source.resultId}
+                                  type="button"
+                                  onClick={() => void openHistorySource(source)}
+                                  className="flex min-w-0 items-center gap-2 rounded-lg border border-white/[0.06] bg-white/[0.02] px-2.5 py-1.5 text-left transition-colors hover:border-holmes-primary/25 hover:bg-white/[0.045] cursor-pointer"
+                                  title={source.path || source.context}
+                                >
+                                  <FontAwesomeIcon
+                                    icon={source.conversationId ? faComments : faFileLines}
+                                    className="shrink-0 text-[10px] text-white/25"
+                                  />
+                                  <span className="truncate text-[11px] text-white/60">{source.title}</span>
+                                  <span className="truncate text-[9px] text-white/20">{source.context}</span>
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+
+                        {entry.expandedQueries.length > 0 && (
+                          <div className="mt-4 flex flex-wrap gap-1.5">
+                            {entry.expandedQueries.map((expandedQuery) => (
+                              <span
+                                key={expandedQuery}
+                                className="rounded-full border border-holmes-primary/15 bg-holmes-primary/[0.05] px-2 py-1 text-[9px] text-holmes-primary-light/55"
+                              >
+                                {expandedQuery}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+
+                        {entry.notices.map((notice) => (
+                          <div
+                            key={notice}
+                            className="mt-2 rounded-lg border border-amber-300/15 bg-amber-300/[0.05] px-3 py-2 text-[10px] leading-relaxed text-amber-100/60"
+                          >
+                            {notice}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </article>
+                )
+              })}
+            </div>
+          </section>
         )}
       </div>
     </div>
