@@ -34,3 +34,7 @@ holmesLogo.ai
 # the licensed Minion source face. The app consumes the finished woff2 set in
 # src/renderer/assets/fonts/boil/, not any of this.
 type-experiment/
+
+# The holmesai.org site is deployed straight from this folder via wrangler
+# and is intentionally not part of the repository.
+website/
