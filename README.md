@@ -1,4 +1,4 @@
-# Holmes
+![Holmes](website/logo.svg)
 
 A desktop AI harness for the parts of your life that aren't code.
 
