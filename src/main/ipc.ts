@@ -37,6 +37,7 @@ import {
   parseAttachments,
 } from '../shared/attachments'
 import { executeToolCalls, getToolDefinitions } from './tools'
+import { createTurnCitations, isOpenableSourcePath, rememberOpenableSourcePaths } from './citations'
 import type { ToolDefinition } from './tools'
 import { completePsychologicalTest } from './psychologicalTestFiles'
 import { isAllowedExternalUrl } from './externalUrls'
@@ -187,7 +188,7 @@ import { fetchCurrentLocation, isHolmesSidecarAvailable } from './sidecarLive'
 import { applyPaperChoice } from './workPaper'
 import { isActivitySourceType, normalizeIndexGranularity } from '../shared/types'
 import type { AccountEvent, ActivityAccountConfig, ActivityAccountUpdate, WorkSaveRequest, WorkSaveResult } from '../shared/types'
-import type { ChatAttachment, StreamChunk, ReasoningEffort, Project, ProjectInput, PsychologyAnalysis, HealthAnalysis, HealthRecord, HealthObservation, HealthSummary, HealthIngestProgress, HealthLiveStatus, HealthLiveSyncProgress, HealthSyncResult, PsychologicalTestId, ClaudeImportProgress, MemoryMode, ContextSelection, FsReadResult, FsWriteRequest, FsWriteResult, FsListItem, ToolCall, ToolResult, ProviderConfig, WebSearchRequest, ActivityRecord, ActivitySourceType, ActivityIngestProgress, ActivityEventsBySource, ActivitySummary, ActivityLiveStatus, ActivityLiveStatusSource, ActivitySyncResult, ActivitySyncResultItem, BrowserEvent, YoutubeEvent, AmazonEvent, EmailEvent, KnowledgeEvent, PhotoEvent, LocationEvent, WeatherEvent, SubscriptionEvent, DocumentContextProgress, DocumentIndexState, SystemPromptEntry, TimelineEvent, TimelineEventInput, TimelineFilter, TimelineRebuildProgress, TimelineRunState, ContextVersionFilter, ProviderCallFilter, PeopleFilter, PeopleRebuildProgress, PersonRelation, Book, BookChapter, BookChapterContent, BookReadingState, BookReadingStatus, BookResource, LibraryBook, LibraryRunState, LibraryScanProgress, LibraryScanResult, IndexEstimate, BookAnnotation, BookAnnotationRun, BookLesson, BookLessonAttempt, BookConversationLink, BookDiscussionScope, Audiobook, AudiobookChapter, AudiobookEstimate, SpeechModel, SpeechProviderInfo, SpeechVoice, RecallSearchResponse, RecallHistorySource } from '../shared/types'
+import type { CitedSource, ChatAttachment, StreamChunk, ReasoningEffort, Project, ProjectInput, PsychologyAnalysis, HealthAnalysis, HealthRecord, HealthObservation, HealthSummary, HealthIngestProgress, HealthLiveStatus, HealthLiveSyncProgress, HealthSyncResult, PsychologicalTestId, ClaudeImportProgress, MemoryMode, ContextSelection, FsReadResult, FsWriteRequest, FsWriteResult, FsListItem, ToolCall, ToolResult, ProviderConfig, WebSearchRequest, ActivityRecord, ActivitySourceType, ActivityIngestProgress, ActivityEventsBySource, ActivitySummary, ActivityLiveStatus, ActivityLiveStatusSource, ActivitySyncResult, ActivitySyncResultItem, BrowserEvent, YoutubeEvent, AmazonEvent, EmailEvent, KnowledgeEvent, PhotoEvent, LocationEvent, WeatherEvent, SubscriptionEvent, DocumentContextProgress, DocumentIndexState, SystemPromptEntry, TimelineEvent, TimelineEventInput, TimelineFilter, TimelineRebuildProgress, TimelineRunState, ContextVersionFilter, ProviderCallFilter, PeopleFilter, PeopleRebuildProgress, PersonRelation, Book, BookChapter, BookChapterContent, BookReadingState, BookReadingStatus, BookResource, LibraryBook, LibraryRunState, LibraryScanProgress, LibraryScanResult, IndexEstimate, BookAnnotation, BookAnnotationRun, BookLesson, BookLessonAttempt, BookConversationLink, BookDiscussionScope, Audiobook, AudiobookChapter, AudiobookEstimate, SpeechModel, SpeechProviderInfo, SpeechVoice, RecallSearchResponse, RecallHistorySource } from '../shared/types'
 
 let abortController: AbortController | null = null
 const productSearchControllers = new Map<number, AbortController>()
@@ -407,6 +408,27 @@ function assertProjectPathsAllowed(data: { path?: string | null; files?: string[
   }
 }
 
+/**
+ * Every source the conversation's active branch has already numbered.
+ *
+ * Each assistant message stores the whole list as of its own turn, so the newest
+ * one is a superset of the rest — but the messages are walked in order anyway
+ * rather than trusting that, because a branch switch can make the last message an
+ * older turn with a shorter list.
+ */
+function collectConversationSources(conversationId: string): CitedSource[] {
+  const collected: CitedSource[] = []
+  const seenIds = new Set<string>()
+  for (const message of database.getMessages(conversationId)) {
+    for (const source of message.sources ?? []) {
+      if (seenIds.has(source.id)) continue
+      seenIds.add(source.id)
+      collected.push(source)
+    }
+  }
+  return collected
+}
+
 async function runChatWithTools(
   conversationId: string,
   providerConfig: ProviderConfig,
@@ -417,6 +439,14 @@ async function runChatWithTools(
   initialParentId: string,
 ): Promise<void> {
   let lastParentId = initialParentId
+  // Seeded from the active branch, so a page read in an earlier turn keeps the
+  // number the model was shown then — it can still see those tool results in its
+  // replayed history, and may cite one without reading anything new.
+  const citations = createTurnCitations(collectConversationSources(conversationId))
+  const seededSources = citations.list()
+  if (seededSources.length > 0) {
+    broadcast(IPC.CHAT.STREAM_CHUNK, { text: '', done: false, sources: seededSources })
+  }
 
   try {
     for (let round = 0; round <= MAX_TOOL_ROUNDS; round += 1) {
@@ -452,6 +482,10 @@ async function runChatWithTools(
           tokenCount: result.usage?.totalTokens,
           parentId: lastParentId,
           toolCalls: result.toolCalls,
+          // Deliberately not backfilled once the results below arrive: this
+          // message's prose was written before they existed, so it can only cite
+          // what earlier rounds — and earlier turns — already read.
+          sources: citations.list(),
         })
         lastParentId = assistantMessage.id
 
@@ -461,7 +495,16 @@ async function runChatWithTools(
 
         const toolResults = await executeToolCalls(result.toolCalls, signal)
 
-        broadcast(IPC.CHAT.STREAM_CHUNK, { text: '', done: false, toolResults })
+        // Number whatever these results cite before anything else sees them, so
+        // the model, the stored tool message and the renderer all read the same
+        // ids. Rewrites tr.content in place — the writes below carry the ids.
+        for (const tr of toolResults) {
+          tr.content = citations.annotate(tr)
+        }
+        const turnSources = citations.list()
+        rememberOpenableSourcePaths(turnSources)
+
+        broadcast(IPC.CHAT.STREAM_CHUNK, { text: '', done: false, toolResults, sources: turnSources })
 
         for (const tr of toolResults) {
           const toolMessage = database.addMessage({
@@ -488,6 +531,8 @@ async function runChatWithTools(
           model: result.model,
           tokenCount: result.usage?.totalTokens,
           parentId: lastParentId,
+          // The answering message: everything the turn read is citable from here.
+          sources: citations.list(),
         })
       }
 
@@ -1158,7 +1203,15 @@ export function registerIpcHandlers(): void {
   })
 
   handle(IPC.CONVERSATIONS.GET_MESSAGES, (_event, id: string) => {
-    return database.getMessages(id)
+    const messages = database.getMessages(id)
+    // A conversation reopened in a new session still shows its source pills, so
+    // the files those pills name have to become openable again. These paths come
+    // from the database — recorded by Holmes's own tool runs — never from the
+    // renderer, which is what keeps this from being a way to name a file.
+    for (const message of messages) {
+      if (message.sources) rememberOpenableSourcePaths(message.sources)
+    }
+    return messages
   })
 
   handle(IPC.CONVERSATIONS.SEARCH, (_event, query: string) => {
@@ -1479,9 +1532,9 @@ export function registerIpcHandlers(): void {
 
       if (controller.signal.aborted) throw new Error('Recall search cancelled')
       const candidateTerms = buildRecallCandidateTerms(request.query, expandedQueries)
-      const conversationDocuments = request.source === 'files'
-        ? []
-        : database.searchRecallConversationDocuments(candidateTerms)
+      const conversationDocuments = request.source === 'all' || request.source === 'conversations'
+        ? database.searchRecallConversationDocuments(candidateTerms)
+        : []
       const recallFileScope: RecallFileScope = {
         everywhere: isPathEverywhere(),
         roots: getResolvedRoots(),
@@ -1936,6 +1989,17 @@ export function registerIpcHandlers(): void {
   handle(IPC.APP.OPEN_EXTERNAL, (_event, url: string) => {
     if (!isAllowedExternalUrl(url)) throw new Error('Unsupported external URL')
     return shell.openExternal(url)
+  })
+
+  // Reveals the file behind a source pill. Two independent gates: the path must
+  // be one Holmes recorded as a source, AND it must still be inside the
+  // configured file scope — a folder the user has since removed stops opening.
+  handle(IPC.APP.OPEN_SOURCE_PATH, (event, filePath: string) => {
+    assertTrustedSender(event, 'Sources')
+    if (!isOpenableSourcePath(filePath)) throw new Error('File is not a cited source')
+    const resolved = path.resolve(filePath)
+    assertPathAllowed(resolved)
+    shell.showItemInFolder(resolved)
   })
 
   handle(IPC.APP.GET_USER_INFO, () => {

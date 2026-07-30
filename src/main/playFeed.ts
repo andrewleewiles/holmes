@@ -67,7 +67,14 @@ export const PLAY_PROMPT_VERSION = 'v1'
 /** A failed refresh must not be retried on every visit to the tab. */
 const FAILURE_COOLDOWN_MS = 15 * 60 * 1000
 
-/** Bounds the seen-set. Reacted items are exempt — they are the taste record. */
+/**
+ * How many refreshes stay on the page. A refresh stacks a new batch on top, so
+ * this is the depth of the scrollback rather than a cache size — at twelve picks
+ * a batch it is roughly six screens of history.
+ */
+const VISIBLE_BATCHES = 6
+
+/** Bounds the tail below the visible batches. Reacted items are always kept. */
 const MAX_UNREACTED_HISTORY = 500
 
 const MAX_SUPPRESSED_TITLES = 25
@@ -133,7 +140,7 @@ function buildFeedProvenance(
 
 function toFeed(status?: PlayFeedStatus, lastError?: string | null): PlayFeed {
   const row = database.getPlayFeedRow()
-  const items = database.listPlayItems()
+  const items = database.listPlayItems({ maxBatches: VISIBLE_BATCHES })
   const quotaDay = quotaDayPacific(Date.now())
   return {
     items,
@@ -411,7 +418,7 @@ async function generate(
     // video is still shown, with its flags, rather than filtered out before the
     // user gets a say.
     await analyzePicks(config, models.curator, saved, run, step)
-    database.prunePlayItems(MAX_UNREACTED_HISTORY)
+    database.prunePlayItems(VISIBLE_BATCHES, MAX_UNREACTED_HISTORY)
     evictPlayMedia()
 
     // The memory writes for any picks the user has already reacted to are

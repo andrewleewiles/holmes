@@ -475,6 +475,7 @@ function executeGetContext(args: Record<string, unknown>): string {
       summary: ancestor.contextShort || ancestor.context,
     })),
     ...(result.candidates.length > 0 ? { otherMatches: result.candidates } : {}),
+    ...(result.notice ? { notice: result.notice } : {}),
   })
 }
 

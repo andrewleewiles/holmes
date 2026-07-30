@@ -21,9 +21,23 @@ clone; never hand-edit the clone without re-deriving the patch.
      have no filesystem path, so the editor's own save flow never clears
      their unsaved flag; without this, the workspace stays "busy" forever
      after a Holmes save.
+   - `holmes_new_document(name)` → `PortfolioMessage::NewDocumentWithName`.
+     With persistence severed the editor boots with an EMPTY document list,
+     which the frontend fills with its Welcome panel; a Work canvas must open
+     onto a real blank document instead. Named here rather than through the
+     new-document dialog, which would need a user click.
    - `holmes_save_document()` → `DocumentMessage::SaveDocument`. Unused by
      the v1 shell; it is the hook for saving the native `.graphite`/`.gdd`
      format later (the bytes arrive as `TriggerSaveDocument`).
+
+## Standalone-app chrome, hidden in CSS (not patched)
+
+The Graphite logo (the one `button` in the menu bar — every real menu beside
+it is a `div.text-button-container`) and `.window-buttons` (in this embed:
+the fullscreen button, which the iframe's permissions policy blocks anyway)
+are hidden by the shell's injected stylesheet, alongside the palette. Kept out
+of the patch set deliberately: it is presentation, and if Graphite renames a
+class the chrome merely reappears rather than the build breaking.
 
 ## Deliberately NOT patched
 

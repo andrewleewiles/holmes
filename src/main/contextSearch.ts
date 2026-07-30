@@ -17,7 +17,10 @@
  */
 
 import * as database from './database'
-import { isFailedContext } from './documentContext'
+// The canonical sentinel list — `documentContext.ts` keeps a local copy, but the
+// shared one is the contract and carries the apex "Unified synthesis
+// unavailable." marker too.
+import { isFailedContext } from '../shared/contextVersions'
 import { isLibraryProject, isVideoProject } from '../shared/defaultProjects'
 import type { DocumentContextMatch } from './database'
 import type { Project } from '../shared/types'
@@ -411,11 +414,11 @@ export function selectDiverseHits(hits: ContextSearchHit[], limit: number): Cont
     selected.push(hit)
   }
 
-  // Ranking is by score throughout, so the deferred siblings only reappear if
-  // the page would otherwise be short.
-  return [...selected, ...deferred]
-    .sort((left, right) => right.score - left.score || left.label.localeCompare(right.label))
-    .slice(0, limit)
+  // Both lists are already in score order, and they are concatenated rather than
+  // re-sorted together: a re-sort would let a high-scoring fourth sibling back in
+  // ahead of the diverse hit the cap was there to protect. The overflow only
+  // appears when the page would otherwise be short.
+  return [...selected, ...deferred].slice(0, limit)
 }
 
 export interface ContextForPathResult {
@@ -461,12 +464,17 @@ export function getGeneratedContextForPath(
     }
   }
 
-  // Shortest path wins: an exact path is shorter than any path that merely ends
-  // with it, so this prefers the file actually named over a deeper namesake.
-  const best = matches.reduce((shortest, candidate) => (
+  // A path can be indexed by two sources at once (a folder inside a project that
+  // also sits under a broader one), and a failed pass leaves a sentinel where the
+  // summary should be. So: prefer a real summary over a failure marker, then the
+  // shortest path, since an exact path is shorter than any path merely ending
+  // with it and beats a deeper namesake.
+  const usable = matches.filter((candidate) => !isFailedContext(candidate.context))
+  const preferred = usable.length > 0 ? usable : matches
+  const best = preferred.reduce((shortest, candidate) => (
     candidate.path.length < shortest.path.length ? candidate : shortest
   ))
-  const bestMeta = meta.get(best.projectId)
+  const onlyFailures = usable.length === 0
 
   const toHit = (candidate: DocumentContextMatch): ContextSearchHit => {
     const level: ContextSearchLevel = candidate.level === 'folder'
@@ -493,7 +501,9 @@ export function getGeneratedContextForPath(
   let parent = best.path.slice(0, best.path.lastIndexOf('/'))
   while (parent.length > 1) {
     const folder = database.getDocumentFolderContext(best.projectId, parent)
-    if (folder) {
+    // A folder whose own synthesis failed is skipped rather than reported: a
+    // stored error message is not a summary of anything.
+    if (folder && !isFailedContext(folder.context)) {
       ancestors.push(toHit({
         level: 'folder',
         projectId: best.projectId,
@@ -513,17 +523,27 @@ export function getGeneratedContextForPath(
     parent = next
   }
 
+  const seenPaths = new Set([best.path])
+  const candidates: ContextForPathResult['candidates'] = []
+  for (const candidate of matches) {
+    if (seenPaths.has(candidate.path)) continue
+    seenPaths.add(candidate.path)
+    candidates.push({
+      level: candidate.level,
+      path: candidate.path,
+      projectName: meta.get(candidate.projectId)?.name ?? null,
+    })
+  }
+
   return {
     found: true,
     node: toHit(best),
     ancestors,
-    candidates: matches
-      .filter((candidate) => candidate.path !== best.path)
-      .map((candidate) => ({
-        level: candidate.level,
-        path: candidate.path,
-        projectName: meta.get(candidate.projectId)?.name ?? null,
-      })),
-    ...(bestMeta ? {} : { notice: 'The owning source could not be identified.' }),
+    candidates,
+    // Said plainly rather than passed off as a finding: this text is an error
+    // message the indexer stored, not something Holmes concluded.
+    ...(onlyFailures
+      ? { notice: 'This path is indexed but its summary failed to generate — what follows is the stored failure marker, not a finding. Re-index the source to retry.' }
+      : {}),
   }
 }

@@ -8,6 +8,7 @@ import { getAssistantName } from '../shared/assistantIdentity'
 import type { TranscriptCue } from '../shared/playFeed'
 import type {
   ChatAttachment,
+  CitedSource,
   Conversation,
   Message,
   SearchResult,
@@ -186,7 +187,9 @@ export function initDatabase(): void {
       tool_calls_json TEXT,
       tool_call_id TEXT,
       tool_name TEXT,
-      attachments_json TEXT
+      attachments_json TEXT,
+      sources_json TEXT,
+      tool_error INTEGER
     );
 
     CREATE INDEX IF NOT EXISTS idx_messages_conversation
@@ -358,6 +361,10 @@ export function initDatabase(): void {
     -- Rows are NEVER deleted by a refresh. The seen-set and the reactions are the
     -- memory the next plan is built from, so a refresh flips in_current_feed off
     -- and back on rather than clearing the table.
+    --
+    -- feed_batch is which refresh produced the row. Earlier batches stay ON THE
+    -- PAGE below the newest one rather than only in the seen-set, so a refresh
+    -- adds to the feed instead of replacing it.
     CREATE TABLE IF NOT EXISTS play_items (
       id TEXT PRIMARY KEY,
       kind TEXT NOT NULL DEFAULT 'video',
@@ -380,6 +387,8 @@ export function initDatabase(): void {
       -- made by something that had read the title, channel and description.
       memory_field_key TEXT,
       rank INTEGER NOT NULL DEFAULT 0,
+      feed_batch INTEGER NOT NULL DEFAULT 1,
+      batch_at INTEGER NOT NULL DEFAULT 0,
       first_seen_at INTEGER NOT NULL,
       shown_at INTEGER NOT NULL,
       in_current_feed INTEGER NOT NULL DEFAULT 1 CHECK(in_current_feed IN (0,1)),
@@ -392,6 +401,8 @@ export function initDatabase(): void {
       ON play_items(kind, provider, external_id);
     CREATE INDEX IF NOT EXISTS idx_play_items_current
       ON play_items(in_current_feed, rank);
+    CREATE INDEX IF NOT EXISTS idx_play_items_batch
+      ON play_items(feed_batch DESC, rank ASC);
     CREATE INDEX IF NOT EXISTS idx_play_items_reaction
       ON play_items(reaction, reacted_at DESC);
     CREATE INDEX IF NOT EXISTS idx_play_items_shown
@@ -1708,12 +1719,39 @@ export function initDatabase(): void {
     db.exec('ALTER TABLE messages ADD COLUMN attachments_json TEXT')
   } catch { /* column already exists */ }
 
+  // Also after the rebuild, for the same reason. Messages written before source
+  // pills existed keep a null here and render exactly as they always did.
+  try {
+    db.exec('ALTER TABLE messages ADD COLUMN sources_json TEXT')
+  } catch { /* column already exists */ }
+
+  // Likewise: tool rows written before this column read as successful, which is
+  // the same thing they showed before the outcome was rendered at all.
+  try {
+    db.exec('ALTER TABLE messages ADD COLUMN tool_error INTEGER')
+  } catch { /* column already exists */ }
+
   // Devices paired before scopes existed were the owner's own phone, so they
   // keep every channel they already had. New guests must be paired as 'media'
   // deliberately — this default is a migration, not a policy.
   try {
     db.exec("ALTER TABLE remote_devices ADD COLUMN scope TEXT NOT NULL DEFAULT 'owner'")
   } catch { /* column already exists */ }
+
+  // Play feed batches. Rows written before the feed stacked all belong to one
+  // notional first batch, so an existing feed keeps its picks and simply gains
+  // a new batch above them on the next refresh.
+  try {
+    db.exec('ALTER TABLE play_items ADD COLUMN feed_batch INTEGER NOT NULL DEFAULT 1')
+  } catch { /* column already exists */ }
+  try {
+    db.exec('ALTER TABLE play_items ADD COLUMN batch_at INTEGER NOT NULL DEFAULT 0')
+  } catch { /* column already exists */ }
+  // Backfill only rows the ALTER defaulted: batch_at 0 would sort and render as
+  // 1970, and shown_at is when the row was last put in front of the user.
+  try {
+    db.prepare('UPDATE play_items SET batch_at = shown_at WHERE batch_at = 0').run()
+  } catch { /* table does not exist yet on a fresh database */ }
 
   // Backfill parent_id for existing messages: chain by created_at within each conversation
   const convIds = db.prepare('SELECT DISTINCT conversation_id FROM messages WHERE parent_id IS NULL').all() as Array<{ conversation_id: string }>
@@ -2015,6 +2053,8 @@ export function getMessages(conversationId: string): Message[] {
     tool_call_id: string | null
     tool_name: string | null
     attachments_json: string | null
+    sources_json: string | null
+    tool_error: number | null
   }>
 
   const allMessages = rows.map(mapMessage)
@@ -2053,7 +2093,7 @@ export function addMessage(message: Omit<Message, 'id' | 'createdAt'>): Message 
   const id = uuidv4()
   const now = Date.now()
   db.prepare(
-    'INSERT INTO messages (id, conversation_id, role, content, reasoning, created_at, token_count, model, parent_id, is_active, tool_calls_json, tool_call_id, tool_name, attachments_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+    'INSERT INTO messages (id, conversation_id, role, content, reasoning, created_at, token_count, model, parent_id, is_active, tool_calls_json, tool_call_id, tool_name, attachments_json, sources_json, tool_error) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
   ).run(
     id,
     message.conversationId,
@@ -2069,6 +2109,8 @@ export function addMessage(message: Omit<Message, 'id' | 'createdAt'>): Message 
     message.toolCallId || null,
     message.toolName || null,
     message.attachments && message.attachments.length > 0 ? JSON.stringify(message.attachments) : null,
+    message.sources && message.sources.length > 0 ? JSON.stringify(message.sources) : null,
+    message.toolError ? 1 : null,
   )
 
   db.prepare('UPDATE conversations SET updated_at = ? WHERE id = ?').run(now, message.conversationId)
@@ -2092,6 +2134,8 @@ export function getMessageById(messageId: string): Message | null {
         tool_call_id: string | null
         tool_name: string | null
         attachments_json: string | null
+        sources_json: string | null
+        tool_error: number | null
       }
     | undefined
   return row ? mapMessage(row) : null
@@ -2458,6 +2502,8 @@ export function searchMessages(query: string): Message[] {
     tool_call_id: string | null
     tool_name: string | null
     attachments_json: string | null
+    sources_json: string | null
+    tool_error: number | null
   }>
   return rows.map(mapMessage)
 }
@@ -3162,6 +3208,8 @@ interface PlayItemRow {
   intent_ids_json: string
   source_refs_json: string
   rank: number
+  feed_batch: number
+  batch_at: number
   shown_at: number
   reaction: string | null
   reacted_at: number | null
@@ -3186,6 +3234,8 @@ function mapPlayItem(row: PlayItemRow): PlayItem {
     intentIds: parseJsonOr<string[]>(row.intent_ids_json, []),
     sourceRefs: parseJsonOr<PlaySourceRef[]>(row.source_refs_json, []),
     rank: row.rank,
+    batch: row.feed_batch,
+    batchAt: row.batch_at,
     reaction: (row.reaction as PlayReaction | null) ?? null,
     reactedAt: row.reacted_at,
     shownAt: row.shown_at,
@@ -3199,13 +3249,34 @@ function mapPlayItem(row: PlayItemRow): PlayItem {
 
 const PLAY_ITEM_COLUMNS = `id, kind, provider, external_id, url, title, creator, description,
   published_at, duration_seconds, thumbnail_url, thumbnail_media_id, embeddable, rationale,
-  intent_ids_json, source_refs_json, rank, shown_at, reaction, reacted_at`
+  intent_ids_json, source_refs_json, rank, feed_batch, batch_at, shown_at, reaction, reacted_at`
 
-export function listPlayItems(options: { currentOnly?: boolean } = {}): PlayItem[] {
-  const where = options.currentOnly === false ? '' : 'WHERE in_current_feed = 1'
+/**
+ * The feed, newest batch first and ranked within each batch.
+ *
+ * `maxBatches` is what the page renders: a refresh ADDS a batch above the last
+ * one rather than replacing it, so the default of one batch is only useful to
+ * callers that specifically want "what was just picked".
+ */
+export function listPlayItems(
+  options: { currentOnly?: boolean; maxBatches?: number } = {}
+): PlayItem[] {
+  let where = ''
+  const params: unknown[] = []
+
+  if (options.maxBatches !== undefined) {
+    where = `WHERE feed_batch > COALESCE((SELECT MAX(feed_batch) FROM play_items), 0) - ?`
+    params.push(options.maxBatches)
+  } else if (options.currentOnly !== false) {
+    where = 'WHERE in_current_feed = 1'
+  }
+
   const rows = db
-    .prepare(`SELECT ${PLAY_ITEM_COLUMNS} FROM play_items ${where} ORDER BY rank ASC`)
-    .all() as PlayItemRow[]
+    .prepare(
+      `SELECT ${PLAY_ITEM_COLUMNS} FROM play_items ${where}
+       ORDER BY feed_batch DESC, rank ASC`
+    )
+    .all(...params) as PlayItemRow[]
   return rows.map(mapPlayItem)
 }
 
@@ -3244,22 +3315,39 @@ export function getPlayItemMemoryFieldKey(id: string): string | null {
 }
 
 /**
- * Replaces the visible feed in one transaction.
+ * Adds a new batch of picks ABOVE the ones already there.
+ *
+ * A refresh does not replace the feed. Earlier batches stay on the page below
+ * the new one, so a set of suggestions you have not got round to is not thrown
+ * away by pressing Refresh — and the ones you already watched keep their
+ * progress bars where you can see them.
  *
  * An item already in the table keeps its `first_seen_at`, its reaction and the
  * flag saying that reaction was written to memory — a refresh re-ranks and
  * re-explains, it does not forget. `thumbnail_media_id` is preserved too, so a
- * cached thumbnail is not re-fetched.
+ * cached thumbnail is not re-fetched. A video picked AGAIN moves up into the new
+ * batch rather than appearing twice, which is what the identity conflict below
+ * resolves to.
+ *
+ * Returns only the new batch: the analysis pass that follows must review what
+ * was just picked, not re-review everything on the page.
  */
 export function replacePlayFeedItems(items: PlayItemInput[]): PlayItem[] {
   const now = Date.now()
+  // Derived rather than counted on the feed row: pruning can remove whole
+  // batches, and MAX+1 stays correct across that where a stored counter would
+  // need reconciling with what is actually left.
+  const batch =
+    ((db.prepare('SELECT COALESCE(MAX(feed_batch), 0) AS max FROM play_items').get() as { max: number }).max ?? 0) + 1
+
   const clear = db.prepare('UPDATE play_items SET in_current_feed = 0 WHERE in_current_feed = 1')
   const upsert = db.prepare(
     `INSERT INTO play_items (
        id, kind, provider, external_id, url, title, creator, description, published_at,
        duration_seconds, thumbnail_url, thumbnail_media_id, embeddable, rationale,
-       intent_ids_json, source_refs_json, memory_field_key, rank, first_seen_at, shown_at, in_current_feed
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+       intent_ids_json, source_refs_json, memory_field_key, rank, feed_batch, batch_at,
+       first_seen_at, shown_at, in_current_feed
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
      ON CONFLICT(kind, provider, external_id) DO UPDATE SET
        url = excluded.url,
        title = excluded.title,
@@ -3274,6 +3362,8 @@ export function replacePlayFeedItems(items: PlayItemInput[]): PlayItem[] {
        source_refs_json = excluded.source_refs_json,
        memory_field_key = excluded.memory_field_key,
        rank = excluded.rank,
+       feed_batch = excluded.feed_batch,
+       batch_at = excluded.batch_at,
        shown_at = excluded.shown_at,
        in_current_feed = 1`
   )
@@ -3299,13 +3389,15 @@ export function replacePlayFeedItems(items: PlayItemInput[]): PlayItem[] {
         JSON.stringify(item.sourceRefs),
         item.memoryFieldKey,
         item.rank,
+        batch,
+        now,
         now,
         now
       )
     }
   })()
 
-  return listPlayItems()
+  return listPlayItems({ maxBatches: 1 })
 }
 
 export function setPlayItemThumbnail(id: string, mediaId: string | null): void {
@@ -3375,14 +3467,29 @@ export function getPlayReactionSignature(): { count: number; newestAt: number } 
  * Bounds the seen-set. Reacted items are kept whatever their age: they are the
  * taste record, not the display history.
  */
-export function prunePlayItems(maxUnreacted: number): void {
+/**
+ * Bounds the stack.
+ *
+ * Two things are protected, for different reasons. Batches inside the visible
+ * window are kept whole — pruning one would punch holes in a page the user is
+ * looking at. Reacted items are kept whatever their age and wherever they sit,
+ * because they are the taste record the next plan is built from, not display
+ * history.
+ *
+ * Everything else is the tail: old, unreacted, and off the bottom of the page.
+ */
+export function prunePlayItems(visibleBatches: number, maxUnreacted: number): void {
   db.prepare(
     `DELETE FROM play_items
-     WHERE reaction IS NULL AND in_current_feed = 0 AND id NOT IN (
-       SELECT id FROM play_items WHERE reaction IS NULL AND in_current_feed = 0
-       ORDER BY shown_at DESC LIMIT ?
-     )`
-  ).run(maxUnreacted)
+     WHERE reaction IS NULL
+       AND feed_batch <= COALESCE((SELECT MAX(feed_batch) FROM play_items), 0) - ?
+       AND id NOT IN (
+         SELECT id FROM play_items
+         WHERE reaction IS NULL
+           AND feed_batch <= COALESCE((SELECT MAX(feed_batch) FROM play_items), 0) - ?
+         ORDER BY shown_at DESC LIMIT ?
+       )`
+  ).run(visibleBatches, visibleBatches, maxUnreacted)
 }
 
 /**
@@ -4180,6 +4287,7 @@ function mapMessage(row: {
   tool_call_id: string | null
   tool_name: string | null
   attachments_json?: string | null
+  sources_json?: string | null
 }): Message {
   let toolCalls: ToolCall[] | undefined
   if (row.tool_calls_json) {
@@ -4199,6 +4307,15 @@ function mapMessage(row: {
       }
     } catch { /* malformed attachments_json */ }
   }
+  let sources: CitedSource[] | undefined
+  if (row.sources_json) {
+    try {
+      const parsed = JSON.parse(row.sources_json)
+      if (Array.isArray(parsed) && parsed.every((s: unknown) => s && typeof s === 'object' && 'id' in s && 'kind' in s)) {
+        sources = parsed as CitedSource[]
+      }
+    } catch { /* malformed sources_json */ }
+  }
   return {
     id: row.id,
     conversationId: row.conversation_id,
@@ -4213,6 +4330,7 @@ function mapMessage(row: {
     toolCallId: row.tool_call_id ?? undefined,
     toolName: row.tool_name ?? undefined,
     attachments,
+    sources,
   }
 }
 

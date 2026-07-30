@@ -119,9 +119,10 @@ check('the patch ledger and provenance say what they must', () => {
   assert.match(upstream, /Apache-2\.0/)
   assert.match(upstream, /GRAPHITE_COMMIT/)
   const patches = read('./src/design-shell/PATCHES.md')
-  // The three patched commands, each with its reason on record.
+  // The four patched commands, each with its reason on record.
   assert.match(patches, /holmes_export_document/)
   assert.match(patches, /holmes_mark_saved/)
+  assert.match(patches, /holmes_new_document/)
   assert.match(patches, /holmes_save_document/)
   assert.match(patches, /TriggerSaveFile/)
   const patch = read('./src/design-shell/patches/graphite-holmes-bridge.patch')
@@ -129,6 +130,25 @@ check('the patch ledger and provenance say what they must', () => {
   assert.match(patch, /holmesEditor/)
   assert.match(patch, /fn holmes_export_document/)
   assert.match(patch, /fn holmes_mark_saved/)
+  assert.match(patch, /fn holmes_new_document/)
+})
+
+check('a new canvas opens a blank document, never the Welcome panel', () => {
+  const shell = read('./src/design-shell/graphite.ts')
+  // Persistence is severed, so the document list boots empty and the frontend
+  // would show Welcome; open must create the document itself.
+  assert.match(shell, /api\.holmesNewDocument\(openFileName\.replace/)
+})
+
+check('standalone-app chrome is hidden in the injected skin', () => {
+  const shell = read('./src/design-shell/graphite.ts')
+  // The logo is the only `button` among the menu bar's widgets; the real
+  // menus are div.text-button-container and must survive.
+  assert.match(shell, /\.menu-bar \.widget-span\.row > button\.text-button\.flush \{ display: none; \}/)
+  assert.match(shell, /\.title-bar \.window-buttons \{ display: none; \}/)
+  assert.ok(!/text-button-container[^\n]*display: none/.test(shell), 'the File/Edit/… menus must stay')
+  // Injected during the readiness poll so the chrome never flashes unstyled.
+  assert.match(shell, /if \(win\.document\?\.head\) applySkin\(win\)/)
 })
 
 console.log('\ndesign kinds')

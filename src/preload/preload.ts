@@ -112,6 +112,7 @@ const api: ElectronAPI = {
   },
   app: {
     openExternal: (url: string) => ipcRenderer.invoke(IPC.APP.OPEN_EXTERNAL, url) as Promise<void>,
+    openSourcePath: (path: string) => ipcRenderer.invoke(IPC.APP.OPEN_SOURCE_PATH, path) as Promise<void>,
     selectDirectory: () => ipcRenderer.invoke(IPC.APP.SELECT_DIRECTORY) as Promise<string | null>,
     selectFiles: () => ipcRenderer.invoke(IPC.APP.SELECT_FILES) as Promise<string[]>,
     selectImage: () => ipcRenderer.invoke(IPC.APP.SELECT_IMAGE) as Promise<string | null>,

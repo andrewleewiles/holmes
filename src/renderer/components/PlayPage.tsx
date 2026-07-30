@@ -1,4 +1,4 @@
-import { type FC, useCallback, useEffect, useState } from 'react'
+import { type FC, useCallback, useEffect, useMemo, useState } from 'react'
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
 import { faArrowRotateRight, faPlay, faStop, faTriangleExclamation } from '@fortawesome/free-solid-svg-icons'
 import { PLAY_ITEM_KINDS, type PlayFeed, type PlayItem, type PlayItemKind, type PlayReaction } from '@shared/types'
@@ -189,6 +189,18 @@ export const PlayPage: FC<PlayPageProps> = ({ onOpenSettings, onOpenData }) => {
 
   const items = feed?.items ?? []
   const busy = refreshing || building
+
+  // The feed arrives newest-batch-first and ranked within each batch, so the
+  // grouping only has to preserve that order rather than re-sort anything.
+  const batches = useMemo(() => {
+    const groups: Array<{ batch: number; batchAt: number; items: PlayItem[] }> = []
+    for (const item of items) {
+      const current = groups[groups.length - 1]
+      if (current && current.batch === item.batch) current.items.push(item)
+      else groups.push({ batch: item.batch, batchAt: item.batchAt, items: [item] })
+    }
+    return groups
+  }, [items])
   const refreshesLeft = feed
     ? Math.max(0, Math.floor((feed.searchUnitBudget - feed.searchUnitsUsedToday) / 1000))
     : null
@@ -203,8 +215,11 @@ export const PlayPage: FC<PlayPageProps> = ({ onOpenSettings, onOpenData }) => {
           feed && items.length > 0 ? (
             <span className="ml-1 flex items-center gap-2 text-[12px] text-white/30">
               <span>
-                {items.length} pick{items.length === 1 ? '' : 's'} · {relativeTime(feed.generatedAt)}
+                {batches[0]?.items.length ?? 0} new · {relativeTime(feed.generatedAt)}
               </span>
+              {batches.length > 1 && (
+                <span className="text-white/20">{items.length} kept</span>
+              )}
               {feed.stale && <span className="text-holmes-primary-light/70">new picks available</span>}
             </span>
           ) : undefined
@@ -298,20 +313,35 @@ export const PlayPage: FC<PlayPageProps> = ({ onOpenSettings, onOpenData }) => {
       {items.length === 0 && !busy && feed ? (
         <EmptyState feed={feed} onOpenSettings={onOpenSettings} onOpenData={onOpenData} />
       ) : (
-        <div
-          className={`grid gap-4 px-6 py-6 transition-opacity sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 ${
-            busy ? 'opacity-60' : ''
-          }`}
-        >
-          {items.map((item) => (
-            <PlayCard
-              key={item.id}
-              item={item}
-              onPlay={open}
-              onReact={(target, reaction) => void react(target, reaction)}
-              onArchive={(target) => void archive(target)}
-              archiving={archivingIds.has(item.id)}
-            />
+        <div className={`px-6 py-6 transition-opacity ${busy ? 'opacity-60' : ''}`}>
+          {batches.map((batch, index) => (
+            <section key={batch.batch} className={index > 0 ? 'mt-8' : ''}>
+              {/* The newest batch needs no heading when it is the only one —
+                  a lone "Just now" above a first feed is noise. */}
+              {batches.length > 1 && (
+                <div className="mb-3 flex items-center gap-3">
+                  <h2 className="shrink-0 text-[12px] font-medium uppercase tracking-wider text-white/35">
+                    {index === 0 ? 'Latest' : relativeTime(batch.batchAt)}
+                  </h2>
+                  <span className="shrink-0 text-[11px] text-white/20">
+                    {index === 0 ? relativeTime(batch.batchAt) : `${batch.items.length} picks`}
+                  </span>
+                  <span className="h-px flex-1 bg-white/[0.06]" />
+                </div>
+              )}
+              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+                {batch.items.map((item) => (
+                  <PlayCard
+                    key={item.id}
+                    item={item}
+                    onPlay={open}
+                    onReact={(target, reaction) => void react(target, reaction)}
+                    onArchive={(target) => void archive(target)}
+                    archiving={archivingIds.has(item.id)}
+                  />
+                ))}
+              </div>
+            </section>
           ))}
         </div>
       )}

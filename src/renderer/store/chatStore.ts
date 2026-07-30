@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { ChatAttachment, Conversation, Message, StreamChunk, ReasoningEffort, MemoryMode, ContextSelection, ToolCall, ToolResult, SystemPromptEntry } from '@shared/types'
+import type { ChatAttachment, CitedSource, Conversation, Message, StreamChunk, ReasoningEffort, MemoryMode, ContextSelection, ToolCall, ToolResult, SystemPromptEntry } from '@shared/types'
 import { normalizeContextSelection } from '@shared/contextSelection'
 
 export type { SystemPromptEntry }
@@ -10,6 +10,15 @@ export interface StreamingToolInteraction {
   toolResult?: ToolResult
 }
 
+/**
+ * Main sends the turn's whole source list on every tool round rather than a
+ * delta, so the newer list simply wins — nothing to merge, and a dropped chunk
+ * cannot leave a permanent gap in the numbering.
+ */
+function latestSources(current: CitedSource[], incoming?: CitedSource[]): CitedSource[] {
+  return incoming && incoming.length >= current.length ? incoming : current
+}
+
 interface ChatState {
   conversations: Conversation[]
   currentConversationId: string | null
@@ -18,6 +27,7 @@ interface ChatState {
   streamingText: string
   streamingReasoning: string
   streamingToolInteractions: StreamingToolInteraction[]
+  streamingSources: CitedSource[]
   error: string | null
   selectedModel: string
   selectedEffort: ReasoningEffort
@@ -57,6 +67,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   streamingText: '',
   streamingReasoning: '',
   streamingToolInteractions: [],
+  streamingSources: [],
   error: null,
   selectedModel: '',
   selectedEffort: 'medium',
@@ -95,6 +106,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       streamingText: '',
       streamingReasoning: '',
       streamingToolInteractions: [],
+      streamingSources: [],
       error: null,
       lastSystemPrompt: [],
     })
@@ -134,6 +146,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       streamingText: '',
       streamingReasoning: '',
       streamingToolInteractions: [],
+      streamingSources: [],
       error: null,
       lastSystemPrompt: [],
       memoryMode: conversation?.memoryMode ?? get().memoryMode,
@@ -164,6 +177,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       streamingText: '',
       streamingReasoning: '',
       streamingToolInteractions: [],
+      streamingSources: [],
       error: null,
     })
 
@@ -173,7 +187,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
     const cleanup = window.electronAPI.chat.onChunk((chunk: StreamChunk) => {
       if (chunk.error) {
-        set({ isStreaming: false, streamingText: '', streamingReasoning: '', streamingToolInteractions: [], error: chunk.error })
+        set({ isStreaming: false, streamingText: '', streamingReasoning: '', streamingToolInteractions: [], streamingSources: [], error: chunk.error })
         cleanup()
         systemPromptCleanup()
         void get().syncMessagesFromDb()
@@ -182,11 +196,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
       if (chunk.done) {
         window.electronAPI.conversations.getMessages(currentConversationId).then((msgs) => {
-          set({ messages: msgs, isStreaming: false, streamingText: '', streamingReasoning: '', streamingToolInteractions: [] })
+          set({ messages: msgs, isStreaming: false, streamingText: '', streamingReasoning: '', streamingToolInteractions: [], streamingSources: [] })
         })
         cleanup()
         systemPromptCleanup()
-      } else if (chunk.toolCalls || chunk.toolResults) {
+      } else if (chunk.toolCalls || chunk.toolResults || chunk.sources) {
         set((state) => {
           const newInteractions = [...state.streamingToolInteractions]
           if (chunk.toolCalls) {
@@ -203,6 +217,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
             streamingText: state.streamingText + (chunk.text || ''),
             streamingReasoning: state.streamingReasoning + (chunk.reasoning || ''),
             streamingToolInteractions: newInteractions,
+            streamingSources: latestSources(state.streamingSources, chunk.sources),
           }
         })
       } else {
@@ -239,7 +254,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     const updatedMessages = messages.slice(0, msgIndex)
     updatedMessages.push({ ...messages[msgIndex], content: newContent })
 
-    set({ messages: updatedMessages, isStreaming: true, streamingText: '', streamingReasoning: '', streamingToolInteractions: [], error: null })
+    set({ messages: updatedMessages, isStreaming: true, streamingText: '', streamingReasoning: '', streamingToolInteractions: [], streamingSources: [], error: null })
 
     const systemPromptCleanup = window.electronAPI.chat.onSystemPrompt((systemMessages) => {
       set({ lastSystemPrompt: systemMessages })
@@ -247,7 +262,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
     const cleanup = window.electronAPI.chat.onChunk((chunk: StreamChunk) => {
       if (chunk.error) {
-        set({ isStreaming: false, streamingText: '', streamingReasoning: '', streamingToolInteractions: [], error: chunk.error })
+        set({ isStreaming: false, streamingText: '', streamingReasoning: '', streamingToolInteractions: [], streamingSources: [], error: chunk.error })
         cleanup()
         systemPromptCleanup()
         void get().syncMessagesFromDb()
@@ -256,11 +271,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
       if (chunk.done) {
         window.electronAPI.conversations.getMessages(currentConversationId).then((msgs) => {
-          set({ messages: msgs, isStreaming: false, streamingText: '', streamingReasoning: '', streamingToolInteractions: [] })
+          set({ messages: msgs, isStreaming: false, streamingText: '', streamingReasoning: '', streamingToolInteractions: [], streamingSources: [] })
         })
         cleanup()
         systemPromptCleanup()
-      } else if (chunk.toolCalls || chunk.toolResults) {
+      } else if (chunk.toolCalls || chunk.toolResults || chunk.sources) {
         set((state) => {
           const newInteractions = [...state.streamingToolInteractions]
           if (chunk.toolCalls) {
@@ -277,6 +292,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
             streamingText: state.streamingText + (chunk.text || ''),
             streamingReasoning: state.streamingReasoning + (chunk.reasoning || ''),
             streamingToolInteractions: newInteractions,
+            streamingSources: latestSources(state.streamingSources, chunk.sources),
           }
         })
       } else {
@@ -295,6 +311,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         streamingText: '',
         streamingReasoning: '',
         streamingToolInteractions: [],
+        streamingSources: [],
         error: err instanceof Error ? err.message : 'Failed to edit message',
       })
       cleanup()
@@ -320,7 +337,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
     const updatedMessages = messages.slice(0, userIndex + 1)
 
-    set({ messages: updatedMessages, isStreaming: true, streamingText: '', streamingReasoning: '', streamingToolInteractions: [], error: null })
+    set({ messages: updatedMessages, isStreaming: true, streamingText: '', streamingReasoning: '', streamingToolInteractions: [], streamingSources: [], error: null })
 
     const systemPromptCleanup = window.electronAPI.chat.onSystemPrompt((systemMessages) => {
       set({ lastSystemPrompt: systemMessages })
@@ -328,7 +345,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
     const cleanup = window.electronAPI.chat.onChunk((chunk: StreamChunk) => {
       if (chunk.error) {
-        set({ isStreaming: false, streamingText: '', streamingReasoning: '', streamingToolInteractions: [], error: chunk.error })
+        set({ isStreaming: false, streamingText: '', streamingReasoning: '', streamingToolInteractions: [], streamingSources: [], error: chunk.error })
         cleanup()
         systemPromptCleanup()
         void get().syncMessagesFromDb()
@@ -337,11 +354,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
       if (chunk.done) {
         window.electronAPI.conversations.getMessages(currentConversationId).then((msgs) => {
-          set({ messages: msgs, isStreaming: false, streamingText: '', streamingReasoning: '', streamingToolInteractions: [] })
+          set({ messages: msgs, isStreaming: false, streamingText: '', streamingReasoning: '', streamingToolInteractions: [], streamingSources: [] })
         })
         cleanup()
         systemPromptCleanup()
-      } else if (chunk.toolCalls || chunk.toolResults) {
+      } else if (chunk.toolCalls || chunk.toolResults || chunk.sources) {
         set((state) => {
           const newInteractions = [...state.streamingToolInteractions]
           if (chunk.toolCalls) {
@@ -358,6 +375,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
             streamingText: state.streamingText + (chunk.text || ''),
             streamingReasoning: state.streamingReasoning + (chunk.reasoning || ''),
             streamingToolInteractions: newInteractions,
+            streamingSources: latestSources(state.streamingSources, chunk.sources),
           }
         })
       } else {
@@ -376,6 +394,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         streamingText: '',
         streamingReasoning: '',
         streamingToolInteractions: [],
+        streamingSources: [],
         error: err instanceof Error ? err.message : 'Failed to retry message',
       })
       cleanup()

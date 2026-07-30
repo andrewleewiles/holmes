@@ -197,7 +197,42 @@ export interface Message {
   toolCalls?: ToolCall[]
   toolCallId?: string
   toolName?: string
+  /**
+   * Whether this tool result was a failure. Persisted because the unified tool row
+   * shows the outcome: without it a call that failed reads as having succeeded
+   * once the conversation is reloaded.
+   */
+  toolError?: boolean
   attachments?: ChatAttachment[]
+  /**
+   * The numbered sources the turn that produced this message actually read.
+   * Carried on every assistant message of the turn so `[S1]` markers anywhere in
+   * its prose can be resolved, and persisted so they still resolve after reload.
+   */
+  sources?: CitedSource[]
+}
+
+/**
+ * One source Holmes read during a turn, numbered so the model can point at it
+ * from inside its prose and the renderer can draw it as a pill.
+ *
+ * These are minted from tool results Holmes ran itself — never from anything the
+ * model wrote — which is what makes an id either resolvable or provably invented.
+ */
+export interface CitedSource {
+  /** `S1`, `S2`, … assigned in the order the turn encountered them. */
+  id: string
+  kind: 'web' | 'file'
+  /** The pill's text: a hostname for the web, a file's name on disk. */
+  label: string
+  /** The full title, for the hover tooltip. Falls back to `label`. */
+  title: string
+  /** Web sources only: the http(s) URL the pill opens. */
+  url?: string
+  /** File sources only: the absolute path the pill opens. */
+  path?: string
+  /** The tool that surfaced it, so the tooltip can say where it came from. */
+  tool: string
 }
 
 export type ProviderType = 'openrouter' | 'custom' | 'ollama'
@@ -356,6 +391,12 @@ export interface StreamChunk {
   model?: string
   toolCalls?: ToolCall[]
   toolResults?: ToolResult[]
+  /**
+   * The turn's sources so far, resent whole on each tool round rather than as a
+   * delta: the in-flight bubble has to resolve a `[S1]` the moment it streams in,
+   * and a chunk the renderer missed must not leave a permanent hole.
+   */
+  sources?: CitedSource[]
 }
 
 export interface SystemPromptEntry {
@@ -1898,6 +1939,13 @@ export interface PlayItem {
    */
   sourceRefs: PlaySourceRef[]
   rank: number
+  /**
+   * Which refresh produced this pick. A refresh adds a batch above the last one
+   * rather than replacing it, so the page groups by this, newest first.
+   */
+  batch: number
+  /** When that batch was built — the heading above the group. */
+  batchAt: number
   reaction: PlayReaction | null
   reactedAt: number | null
   shownAt: number
@@ -2864,6 +2912,11 @@ export interface ElectronAPI {
   }
   app: {
     openExternal: (url: string) => Promise<void>
+    /**
+     * Opens a file a cited source points at. Only paths Holmes itself recorded as
+     * a source are openable, so the renderer cannot name an arbitrary file.
+     */
+    openSourcePath: (path: string) => Promise<void>
     onNewChat: (callback: () => void) => () => void
     onSettings: (callback: () => void) => () => void
     getUserInfo: () => Promise<{ firstName: string }>

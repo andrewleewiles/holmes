@@ -1,7 +1,7 @@
 import { type FC, useEffect, useRef, useState } from 'react'
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
 import { faBolt, faArrowDown } from '@fortawesome/free-solid-svg-icons'
-import type { ChatAttachment, Message, ModelInfo, ReasoningEffort, MemoryMode, ContextSelection } from '@shared/types'
+import type { ChatAttachment, CitedSource, Message, ModelInfo, ReasoningEffort, MemoryMode, ContextSelection } from '@shared/types'
 import type { SystemPromptEntry, StreamingToolInteraction } from '../store/chatStore'
 import { MessageBubble } from './MessageBubble'
 import { ChatInput } from './ChatInput'
@@ -18,6 +18,7 @@ interface ChatViewProps {
   streamingText: string
   streamingReasoning: string
   streamingToolInteractions: StreamingToolInteraction[]
+  streamingSources: CitedSource[]
   error: string | null
   models: ModelInfo[]
   selectedModel: string
@@ -48,6 +49,7 @@ export const ChatView: FC<ChatViewProps> = ({
   streamingText,
   streamingReasoning,
   streamingToolInteractions,
+  streamingSources,
   error,
   models,
   selectedModel,
@@ -257,6 +259,7 @@ export const ChatView: FC<ChatViewProps> = ({
                 content: streamingText,
                 reasoning: streamingReasoning || undefined,
                 createdAt: Date.now(),
+                sources: streamingSources,
               }}
               isStreaming
               toolInteractions={streamingToolInteractions}

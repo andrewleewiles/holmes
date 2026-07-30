@@ -49,6 +49,7 @@ const App: FC = () => {
     streamingText,
     streamingReasoning,
     streamingToolInteractions,
+    streamingSources,
     error,
     activeModel,
     activeEffort,
@@ -367,6 +368,7 @@ const App: FC = () => {
       streamingText: '',
       streamingReasoning: '',
       streamingToolInteractions: [],
+      streamingSources: [],
       error: null,
     })
   }
@@ -1043,6 +1045,7 @@ const App: FC = () => {
       streamingText={streamingText}
       streamingReasoning={streamingReasoning}
       streamingToolInteractions={streamingToolInteractions}
+      streamingSources={streamingSources}
       error={error}
       models={models}
       selectedModel={activeModel}
@@ -1376,6 +1379,7 @@ onSelect={handleSelectFromDashboard}
               streamingText={streamingText}
               streamingReasoning={streamingReasoning}
               streamingToolInteractions={streamingToolInteractions}
+              streamingSources={streamingSources}
               error={error}
               models={models}
               selectedModel={activeModel}

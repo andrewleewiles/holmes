@@ -363,7 +363,12 @@ export const MessageBubble: FC<MessageBubbleProps> = ({ message, isStreaming, tu
               <div className="whitespace-pre-wrap text-base">{message.content}</div>
             ) : (
               <div className="font-serif-display">
-                <MarkdownRenderer content={message.content} className="prose-lg holmes-response" />
+                <MarkdownRenderer
+                  content={message.content}
+                  className="prose-lg holmes-response"
+                  sources={message.sources}
+                  isStreaming={isStreaming}
+                />
               </div>
             )}
 

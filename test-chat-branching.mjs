@@ -186,6 +186,28 @@ check('editing a user message creates a sibling user branch and keeps the old on
   assert.deepEqual(getMessages(editConv.id).map((m) => m.id), [eu.id, ea.id])
 })
 
+console.log('cited sources survive a round trip')
+
+const sourceConv = createConversation('test-model')
+const sourceUser = say(sourceConv.id, 'user', 'what is the refund window?')
+const CITED = [
+  { id: 'S1', kind: 'web', label: 'example.com', title: 'Refunds', url: 'https://example.com/refunds', tool: 'web_search' },
+  { id: 'S2', kind: 'file', label: 'notes.md', title: 'Notes', path: '/Users/test/notes.md', tool: 'search_files' },
+]
+const sourceReply = say(sourceConv.id, 'assistant', 'Thirty days [S1], as your notes say [S2].', sourceUser.id, { sources: CITED })
+
+check('an assistant message stores and reloads the sources it cited', () => {
+  // Read back through the database rather than trusting addMessage's return
+  // value: a pill that stops resolving after a reload is the failure mode.
+  assert.deepEqual(getMessageById(sourceReply.id)?.sources, CITED)
+  const reloaded = getMessages(sourceConv.id).find((m) => m.id === sourceReply.id)
+  assert.deepEqual(reloaded?.sources, CITED)
+})
+
+check('a message that cited nothing reloads without a sources field', () => {
+  assert.equal(getMessageById(sourceUser.id)?.sources, undefined)
+})
+
 closeDatabase()
 fs.rmSync(dbDir, { recursive: true, force: true })
 

@@ -303,7 +303,7 @@ export const RecallPage: FC<RecallPageProps> = ({ onSelectConversation, onFollow
 
       <div className="mx-auto w-full max-w-6xl px-5 py-6 sm:px-8 sm:py-8">
         <p className="mb-6 max-w-2xl text-xs leading-relaxed text-white/40">
-          Find ideas, decisions, and details across Holmes conversations and documents indexed by Spotlight on this Mac.
+          Find ideas, decisions, and details across Holmes conversations, the analyses Holmes has written about your files and folders, and documents indexed by Spotlight on this Mac.
         </p>
 
         <section className="overflow-hidden rounded-2xl border border-white/10 bg-holmes-surface shadow-[0_18px_60px_rgba(0,0,0,0.14)]">
