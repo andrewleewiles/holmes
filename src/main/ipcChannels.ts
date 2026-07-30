@@ -186,16 +186,25 @@ export const IPC = {
     GET: 'ideas:get',
     REFRESH: 'ideas:refresh',
   },
-  PLAY: {
-    GET: 'play:get',
-    REFRESH: 'play:refresh',
-    REACT: 'play:react',
-    STOP: 'play:stop',
-    GET_STATE: 'play:get-state',
+  TABLOID: {
+    GET: 'tabloid:get',
+    REFRESH: 'tabloid:refresh',
+    REACT: 'tabloid:react',
+    STOP: 'tabloid:stop',
+    GET_STATE: 'tabloid:get-state',
     /** Broadcast to every window: a build is long enough to outlive the tab. */
-    STATE: 'play:state',
-    SET_PROGRESS: 'play:set-progress',
-    ARCHIVE: 'play:archive',
+    STATE: 'tabloid:state',
+    SET_PROGRESS: 'tabloid:set-progress',
+    ARCHIVE: 'tabloid:archive',
+  },
+  UPDATER: {
+    GET_STATE: 'updater:get-state',
+    CHECK: 'updater:check',
+    DOWNLOAD: 'updater:download',
+    RESTART: 'updater:restart',
+    OPEN_RELEASES: 'updater:open-releases',
+    /** Broadcast: the download outlives whichever page happened to be open. */
+    STATE: 'updater:state',
   },
   CONTEXT_VERSIONS: {
     LIST: 'context-versions:list',

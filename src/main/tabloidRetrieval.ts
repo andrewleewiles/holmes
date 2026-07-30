@@ -1,4 +1,4 @@
-// Retrieval dispatch for the Play feed. No model runs here.
+// Retrieval dispatch for the Tabloid feed. No model runs here.
 //
 // One retriever per kind, so adding articles or podcasts later is a new entry in
 // this table plus its client — not a change to the planner, the curator, the
@@ -7,8 +7,8 @@
 
 import { retrieveYoutubeCandidates, DAILY_UNIT_BUDGET, YOUTUBE_SEARCH_UNITS } from './youtubeSearch'
 import * as database from './database'
-import { quotaDayPacific, type PlayCandidate, type PlayYoutubeError } from '../shared/playFeed'
-import { PLAY_ITEM_KINDS, type PlayItemKind } from '../shared/types'
+import { quotaDayPacific, type TabloidCandidate, type TabloidYoutubeError } from '../shared/tabloidFeed'
+import { TABLOID_ITEM_KINDS, type TabloidItemKind } from '../shared/types'
 
 /** Items shown this recently are not offered again, reacted or not. */
 export const SUPPRESS_DAYS = 30
@@ -21,21 +21,21 @@ export interface RetrievalContext {
 }
 
 export interface RetrievalOutcome {
-  candidates: PlayCandidate[]
+  candidates: TabloidCandidate[]
   unitsUsed: number
-  errors: PlayYoutubeError[]
-  fatal: PlayYoutubeError | null
+  errors: TabloidYoutubeError[]
+  fatal: TabloidYoutubeError | null
 }
 
 type Retriever = (
-  intents: import('../shared/types').PlayIntent[],
+  intents: import('../shared/types').TabloidIntent[],
   suppressed: Set<string>,
   context: RetrievalContext
 ) => Promise<RetrievalOutcome>
 
 const youtubeRetriever: Retriever = async (intents, suppressed, context) => {
   const quotaDay = quotaDayPacific(Date.now())
-  const alreadySpent = database.getPlaySearchUnits(quotaDay)
+  const alreadySpent = database.getTabloidSearchUnits(quotaDay)
   const unitsAvailable = Math.max(0, DAILY_UNIT_BUDGET - alreadySpent)
 
   if (unitsAvailable < YOUTUBE_SEARCH_UNITS) {
@@ -58,7 +58,7 @@ const youtubeRetriever: Retriever = async (intents, suppressed, context) => {
     // Spent as it goes rather than at the end: a run that dies halfway has still
     // spent the units, and a ledger that only writes on success would under-count
     // its way straight past the daily allowance.
-    onUnitsSpent: (units) => database.addPlaySearchUnits(quotaDay, units),
+    onUnitsSpent: (units) => database.addTabloidSearchUnits(quotaDay, units),
     regionCode: context.regionCode,
     relevanceLanguage: context.relevanceLanguage,
     signal: context.signal,
@@ -70,7 +70,7 @@ const youtubeRetriever: Retriever = async (intents, suppressed, context) => {
  * the schema but has no way to be retrieved yet, so the planner is never told it
  * is available.
  */
-const RETRIEVERS: Record<PlayItemKind, Retriever | null> = {
+const RETRIEVERS: Record<TabloidItemKind, Retriever | null> = {
   video: youtubeRetriever,
   article: null,
   podcast: null,
@@ -79,8 +79,8 @@ const RETRIEVERS: Record<PlayItemKind, Retriever | null> = {
 }
 
 /** The kinds that can actually be retrieved right now, given the keys on hand. */
-export function enabledPlayKinds(context: { youtubeApiKey: string }): PlayItemKind[] {
-  return PLAY_ITEM_KINDS.filter((kind) => {
+export function enabledTabloidKinds(context: { youtubeApiKey: string }): TabloidItemKind[] {
+  return TABLOID_ITEM_KINDS.filter((kind) => {
     if (!RETRIEVERS[kind]) return false
     if (kind === 'video') return Boolean(context.youtubeApiKey.trim())
     return true
@@ -94,16 +94,16 @@ export function enabledPlayKinds(context: { youtubeApiKey: string }): PlayItemKi
  * dense list: two retrievers each numbering from c1 would collide, and a
  * collision silently reattributes a pick to the wrong item.
  */
-export async function retrievePlayCandidates(
-  intents: import('../shared/types').PlayIntent[],
+export async function retrieveTabloidCandidates(
+  intents: import('../shared/types').TabloidIntent[],
   context: RetrievalContext
 ): Promise<RetrievalOutcome> {
-  const suppressed = database.listPlaySuppressedKeys(Date.now() - SUPPRESS_DAYS * 24 * 60 * 60 * 1000)
+  const suppressed = database.listTabloidSuppressedKeys(Date.now() - SUPPRESS_DAYS * 24 * 60 * 60 * 1000)
 
-  const merged: PlayCandidate[] = []
-  const errors: PlayYoutubeError[] = []
+  const merged: TabloidCandidate[] = []
+  const errors: TabloidYoutubeError[] = []
   let unitsUsed = 0
-  let fatal: PlayYoutubeError | null = null
+  let fatal: TabloidYoutubeError | null = null
 
   const kinds = [...new Set(intents.map((intent) => intent.kind))]
   for (const kind of kinds) {

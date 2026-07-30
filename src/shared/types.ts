@@ -314,7 +314,7 @@ export interface AppSettings {
   webSearchEnabled: boolean
   webSearchProvider: WebSearchProvider
   webSearchApiKey: string
-  /** YouTube Data API v3 key. Without it the Play feed has nothing to retrieve. */
+  /** YouTube Data API v3 key. Without it the Tabloid feed has nothing to retrieve. */
   youtubeApiKey: string
   /** Gates the AI analysis pass over activity events. */
   activityIngestEnabled: boolean
@@ -500,8 +500,8 @@ export type MemorySourceType =
   | 'claude-import'
   | 'activity-events'
   | 'super-context'
-  /** A thumbs-up in the Play feed. Provenance for a taste, not a body of evidence. */
-  | 'play-reaction'
+  /** A thumbs-up in the Tabloid feed. Provenance for a taste, not a body of evidence. */
+  | 'tabloid-reaction'
 
 export interface MemorySource {
   type: MemorySourceType
@@ -1769,6 +1769,14 @@ export type TimelineSourceType =
   | 'context-version'
   | 'session-note'
 
+/**
+ * What a behavioral claim rests on, marked inline in the generated prose:
+ * `stated` is the person's own account of themselves, `recorded` is an
+ * independent record of them, `inferred` is the analyst's own reading. See
+ * `shared/evidenceBasis.ts` for the contract and the markers.
+ */
+export type EvidenceBasis = 'stated' | 'recorded' | 'inferred'
+
 // One dated line parsed out of a generated context's TIMELINE block.
 export interface ParsedTimelineEntry {
   startDate: string
@@ -1796,6 +1804,15 @@ export interface TimelineEvent {
   // Set when a rebuild no longer finds this event in any current context: the
   // event is kept as history rather than deleted.
   archivedAt: string | null
+  /**
+   * Set when reconciliation judged the entry a data-quality artifact rather than
+   * a fact about this person's life — a birth year contradicting the recorded
+   * one, or one of several re-runs of the same metric. Excluded entries are kept
+   * with their reason and left out of the life record: the narrative, the year
+   * super-contexts and the chat block never see them.
+   */
+  excludedAt: string | null
+  excludedReason: string | null
   lastSeenAt: string | null
   contextVersionId: string | null
   createdAt: string
@@ -1836,7 +1853,7 @@ export interface HomeIdeasResult {
   stale: boolean
 }
 
-// The Play feed — curated media picked against the user's own record.
+// The Tabloid feed — curated media picked against the user's own record.
 //
 // The pipeline is plan -> retrieve -> curate: a model turns the profile into
 // search intents, real retrieval answers them, and a second model ranks what
@@ -1847,8 +1864,8 @@ export interface HomeIdeasResult {
 // V1 retrieves `video` only. The rest of the union is here because the schema,
 // the dispatch table and the card layout are all keyed by it, and adding a kind
 // later should be a new retriever rather than a migration.
-export type PlayItemKind = 'video' | 'article' | 'podcast' | 'book' | 'audiobook'
-export const PLAY_ITEM_KINDS: readonly PlayItemKind[] = [
+export type TabloidItemKind = 'video' | 'article' | 'podcast' | 'book' | 'audiobook'
+export const TABLOID_ITEM_KINDS: readonly TabloidItemKind[] = [
   'video',
   'article',
   'podcast',
@@ -1857,23 +1874,23 @@ export const PLAY_ITEM_KINDS: readonly PlayItemKind[] = [
 ]
 
 /** Which retriever produced a candidate. V1 dispatches only `youtube`. */
-export type PlayRetrieverId = 'youtube' | 'tavily' | 'openrouter-web' | 'library'
+export type TabloidRetrieverId = 'youtube' | 'tavily' | 'openrouter-web' | 'library'
 
-export type PlayReaction = 'up' | 'down'
+export type TabloidReaction = 'up' | 'down'
 
 /**
  * Why a refresh produced what it did. Every non-`ok` value is a state the page
  * explains rather than an error it swallows: a Refresh the user pressed that
  * silently returns the same twelve cards reads as broken.
  */
-export type PlayFeedStatus = 'ok' | 'no-api-key' | 'no-profile' | 'no-credentials' | 'quota' | 'error'
+export type TabloidFeedStatus = 'ok' | 'no-api-key' | 'no-profile' | 'no-credentials' | 'quota' | 'error'
 
 /**
  * Where a pick came from in the user's own record. `drillable` marks the refs
  * that `resolveProvenanceChain` understands, so the chip can open the existing
  * provenance explorer; the rest are terminal and show their `detail` alone.
  */
-export type PlaySourceRefKind =
+export type TabloidSourceRefKind =
   | 'super-context'
   | 'memory-field'
   | 'timeline'
@@ -1883,10 +1900,10 @@ export type PlaySourceRefKind =
   | 'project'
   | 'reaction'
 
-export interface PlaySourceRef {
+export interface TabloidSourceRef {
   /** Drillable refs use the vocabulary `resolveProvenanceChain` already resolves. */
   ref: string
-  kind: PlaySourceRefKind
+  kind: TabloidSourceRefKind
   label: string
   /** The exact fact, quoted from the profile. This is what the card shows. */
   detail: string
@@ -1898,13 +1915,13 @@ export interface PlaySourceRef {
  * that motivated it. The planner emits these rather than recommendations —
  * it has no way to know what actually exists.
  */
-export interface PlayIntent {
+export interface TabloidIntent {
   /** `i1`..`iN`, stable within one feed. The curator cites these and nothing else. */
   id: string
-  kind: PlayItemKind
+  kind: TabloidItemKind
   query: string
   rationale: string
-  sourceRefs: PlaySourceRef[]
+  sourceRefs: TabloidSourceRef[]
   /** Retriever hints. A retriever that does not understand one ignores it. */
   filters?: {
     publishedAfter?: string
@@ -1915,10 +1932,10 @@ export interface PlayIntent {
   }
 }
 
-export interface PlayItem {
+export interface TabloidItem {
   id: string
-  kind: PlayItemKind
-  provider: PlayRetrieverId
+  kind: TabloidItemKind
+  provider: TabloidRetrieverId
   externalId: string
   url: string
   title: string
@@ -1937,7 +1954,7 @@ export interface PlayItem {
    * The deduped union of the cited intents' refs. Computed from `intentIds`,
    * never authored by a model: a ref the code did not build cannot be verified.
    */
-  sourceRefs: PlaySourceRef[]
+  sourceRefs: TabloidSourceRef[]
   rank: number
   /**
    * Which refresh produced this pick. A refresh adds a batch above the last one
@@ -1946,14 +1963,14 @@ export interface PlayItem {
   batch: number
   /** When that batch was built — the heading above the group. */
   batchAt: number
-  reaction: PlayReaction | null
+  reaction: TabloidReaction | null
   reactedAt: number | null
   shownAt: number
   /** Null until the transcript pass has run for this item. */
-  analysis: PlayAnalysis | null
-  /** Resume point and how much has been seen — see PlayWatchState. */
-  watch: PlayWatchState | null
-  archive: PlayArchive | null
+  analysis: TabloidAnalysis | null
+  /** Resume point and how much has been seen — see TabloidWatchState. */
+  watch: TabloidWatchState | null
+  archive: TabloidArchive | null
 }
 
 /**
@@ -1963,7 +1980,7 @@ export interface PlayItem {
  * `furthestSeconds` is monotonic, exactly as `book_reading_state` does it:
  * scrubbing back to rewatch a section must not undo the progress bar.
  */
-export interface PlayWatchState {
+export interface TabloidWatchState {
   positionSeconds: number
   furthestSeconds: number
   durationSeconds: number | null
@@ -1971,8 +1988,8 @@ export interface PlayWatchState {
   updatedAt: number
 }
 
-export interface PlayArchive {
-  status: PlayArchiveStatus
+export interface TabloidArchive {
+  status: TabloidArchiveStatus
   filePath: string | null
   byteSize: number
   archivedAt: number | null
@@ -1984,7 +2001,7 @@ export interface PlayArchive {
  * twenty entries produces twenty flags per video, and a feed that flags
  * everything says nothing.
  */
-export type PlayFlagKind =
+export type TabloidFlagKind =
   | 'unsupported'
   | 'false'
   | 'misleading'
@@ -1993,13 +2010,13 @@ export type PlayFlagKind =
   | 'outdated'
   | 'speculation'
 
-export type PlayFlagSeverity = 'low' | 'medium' | 'high'
+export type TabloidFlagSeverity = 'low' | 'medium' | 'high'
 
 /** One timestamped problem found in a video's transcript. */
-export interface PlayFlag {
+export interface TabloidFlag {
   id: string
-  kind: PlayFlagKind
-  severity: PlayFlagSeverity
+  kind: TabloidFlagKind
+  severity: TabloidFlagSeverity
   /** Seconds into the video, snapped to the transcript cue that carries it. */
   startSeconds: number
   /** The claim as made, quoted from the transcript so it can be checked. */
@@ -2008,18 +2025,18 @@ export interface PlayFlag {
   note: string
 }
 
-export type PlayAnalysisStatus =
+export type TabloidAnalysisStatus =
   | 'pending'
   | 'ok'
   | 'no-transcript'
   | 'unavailable'
   | 'failed'
 
-export interface PlayAnalysis {
-  status: PlayAnalysisStatus
+export interface TabloidAnalysis {
+  status: TabloidAnalysisStatus
   /** A one-line characterisation of how the video handles its subject. */
   summary: string
-  flags: PlayFlag[]
+  flags: TabloidFlag[]
   /** Transcript language actually used, so a translated track is never silent. */
   language: string | null
   analyzedAt: number
@@ -2032,10 +2049,10 @@ export interface PlayAnalysis {
  * every pick — so it reports like the indexing passes do rather than spinning a
  * button for four minutes.
  */
-export type PlayRunPhase = 'planning' | 'retrieving' | 'curating' | 'transcribing' | 'analysing'
+export type TabloidRunPhase = 'planning' | 'retrieving' | 'curating' | 'transcribing' | 'analysing'
 
-export interface PlayRunProgress {
-  phase: PlayRunPhase
+export interface TabloidRunProgress {
+  phase: TabloidRunPhase
   /** Position within a per-item phase; both 0 for the whole-step phases. */
   completed: number
   total: number
@@ -2043,40 +2060,79 @@ export interface PlayRunProgress {
   detail: string
 }
 
-export type PlayArchiveStatus = 'queued' | 'downloading' | 'done' | 'failed'
+export type TabloidArchiveStatus = 'queued' | 'downloading' | 'done' | 'failed'
 
-export interface PlayArchiveProgress {
+export interface TabloidArchiveProgress {
   itemId: string
   title: string
-  status: PlayArchiveStatus
+  status: TabloidArchiveStatus
   /** 0-1, or null while yt-dlp has not reported a percentage yet. */
   fraction: number | null
   detail: string
   error: string | null
 }
 
-export interface PlayRunState {
+export interface TabloidRunState {
   status: 'idle' | 'building'
   origin: 'user' | null
-  progress: PlayRunProgress | null
+  progress: TabloidRunProgress | null
   message: string | null
   /**
    * Downloads run alongside a build rather than queueing behind it: archiving is
    * the user's own decision about one video and must not wait on a feed refresh.
    */
-  archives: PlayArchiveProgress[]
+  archives: TabloidArchiveProgress[]
   updatedAt: string
 }
 
-export interface PlayFeed {
-  items: PlayItem[]
-  intents: PlayIntent[]
+/**
+ * An app update, from "there is one" through to "restart to use it".
+ *
+ * `available` is not a job in progress — it is the check having found a newer
+ * release and nobody having acted on it yet, which is what puts the strip in
+ * the sidebar. `ready` means the bundle on disk has already been replaced and
+ * only a relaunch is outstanding.
+ */
+export type UpdateRunStatus =
+  | 'idle'
+  | 'checking'
+  | 'available'
+  | 'downloading'
+  | 'installing'
+  | 'ready'
+  | 'failed'
+
+export interface UpdateRunState {
+  status: UpdateRunStatus
+  /** The release version, without the tag's `v`. Null unless one was found. */
+  version: string | null
+  currentVersion: string
+  /** Release notes, shown as the strip's tooltip. */
+  notes: string | null
+  bytesDownloaded: number
+  /** Null when the asset response carried no content-length. */
+  bytesTotal: number | null
+  /** 0-1, or null while the total is unknown. */
+  fraction: number | null
+  message: string | null
+  /**
+   * False for a translocated or non-mac bundle, or a release with no matching
+   * zip: the strip then links to the releases page instead of downloading.
+   */
+  canInstallInPlace: boolean
+  releasesUrl: string | null
+  updatedAt: string
+}
+
+export interface TabloidFeed {
+  items: TabloidItem[]
+  intents: TabloidIntent[]
   generatedAt: number
   /** False before anything has been generated against a real profile. */
   personalized: boolean
   /** True when a refresh would produce a different set. */
   stale: boolean
-  status: PlayFeedStatus
+  status: TabloidFeedStatus
   lastError: string | null
   provenance: ContextProvenance | null
   /** The YouTube quota ledger, so a bounded daily spend is visible rather than mysterious. */
@@ -2139,6 +2195,8 @@ export interface TimelineYearsView {
 
 export interface TimelineFilter {
   includeArchived?: boolean
+  /** Excluded entries are left out unless a caller explicitly wants to show them. */
+  includeExcluded?: boolean
   categories?: TimelineCategory[]
   sourceTypes?: TimelineSourceType[]
   projectIds?: string[]
@@ -2157,6 +2215,14 @@ export interface TimelineRebuildProgress {
   total: number | null
 }
 
+/** Why entries were left out of the life record this pass, and how many. */
+export interface TimelineExclusionSummary {
+  kind: 'birth-year-conflict' | 'restatement'
+  count: number
+  /** One human-readable line naming what was dropped and why. */
+  detail: string
+}
+
 export interface TimelineRebuildResult {
   sourcesScanned: number
   entriesHarvested: number
@@ -2164,6 +2230,14 @@ export interface TimelineRebuildResult {
   eventsUpdated: number
   eventsArchived: number
   duplicatesMerged: number
+  /**
+   * Entries reconciliation kept but left out of the life record: a birth year
+   * that contradicts the recorded one, or a re-run restating a metric an earlier
+   * entry already carries. Reported so a cleanup is never silent.
+   */
+  entriesExcluded: number
+  /** Every distinct reason, with how many entries each accounted for. */
+  exclusions: TimelineExclusionSummary[]
   manualPreserved: number
   contextVersionsSeen: number
   narrativeGenerated: boolean
@@ -2239,6 +2313,20 @@ export type PersonSourceType =
  */
 export type PersonStatus = 'unverified' | 'confirmed' | 'ambiguous' | 'ignored'
 
+/**
+ * How a person's identity was established, weakest link first. Graded by
+ * `IDENTITY_BASIS_CONFIDENCE` in shared/peopleResolve.ts — this says how sure we
+ * are the row is one real person, which is a different question from how much
+ * any one source's claim about them is worth.
+ */
+export type PersonIdentityBasis =
+  | 'asserted'
+  | 'handle'
+  | 'name-exact'
+  | 'name-partial'
+  | 'unresolved'
+  | 'ambiguous'
+
 export type PersonSeedSource = 'contacts' | 'messaging' | 'memory'
 
 export type PersonAliasKind = 'name' | 'email' | 'phone' | 'handle'
@@ -2289,6 +2377,10 @@ export interface Person {
   lastSeen: string | null
   score: number
   confidence: number
+  /** How the identity was established — the weakest link in it. */
+  identityBasis: PersonIdentityBasis
+  /** What that basis is worth, 0–1. Low means the row may not be one real person. */
+  identityConfidence: number
   projectIds: string[]
   platforms: PersonPlatform[]
   dossierShort: string
@@ -3129,15 +3221,27 @@ export interface ElectronAPI {
     get: () => Promise<HomeIdeasResult>
     refresh: (force?: boolean) => Promise<HomeIdeasResult>
   }
-  play: {
-    get: () => Promise<PlayFeed>
-    refresh: (force?: boolean) => Promise<PlayFeed>
-    react: (id: string, reaction: PlayReaction | null) => Promise<PlayFeed>
-    stop: () => Promise<PlayRunState>
-    getState: () => Promise<PlayRunState>
-    setProgress: (id: string, positionSeconds: number, durationSeconds: number | null) => Promise<PlayWatchState | null>
-    archive: (id: string) => Promise<PlayFeed>
-    onState: (callback: (state: PlayRunState) => void) => () => void
+  tabloid: {
+    get: () => Promise<TabloidFeed>
+    refresh: (force?: boolean) => Promise<TabloidFeed>
+    react: (id: string, reaction: TabloidReaction | null) => Promise<TabloidFeed>
+    stop: () => Promise<TabloidRunState>
+    getState: () => Promise<TabloidRunState>
+    setProgress: (id: string, positionSeconds: number, durationSeconds: number | null) => Promise<TabloidWatchState | null>
+    archive: (id: string) => Promise<TabloidFeed>
+    onState: (callback: (state: TabloidRunState) => void) => () => void
+  }
+  updater: {
+    getState: () => Promise<UpdateRunState>
+    /** Re-runs the release check; resolves with the state it settled on. */
+    check: () => Promise<UpdateRunState>
+    /** Downloads and swaps the bundle. Resolves once the state is `ready`. */
+    download: () => Promise<UpdateRunState>
+    /** Relaunches into the freshly installed bundle. Never resolves. */
+    restart: () => Promise<void>
+    /** For a build that cannot swap itself: opens the releases page. */
+    openReleases: () => Promise<void>
+    onState: (callback: (state: UpdateRunState) => void) => () => void
   }
   callHistory: {
     list: (filter?: ProviderCallFilter) => Promise<ProviderCallSummary[]>

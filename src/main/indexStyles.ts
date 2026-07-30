@@ -8,6 +8,12 @@
 import type { IndexStyle } from '../shared/types'
 import { peoplePromptSection } from '../shared/people'
 import { timelinePromptSection } from '../shared/timeline'
+import {
+  evidenceBasisPromptSection,
+  INFERRED_MARKER,
+  RECORDED_MARKER,
+  STATED_MARKER,
+} from '../shared/evidenceBasis'
 
 export interface StylePromptSet {
   file: string
@@ -223,6 +229,10 @@ Distinguish firmly between what the PERSON said about themselves and what the AS
 Length: roughly 200-500 words for a substantive conversation. If it genuinely reveals little — a one-line question, a mechanical task — say so in a sentence or two. A short honest answer is correct and is preferred over padding.
 
 Output the analysis prose (no preamble), then the timeline section described below.
+
+${evidenceBasisPromptSection()}
+
+A conversation is mostly the person's own account of themselves, so most of what you write here is ${STATED_MARKER}. Reserve ${RECORDED_MARKER} for figures, dates and artifacts the transcript itself carries, and mark every read you make of their reasoning, state or motives ${INFERRED_MARKER}.
 
 ${timelinePromptSection(10)}
 

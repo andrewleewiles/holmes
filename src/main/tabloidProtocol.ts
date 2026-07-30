@@ -21,16 +21,16 @@ export const MEDIA_SCHEME = 'holmes-media'
 const MEDIA_HOST = 'thumb'
 
 /** Where cached artwork lives. Outside the DB: these are binaries, not rows. */
-export function playMediaRoot(): string {
-  return path.join(app.getPath('userData'), 'play-media')
+export function tabloidMediaRoot(): string {
+  return path.join(app.getPath('userData'), 'tabloid-media')
 }
 
 /**
  * Two-level fan-out on the id. A single flat directory of thousands of JPEGs is
  * slow to enumerate on macOS and unpleasant to inspect by hand.
  */
-export function playMediaPath(id: string): string {
-  return path.join(playMediaRoot(), id.slice(0, 2), `${id}.jpg`)
+export function tabloidMediaPath(id: string): string {
+  return path.join(tabloidMediaRoot(), id.slice(0, 2), `${id}.jpg`)
 }
 
 export function mediaUrl(id: string): string {
@@ -56,7 +56,17 @@ export const MEDIA_SCHEME_PRIVILEGES: Electron.CustomScheme = {
 }
 
 /** Must run AFTER app ready and AFTER initDatabase. */
-export function installPlayMediaProtocol(): void {
+export function installTabloidMediaProtocol(): void {
+  // The cache directory moved with the rename, so anything left under the old
+  // name is unreachable: its rows were renamed to point at tabloid-media paths.
+  // Removed once rather than left to accumulate in userData forever.
+  try {
+    const legacy = path.join(app.getPath('userData'), 'play-media')
+    if (fs.existsSync(legacy)) fs.rmSync(legacy, { recursive: true, force: true })
+  } catch {
+    // A directory that will not delete is not a reason to refuse to serve.
+  }
+
   protocol.handle(MEDIA_SCHEME, async (request) => {
     let url: URL
     try {
@@ -69,17 +79,17 @@ export function installPlayMediaProtocol(): void {
     const id = decodeURIComponent(url.pathname.replace(/^\/+/, ''))
     if (!id) return new Response('Not found', { status: 404 })
 
-    const row = database.getPlayMediaById(id)
+    const row = database.getTabloidMediaById(id)
     if (!row) return new Response('Not found', { status: 404 })
 
     // The path came from our own writer, but the file can still have been
     // deleted underneath us — a missing file is a 404, never a thrown handler.
     const filePath = row.filePath
-    if (!filePath.startsWith(playMediaRoot() + path.sep) || !fs.existsSync(filePath)) {
+    if (!filePath.startsWith(tabloidMediaRoot() + path.sep) || !fs.existsSync(filePath)) {
       return new Response('Not found', { status: 404 })
     }
 
-    database.touchPlayMedia(id)
+    database.touchTabloidMedia(id)
 
     const response = await net.fetch(`file://${filePath}`, {
       headers: request.headers,

@@ -23,6 +23,13 @@ import { extractDocxText, extractPptxText, extractXlsxText } from './documentTex
 import { isLibraryProject, isVideoProject } from '../shared/defaultProjects'
 import { peoplePromptSection } from '../shared/people'
 import { timelinePromptSection } from '../shared/timeline'
+import {
+  evidenceBasisCarryForwardRule,
+  evidenceBasisPromptSection,
+  normalizeEvidenceMarkers,
+  stripEvidenceMarkers,
+  STATED_MARKER,
+} from '../shared/evidenceBasis'
 import * as database from './database'
 import { getRequestsPerMinute } from './settings'
 import { collectDatingEvidence, formatDatingEvidence } from './dating'
@@ -84,10 +91,10 @@ export async function mapWithConcurrency<T>(
 // Versioned per level so a prompt change only regenerates that level's cached
 // contexts: FILE feeds the file content-hash, FOLDER the folder child-hash,
 // USER the user super-context input-hash.
-const FILE_PROMPT_VERSION = 'v6-line-cited-people'
+const FILE_PROMPT_VERSION = 'v7-basis-marked'
 const IMAGE_PROMPT_VERSION = 'v1-photo-behavioral'
-const FOLDER_PROMPT_VERSION = 'v10-cited-synthesis-people'
-const USER_PROMPT_VERSION = 'v13-cited-apex-people'
+const FOLDER_PROMPT_VERSION = 'v11-basis-marked'
+const USER_PROMPT_VERSION = 'v14-basis-marked'
 
 // A project's index style picks the lens every level is read through. Behavioral
 // keeps the original prompts and the original version strings, so a project that
@@ -167,6 +174,10 @@ Length: when the file carries enough signal, write AT LEAST three substantial pa
 
 Output the analysis prose (no preamble, under 900 words), then the timeline section described below.
 
+${evidenceBasisPromptSection()}
+
+At this level you are looking at the raw material, so you are the only pass that can tell what the person said about themselves from what was recorded about them. Get it right here: every level above inherits your markers and cannot recover the distinction on its own.
+
 CITE THE EXACT LINES. The document below is presented with a line number in front of every line. End every sentence that rests on specific content with the line it came from, in square brackets: [L42] for one line, or [L42-58] for a range. Several ranges are fine when a claim draws on several places: "...ordered from the same three restaurants all spring [L112-140][L301-318]." Cite the narrowest range that actually contains the evidence — a whole-file range tells the reader nothing. Use only line numbers that exist in the document below, and never cite a line you did not read. A sentence of genuine interpretation across the whole file may carry no citation, and that is correct. Do not cite inside the TIMELINE section. The brackets are stripped out before anything is stored, so they cost the reader nothing — cite generously.
 
 ${timelinePromptSection(20)}
@@ -201,6 +212,10 @@ Output only those two parts separated by a line containing only "---". No other 
 
 ${citationPromptSection('child summary')}
 
+${evidenceBasisPromptSection()}
+
+${evidenceBasisCarryForwardRule('child summary')}
+
 ${timelinePromptSection(30)}
 
 ${peoplePromptSection(12)}
@@ -219,7 +234,7 @@ Integrate ALL of it into ONE cohesive picture of the person: their dominant rout
 This is the richest document the system produces and it must read like it. It is NOT a summary of the per-source syntheses, so do not compress them. It is the only place where every data source meets, which means it must come out LONGER and more specific than any individual source synthesis you were given — never shorter. If your draft is shorter than the longest source synthesis in front of you, it is wrong. Several substantive sources plus a stored memory profile is abundant signal, and a one-paragraph or two-paragraph answer is always wrong. Only genuinely thin inputs justify a short answer, and a set of rich per-source syntheses is never thin.
 
 Depth requirement for the detailed part (this governs the output — the format template below does not). Organize by theme, never by source. Write flowing prose paragraphs, no headings, no numbered list, no bullet points, and devote exactly one paragraph of 220 to 300 words to each of these six jobs — six substantial paragraphs in total, roughly 1,400-1,800 words overall:
-1. Who this person is behaviorally: the through-line the sources agree on.
+1. Who this person is behaviorally: the through-line the sources agree on. This paragraph is the most-read paragraph the system produces and it is where an inference is most easily mistaken for a finding, so mark its basis with particular care — a portrait assembled across sources is your reading, not a fact any one source states.
 2. Their routines and cadences — how they actually spend their time, carrying the concrete frequencies, totals and time ranges the sources established.
 3. Their interests, tastes and priorities, including how they spend money and attention.
 4. Their relationships and social patterns.
@@ -237,6 +252,12 @@ SHORT: <two or three sentences (max ~50 words, hard limit 350 characters): the h
 Output only those two parts separated by a line containing only "---". No other preamble. The SHORT part stays genuinely short — anything past 350 characters is cut off mid-word, so keep it to a single headline portrait. All of the depth belongs after the "---".
 
 ${citationPromptSection('data source and the memory profile')}
+
+${evidenceBasisPromptSection()}
+
+${evidenceBasisCarryForwardRule('source synthesis')}
+
+A note on the memory profile specifically: much of what it records is there because the person told the system so. A claim you take from it is ${STATED_MARKER} unless the profile itself names an independent record behind it.
 
 ${timelinePromptSection(60)}
 
@@ -512,7 +533,10 @@ export function finishSynthesis(
   markerToRef: Map<string, string>,
   maxLongChars: number
 ): { short: string; long: string; claims: ProvenanceClaim[] } {
-  const parsed = parseFolderContext(raw, Number.MAX_SAFE_INTEGER)
+  // Basis markers are folded to their canonical spelling BEFORE claims are
+  // extracted: normalizing afterwards would change the text's length and shift
+  // every claim offset the extractor just measured.
+  const parsed = parseFolderContext(normalizeEvidenceMarkers(raw), Number.MAX_SAFE_INTEGER)
   const extracted = extractClaims(parsed.long, markerToRef)
   const long = extracted.text.trim()
   // trim() can only remove leading whitespace the extractor already excluded
@@ -522,9 +546,9 @@ export function finishSynthesis(
     .map((claim) => ({ ...claim, start: claim.start - lead, end: claim.end - lead }))
     .filter((claim) => claim.start >= 0 && claim.end > claim.start)
   return {
-    // The SHORT line is told not to carry tags; strip defensively so a stray one
-    // never reaches a headline the user reads.
-    short: extractClaims(parsed.short, markerToRef).text.trim().slice(0, MAX_FOLDER_SHORT_CHARS),
+    // The SHORT line is told not to carry tags; strip defensively so neither a
+    // stray citation nor a basis marker reaches a headline the user reads.
+    short: stripEvidenceMarkers(extractClaims(parsed.short, markerToRef).text).trim().slice(0, MAX_FOLDER_SHORT_CHARS),
     long: long.slice(0, maxLongChars),
     claims: clampClaims(shifted, Math.min(long.length, maxLongChars)),
   }
@@ -1067,7 +1091,7 @@ async function indexProjectSource(
     let claims: ProvenanceClaim[] = []
     try {
       const raw = await callLLMRetrying(config, model, filePrompt.prompt, `Document: ${relativePath}\n\n${datingEvidence}\n\n--- DOCUMENT CONTENTS (${lineCount} numbered lines) ---\n${numbered}`, signal, 3, { spend, limiter })
-      const extracted = extractClaims(raw.trim(), lineMarkerResolver(filePath, lineCount))
+      const extracted = extractClaims(normalizeEvidenceMarkers(raw.trim()), lineMarkerResolver(filePath, lineCount))
       const cleaned = extracted.text.trim()
       const lead = extracted.text.length - extracted.text.trimStart().length
       // Same distinction as the image path: the document was read and had text
@@ -1250,7 +1274,7 @@ async function indexProjectSource(
   }
 }
 
-const PROJECT_PROMPT_VERSION = 'v2-multi-source-people'
+const PROJECT_PROMPT_VERSION = 'v3-basis-marked'
 const MAX_PROJECT_INPUT_CHARS = 60_000
 
 // Newest first, and capped: a project with three hundred chats must not turn its
@@ -1270,6 +1294,10 @@ SHORT: <one or two sentences (max ~40 words, hard limit 300 characters): the hea
 <the detailed combined synthesis, ending with the timeline section described below>
 
 Output only those two parts separated by a line containing only "---". No other preamble.
+
+${evidenceBasisPromptSection()}
+
+${evidenceBasisCarryForwardRule('source synthesis')}
 
 ${timelinePromptSection(40)}
 

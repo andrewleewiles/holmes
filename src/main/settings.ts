@@ -453,7 +453,7 @@ export function getWebSearchSettings() {
 }
 
 /**
- * The Play feed's retrieval key. Its own accessor rather than a `getSettings()`
+ * The Tabloid feed's retrieval key. Its own accessor rather than a `getSettings()`
  * field read, matching the web-search pair above: the retrieval path consults it
  * per refresh and has no reason to materialize the whole settings object.
  */

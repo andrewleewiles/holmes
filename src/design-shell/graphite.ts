@@ -93,9 +93,28 @@ const HOLMES_CHROME = `
 .title-bar .window-buttons { display: none; }
 `
 
+/**
+ * True when the build found a licensed Font Awesome Pro copy and generated
+ * `holmes/fa-icons.css` beside this bundle. Defined by esbuild — see
+ * scripts/build-design-shell.mjs, which also explains why no Pro data is in
+ * the repo. False means Graphite keeps its own icons, which is a complete
+ * icon set either way.
+ */
+declare const __HOLMES_FA_ICONS__: boolean
+
 function applySkin(win: Window): void {
   const doc = win.document
   if (doc.getElementById('holmes-skin')) return
+
+  if (__HOLMES_FA_ICONS__) {
+    const link = doc.createElement('link')
+    link.id = 'holmes-fa-icons'
+    link.rel = 'stylesheet'
+    // Absolute within the bundle origin: this runs in the editor document at
+    // /index.html, while the stylesheet sits beside the shell in /holmes/.
+    link.href = '/holmes/fa-icons.css'
+    doc.head.appendChild(link)
+  }
   const rgb = (hex: string) =>
     `${parseInt(hex.slice(1, 3), 16)}, ${parseInt(hex.slice(3, 5), 16)}, ${parseInt(hex.slice(5, 7), 16)}`
   const lines = Object.entries(HOLMES_RAMP).flatMap(([step, hex]) => [

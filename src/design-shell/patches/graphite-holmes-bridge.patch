@@ -17,6 +17,19 @@ index 49f4b20..c4f34c8 100644
  
  		await loadDemoArtwork(editor);
  	});
+diff --git a/frontend/src/components/widgets/labels/IconLabel.svelte b/frontend/src/components/widgets/labels/IconLabel.svelte
+index dcfd5ef..9747933 100644
+--- a/frontend/src/components/widgets/labels/IconLabel.svelte
++++ b/frontend/src/components/widgets/labels/IconLabel.svelte
+@@ -33,7 +33,7 @@
+ 		.join(" ");
+ </script>
+ 
+-<LayoutRow class={`icon-label ${iconSizeClass} ${className} ${extraClasses}`.trim()} classes={{ disabled }} {tooltipLabel} {tooltipDescription} {tooltipShortcut}>
++<LayoutRow class={`icon-label holmes-icon-${icon} ${iconSizeClass} ${className} ${extraClasses}`.trim()} classes={{ disabled }} {tooltipLabel} {tooltipDescription} {tooltipShortcut}>
+ 	{@html ICON_SVG_STRINGS[icon] || "�"}
+ </LayoutRow>
+ 
 diff --git a/frontend/wrapper/src/editor_commands.rs b/frontend/wrapper/src/editor_commands.rs
 index ad923e7..d0025c5 100644
 --- a/frontend/wrapper/src/editor_commands.rs

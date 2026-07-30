@@ -17,10 +17,10 @@ import {
   faTimeline,
   faUser,
 } from '@fortawesome/free-solid-svg-icons'
-import type { PlayItem, PlayReaction, PlaySourceRefKind } from '@shared/types'
+import type { TabloidItem, TabloidReaction, TabloidSourceRefKind } from '@shared/types'
 import { ProvenanceExplorer } from './ProvenanceExplorer'
 
-const REF_ICON: Record<PlaySourceRefKind, typeof faBrain> = {
+const REF_ICON: Record<TabloidSourceRefKind, typeof faBrain> = {
   'super-context': faSitemap,
   'memory-field': faBrain,
   timeline: faTimeline,
@@ -48,11 +48,11 @@ const ThumbFallback: FC<{ title: string; creator: string | null }> = ({ title, c
   </div>
 )
 
-interface PlayCardProps {
-  item: PlayItem
-  onPlay: (item: PlayItem) => void
-  onReact: (item: PlayItem, reaction: PlayReaction | null) => void
-  onArchive: (item: PlayItem) => void
+interface TabloidCardProps {
+  item: TabloidItem
+  onPlay: (item: TabloidItem) => void
+  onReact: (item: TabloidItem, reaction: TabloidReaction | null) => void
+  onArchive: (item: TabloidItem) => void
   /** True while yt-dlp is downloading this one. */
   archiving: boolean
 }
@@ -62,7 +62,7 @@ interface PlayCardProps {
  * public recommender cannot show you, so it sits under the title rather than
  * behind a hover, and the facts behind it are one click away.
  */
-export const PlayCard: FC<PlayCardProps> = ({ item, onPlay, onReact, onArchive, archiving }) => {
+export const TabloidCard: FC<TabloidCardProps> = ({ item, onPlay, onReact, onArchive, archiving }) => {
   const [openRef, setOpenRef] = useState<string | null>(null)
   const duration = formatDuration(item.durationSeconds)
   const drillable = item.sourceRefs.find((ref) => ref.ref === openRef && ref.drillable)

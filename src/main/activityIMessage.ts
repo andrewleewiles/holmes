@@ -52,8 +52,9 @@ const MAX_BODY_EXCERPT_CHARS = 500
  *
  * 1: metadata only.
  * 2: message body excerpt, and contact names from the AddressBook store.
+ * 3: sent messages attributed through the chat they belong to (see the query).
  */
-const SYNC_FORMAT_VERSION = 2
+const SYNC_FORMAT_VERSION = 3
 
 interface MessageRow {
   date: number
@@ -170,11 +171,30 @@ export async function syncIMessageActivity(
     // leaves `text` null on most rows and puts the body in `attributedBody`,
     // so reading only the former would drop roughly seventy percent of the
     // conversation without reporting anything wrong.
+    //
+    // `message.handle_id` is 0 on most rows the user SENT — 78% of them on this
+    // machine — because the column records who the message came from, and a
+    // sent message came from nobody. Read on its own it silently drops the
+    // owner's half of nearly every thread, which is how a person's year summary
+    // ends up reporting that the owner never speaks. The chat a message belongs
+    // to knows the other party, so an unattributed message falls back to it, and
+    // only when that chat has exactly one participant: attributing a sent group
+    // message to one member would be an invented one-to-one relationship, which
+    // is the failure this codebase is most careful about. `imessage.ts` has
+    // always resolved counterparties this way; this importer did not.
     const rows = db
       .prepare(
         `SELECT m.date            AS date,
                 m.is_from_me      AS is_from_me,
-                h.id              AS handle_id,
+                COALESCE(h.id, (
+                  SELECT ch.id
+                  FROM chat_message_join cmj
+                  JOIN chat_handle_join chj ON chj.chat_id = cmj.chat_id
+                  JOIN handle ch ON ch.ROWID = chj.handle_id
+                  WHERE cmj.message_id = m.ROWID
+                    AND (SELECT COUNT(*) FROM chat_handle_join p WHERE p.chat_id = cmj.chat_id) = 1
+                  LIMIT 1
+                ))               AS handle_id,
                 m.service         AS service,
                 m.text            AS text,
                 m.attributedBody  AS attributed_body,

@@ -5,7 +5,7 @@ import {
   faDatabase,
   faFolderOpen,
   faGlobe,
-  faPlay,
+  faNewspaper,
   faImages,
   faLayerGroup,
   faShieldHalved,
@@ -976,15 +976,15 @@ export const SettingsPanel: FC<SettingsPanelProps> = ({
             )}
           </div>
 
-          {/* Play feed retrieval */}
+          {/* Tabloid feed retrieval */}
           <div className="rounded-xl border border-white/10 bg-white/[0.03] p-4">
             <div className="min-w-0">
               <div className="flex items-center gap-2 text-sm font-medium text-white/80">
-                <FontAwesomeIcon icon={faPlay} className="text-holmes-primary" />
-                Play feed
+                <FontAwesomeIcon icon={faNewspaper} className="text-holmes-primary" />
+                Tabloid feed
               </div>
               <p className="mt-1 text-xs leading-relaxed text-white/40">
-                The Play tab suggests videos chosen against your own profile. Holmes turns what it knows about you into search terms, YouTube answers them, and a second pass picks and explains the results. Search terms are redacted for API keys, passwords, and payment numbers before being sent.
+                The Tabloid tab suggests videos chosen against your own profile. Holmes turns what it knows about you into search terms, YouTube answers them, and a second pass picks and explains the results. Search terms are redacted for API keys, passwords, and payment numbers before being sent.
               </p>
             </div>
             <div className="mt-4">

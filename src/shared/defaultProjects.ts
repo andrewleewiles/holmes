@@ -7,7 +7,7 @@ export type DefaultProjectCategory = 'life' | 'media'
  * - `library` — a shelf of e-books. Its folders are scanned into the Library,
  *   never into document contexts, and only the *reading record* reaches the
  *   life picture. See `src/main/booksContext.ts`.
- * - `video` — archived video from the Play feed. Same bargain as `library`: the
+ * - `video` — archived video from the Tabloid feed. Same bargain as `library`: the
  *   watch record reaches the life picture, the transcripts never do. Document
  *   indexing would otherwise try to read gigabytes of mp4 as text.
  *
@@ -31,7 +31,7 @@ export const FILE_SYSTEM_PROJECT_NAME = 'File System'
 /** The e-book shelf. Its row is the only `library`-kind project. */
 export const BOOKS_PROJECT_NAME = 'Books'
 
-/** Where the Play feed archives video. The only `video`-kind project. */
+/** Where the Tabloid feed archives video. The only `video`-kind project. */
 export const VIDEOS_PROJECT_NAME = 'Videos'
 
 export const DEFAULT_PROJECTS: readonly DefaultProjectDefinition[] = [
@@ -81,7 +81,7 @@ export function projectKindForCategory(
   return name === VIDEOS_PROJECT_NAME ? 'video' : 'library'
 }
 
-/** A video archive: not document-indexed, and read by the Play feed alone. */
+/** A video archive: not document-indexed, and read by the Tabloid feed alone. */
 export function isVideoProject(project: { kind?: string | null; name?: string }): boolean {
   if (project.kind) return project.kind === 'video'
   return project.name === VIDEOS_PROJECT_NAME

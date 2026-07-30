@@ -144,12 +144,16 @@ export const TimelinePage: FC<TimelinePageProps> = () => {
       setNotice(
         `${result.eventsStored} new, ${result.eventsUpdated} refreshed from ${result.sourcesScanned} source${result.sourcesScanned === 1 ? '' : 's'}` +
           (result.duplicatesMerged > 0 ? `, ${result.duplicatesMerged} duplicate${result.duplicatesMerged === 1 ? '' : 's'} merged` : '') +
+          (result.entriesExcluded > 0 ? `, ${result.entriesExcluded} excluded as conflicting or restated` : '') +
           (result.eventsArchived > 0 ? `, ${result.eventsArchived} kept as history` : '') +
           (result.contextVersionsSeen > 0 ? `, ${result.contextVersionsSeen} archived context version${result.contextVersionsSeen === 1 ? '' : 's'}` : '') +
           (result.narrativeGenerated ? ', eras rewritten' : '') +
           (result.yearsGenerated > 0
             ? `, ${result.yearsGenerated} year${result.yearsGenerated === 1 ? '' : 's'} compressed`
-            : '')
+            : '') +
+          // A cleanup nobody is told about is indistinguishable from data loss:
+          // say what was set aside and on what grounds.
+          result.exclusions.map((exclusion) => `\n${exclusion.detail}`).join('')
       )
       // A rebuild where every year synthesis failed still "succeeds" — the events
       // are harvested and stored — so the failure has to be said out loud or it
@@ -384,7 +388,7 @@ export const TimelinePage: FC<TimelinePageProps> = () => {
           <div className="mb-4 rounded-lg border border-red-400/20 bg-red-400/[0.07] px-3 py-2 text-[11px] text-red-200/80">{error}</div>
         )}
         {notice && !rebuilding && (
-          <div className="mb-4 rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-[11px] text-white/50">{notice}</div>
+          <div className="mb-4 whitespace-pre-line rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-[11px] text-white/50">{notice}</div>
         )}
 
         {!loading && events.length > 0 && (

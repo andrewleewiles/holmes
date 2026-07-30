@@ -12,9 +12,10 @@ import { redactMemoryContent } from './memory'
 import { callLLMRetrying, type CallOptions } from './llmCall'
 import { hasProviderCredentials, missingCredentialsError } from './providerEndpoint'
 import { normalizeIndexStyle, styleConversationPrompt, styleVersion } from './indexStyles'
+import { normalizeEvidenceMarkers, stripEvidenceMarkers } from '../shared/evidenceBasis'
 import { getAssistantName } from '../shared/assistantIdentity'
 
-export const CONVERSATION_PROMPT_VERSION = 'v2-conversation-people'
+export const CONVERSATION_PROMPT_VERSION = 'v3-conversation-basis-marked'
 
 const MAX_TRANSCRIPT_CHARS = 40_000
 const MAX_CONTEXT_CHARS = 9_000
@@ -107,7 +108,7 @@ export async function generateConversationContext(
     { spend: options.spend, limiter: options.limiter }
   )
 
-  const context = raw.trim().slice(0, MAX_CONTEXT_CHARS)
+  const context = normalizeEvidenceMarkers(raw.trim()).slice(0, MAX_CONTEXT_CHARS)
   if (!context) return { conversationId, outcome: 'empty' }
 
   const provenance: ContextProvenance = {
@@ -131,7 +132,8 @@ export async function generateConversationContext(
   database.upsertConversationContext({
     conversationId,
     messageHash,
-    contextShort: firstSentence(context),
+    // The headline is a UI string; basis markers belong in the body, not here.
+    contextShort: firstSentence(stripEvidenceMarkers(context)),
     context,
     provenance,
   })

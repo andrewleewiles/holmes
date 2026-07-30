@@ -12,6 +12,9 @@
   --color-holmes-error: #dc2626;
   --color-holmes-error-bg: rgba(220, 38, 38, 0.15);
   --color-holmes-error-border: rgba(220, 38, 38, 0.3);
+  /* The two ends of the "Thinking" shimmer: resting label, and the travelling highlight. */
+  --color-holmes-shimmer-base: rgba(255, 255, 255, 0.35);
+  --color-holmes-shimmer-peak: rgba(255, 255, 255, 0.85);
 }
 
 body {
@@ -254,5 +257,46 @@ h6.font-serif-display {
 @media (prefers-reduced-motion: reduce) {
   .holmes-mark--animated {
     animation: none;
+  }
+}
+
+/*
+ * The "Thinking" label while reasoning is still arriving: a highlight travelling
+ * through the text. Painted on the text itself via background-clip, so it needs no
+ * overlay element and cannot shift the label's layout.
+ */
+.holmes-shimmer {
+  background: linear-gradient(
+    90deg,
+    var(--color-holmes-shimmer-base) 0%,
+    var(--color-holmes-shimmer-base) 35%,
+    var(--color-holmes-shimmer-peak) 50%,
+    var(--color-holmes-shimmer-base) 65%,
+    var(--color-holmes-shimmer-base) 100%
+  );
+  background-size: 250% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: holmes-shimmer-sweep 2.2s linear infinite;
+}
+
+@keyframes holmes-shimmer-sweep {
+  from {
+    background-position: 150% 0;
+  }
+  to {
+    background-position: -50% 0;
+  }
+}
+
+/* Without the sweep the label must still be legible, so it keeps a flat colour. */
+@media (prefers-reduced-motion: reduce) {
+  .holmes-shimmer {
+    animation: none;
+    background: none;
+    -webkit-background-clip: border-box;
+    background-clip: border-box;
+    color: var(--color-holmes-shimmer-peak);
   }
 }

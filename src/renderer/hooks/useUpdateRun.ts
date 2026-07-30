@@ -1,20 +1,18 @@
 import { useEffect, useState } from 'react'
-import type { PlayRunState } from '@shared/types'
+import type { UpdateRunState } from '@shared/types'
 
 // One IPC subscription for the whole renderer, fanned out to every consumer —
-// the same reason `useLibraryRun` and `useDocumentIndex` do it. The Play page,
-// the sidebar strip and each card's archive button all want this state, and a
-// listener per component crosses Node's 10-listener warning threshold. A test
-// enforces that components use the hook rather than `play.onState` directly.
+// the same reason `useTabloidRun` and `useDocumentIndex` do it. A test enforces
+// that components use the hook rather than `updater.onState` directly.
 
-type StateListener = (state: PlayRunState) => void
+type StateListener = (state: UpdateRunState) => void
 
 const listeners = new Set<StateListener>()
 let unsubscribe: (() => void) | null = null
-let latestState: PlayRunState | null = null
-let initialFetch: Promise<PlayRunState | null> | null = null
+let latestState: UpdateRunState | null = null
+let initialFetch: Promise<UpdateRunState | null> | null = null
 
-function fanOut(state: PlayRunState): void {
+function fanOut(state: UpdateRunState): void {
   latestState = state
   for (const listener of [...listeners]) {
     try {
@@ -27,7 +25,7 @@ function fanOut(state: PlayRunState): void {
 
 function subscribe(listener: StateListener): () => void {
   listeners.add(listener)
-  if (!unsubscribe) unsubscribe = window.electronAPI.play.onState(fanOut)
+  if (!unsubscribe) unsubscribe = window.electronAPI.updater.onState(fanOut)
   return () => {
     listeners.delete(listener)
     if (listeners.size === 0 && unsubscribe) {
@@ -38,10 +36,11 @@ function subscribe(listener: StateListener): () => void {
 }
 
 // Deduped across consumers, and tolerant of a main process without the handler
-// (a window running newer code than the app it is attached to).
-function ensureInitialState(): Promise<PlayRunState | null> {
+// (a window running newer code than the app it is attached to) — which is the
+// normal case here, since the whole point is that the app is out of date.
+function ensureInitialState(): Promise<UpdateRunState | null> {
   if (!initialFetch) {
-    initialFetch = window.electronAPI.play
+    initialFetch = window.electronAPI.updater
       .getState()
       .then((state) => {
         if (state) fanOut(state)
@@ -52,8 +51,8 @@ function ensureInitialState(): Promise<PlayRunState | null> {
   return initialFetch
 }
 
-export function usePlayRun(): PlayRunState | null {
-  const [state, setState] = useState<PlayRunState | null>(latestState)
+export function useUpdateRun(): UpdateRunState | null {
+  const [state, setState] = useState<UpdateRunState | null>(latestState)
 
   useEffect(() => {
     let cancelled = false
@@ -72,7 +71,7 @@ export function usePlayRun(): PlayRunState | null {
   return state
 }
 
-export function resetPlayRunSubscriptionsForTests(): void {
+export function resetUpdateRunSubscriptionsForTests(): void {
   listeners.clear()
   unsubscribe?.()
   unsubscribe = null

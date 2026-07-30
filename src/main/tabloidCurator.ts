@@ -1,4 +1,4 @@
-// Call 2 of the Play pipeline: real candidates -> a ranked, explained feed.
+// Call 2 of the Tabloid pipeline: real candidates -> a ranked, explained feed.
 //
 // This is the step that is supposed to beat a public recommender. It is not
 // better retrieval — YouTube's index is the same index. It is that the ranking
@@ -11,13 +11,13 @@
 // traces to a fact the code put in front of the planner.
 
 import { callLLMRetrying } from './llmCall'
-import { parseCuratorResponse, type PlayCandidate, type PlayCuratorPick } from '../shared/playFeed'
-import type { PlayIntent, ProviderConfig } from '../shared/types'
+import { parseCuratorResponse, type TabloidCandidate, type TabloidCuratorPick } from '../shared/tabloidFeed'
+import type { TabloidIntent, ProviderConfig } from '../shared/types'
 
 export const CURATOR_PROMPT_VERSION = 'v1'
 
 /** Four rows of three on a wide window. */
-export const PLAY_ITEM_TARGET = 12
+export const TABLOID_ITEM_TARGET = 12
 
 const MAX_CANDIDATE_DESCRIPTION_CHARS = 300
 const MAX_SUPPRESSED_TITLES = 25
@@ -57,7 +57,7 @@ function formatViews(views: number | null): string {
   return `${views} views`
 }
 
-function describeCandidate(candidate: PlayCandidate): string {
+function describeCandidate(candidate: TabloidCandidate): string {
   const parts = [
     candidate.candidateId,
     candidate.kind,
@@ -73,14 +73,14 @@ function describeCandidate(candidate: PlayCandidate): string {
   return `- ${parts.join(' | ')}\n  "${candidate.title}"${description}`
 }
 
-function describeIntent(intent: PlayIntent): string {
+function describeIntent(intent: TabloidIntent): string {
   const facts = intent.sourceRefs.map((ref) => ref.detail).join('; ')
   return `- ${intent.id} | searched "${intent.query}" | because: ${intent.rationale}${facts ? ` | facts: ${facts}` : ''}`
 }
 
 export interface CurateInput {
-  candidates: PlayCandidate[]
-  intents: PlayIntent[]
+  candidates: TabloidCandidate[]
+  intents: TabloidIntent[]
   allowedMemoryFieldKeys: readonly string[]
   /** Titles already shown or turned down — named so the model widens its picks. */
   suppressedTitles: string[]
@@ -115,7 +115,7 @@ function responseFormatFor(config: ProviderConfig): unknown {
   return {
     type: 'json_schema',
     json_schema: {
-      name: 'holmes_play_picks',
+      name: 'holmes_tabloid_picks',
       strict: false,
       schema: {
         type: 'object',
@@ -141,12 +141,12 @@ function responseFormatFor(config: ProviderConfig): unknown {
   }
 }
 
-export async function curatePlayPicks(
+export async function curateTabloidPicks(
   config: ProviderConfig,
   model: string,
   input: CurateInput,
   signal?: AbortSignal
-): Promise<PlayCuratorPick[]> {
+): Promise<TabloidCuratorPick[]> {
   if (input.candidates.length === 0) return []
 
   // Same headroom reasoning as the planner: an output cap a model exhausts

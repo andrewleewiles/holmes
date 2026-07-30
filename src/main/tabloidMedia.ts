@@ -9,8 +9,8 @@ import fs from 'fs'
 import path from 'path'
 import { createHash } from 'node:crypto'
 import * as database from './database'
-import { playMediaPath, playMediaRoot } from './playProtocol'
-import type { PlayItem } from '../shared/types'
+import { tabloidMediaPath, tabloidMediaRoot } from './tabloidProtocol'
+import type { TabloidItem } from '../shared/types'
 
 /** A thumbnail is tens of kilobytes; anything near this is not a thumbnail. */
 const MAX_THUMBNAIL_BYTES = 512_000
@@ -38,9 +38,9 @@ export async function cacheThumbnail(sourceUrl: string): Promise<string | null> 
   if (!sourceUrl.startsWith('https://')) return null
 
   const id = thumbnailId(sourceUrl)
-  const existing = database.getPlayMediaById(id)
+  const existing = database.getTabloidMediaById(id)
   if (existing && fs.existsSync(existing.filePath)) {
-    database.touchPlayMedia(id)
+    database.touchTabloidMedia(id)
     return id
   }
 
@@ -60,7 +60,7 @@ export async function cacheThumbnail(sourceUrl: string): Promise<string | null> 
     const bytes = Buffer.from(await response.arrayBuffer())
     if (bytes.byteLength === 0 || bytes.byteLength > MAX_THUMBNAIL_BYTES) return null
 
-    const filePath = playMediaPath(id)
+    const filePath = tabloidMediaPath(id)
     fs.mkdirSync(path.dirname(filePath), { recursive: true })
     // Written under a temporary name and renamed, so a partial download can
     // never be served as a truncated image.
@@ -68,7 +68,7 @@ export async function cacheThumbnail(sourceUrl: string): Promise<string | null> 
     fs.writeFileSync(tempPath, bytes)
     fs.renameSync(tempPath, filePath)
 
-    database.upsertPlayMedia({
+    database.upsertTabloidMedia({
       id,
       sourceUrl,
       filePath,
@@ -90,7 +90,7 @@ export async function cacheThumbnail(sourceUrl: string): Promise<string | null> 
  * than the whole refresh, and bounded in parallelism so twelve simultaneous
  * fetches do not starve anything else.
  */
-export async function cachePlayThumbnails(items: PlayItem[]): Promise<void> {
+export async function cacheTabloidThumbnails(items: TabloidItem[]): Promise<void> {
   const pending = items.filter((item) => item.thumbnailUrl && !item.thumbnailMediaId)
   let cursor = 0
 
@@ -99,7 +99,7 @@ export async function cachePlayThumbnails(items: PlayItem[]): Promise<void> {
       const item = pending[cursor]!
       cursor += 1
       const id = await cacheThumbnail(item.thumbnailUrl!)
-      if (id) database.setPlayItemThumbnail(item.id, id)
+      if (id) database.setTabloidItemThumbnail(item.id, id)
     }
   })
 
@@ -110,18 +110,18 @@ export async function cachePlayThumbnails(items: PlayItem[]): Promise<void> {
  * LRU eviction. Without this, a year of refreshes leaves tens of thousands of
  * files under userData that nothing ever looks at again.
  */
-export function evictPlayMedia(): void {
-  const stale = database.listPlayMediaForEviction(MAX_CACHED_THUMBNAILS, Date.now() - CACHE_TTL_MS)
+export function evictTabloidMedia(): void {
+  const stale = database.listTabloidMediaForEviction(MAX_CACHED_THUMBNAILS, Date.now() - CACHE_TTL_MS)
   if (stale.length === 0) return
 
   for (const row of stale) {
     try {
       // Re-checked against the root: the row outlives the file, and a path that
       // escaped the cache directory must never be handed to unlink.
-      if (row.filePath.startsWith(playMediaRoot() + path.sep)) fs.rmSync(row.filePath, { force: true })
+      if (row.filePath.startsWith(tabloidMediaRoot() + path.sep)) fs.rmSync(row.filePath, { force: true })
     } catch {
       // A file that will not delete is not a reason to keep its row.
     }
   }
-  database.deletePlayMedia(stale.map((row) => row.id))
+  database.deleteTabloidMedia(stale.map((row) => row.id))
 }

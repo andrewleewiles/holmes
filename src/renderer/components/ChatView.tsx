@@ -1,9 +1,11 @@
-import { type FC, useEffect, useRef, useState } from 'react'
+import { type FC, useEffect, useMemo, useRef, useState } from 'react'
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
 import { faBolt, faArrowDown } from '@fortawesome/free-solid-svg-icons'
 import type { ChatAttachment, CitedSource, Message, ModelInfo, ReasoningEffort, MemoryMode, ContextSelection } from '@shared/types'
 import type { SystemPromptEntry, StreamingToolInteraction } from '../store/chatStore'
 import { MessageBubble } from './MessageBubble'
+import { AssistantTurnBlock } from './AssistantTurnBlock'
+import { groupTurns, streamingSegments, toolStepsFromInteractions } from './turnGrouping'
 import { ChatInput } from './ChatInput'
 import { ModelSelector } from './ModelSelector'
 import { PillDropdown } from './PillDropdown'
@@ -81,6 +83,26 @@ export const ChatView: FC<ChatViewProps> = ({
   const [editingTitle, setEditingTitle] = useState(false)
   const [titleDraft, setTitleDraft] = useState(title)
   const [showJumpToBottom, setShowJumpToBottom] = useState(false)
+
+  // A tool-using answer is stored as several rows; grouped back into turns so it
+  // renders as the one reply it is.
+  const turns = useMemo(() => groupTurns(messages), [messages])
+  const streamingSteps = useMemo(() => toolStepsFromInteractions(streamingToolInteractions), [streamingToolInteractions])
+
+  /**
+   * At most ONE Holmes mark is ever on screen: the newest assistant turn wears it,
+   * every earlier turn leaves an empty gutter of the same width. The mark is the
+   * assistant's presence, and repeating it down the transcript turned a signal into
+   * wallpaper. While a turn is streaming the live block takes it instead, so the
+   * animating mark is always the one doing the work.
+   */
+  const markedTurnIndex = useMemo(() => {
+    if (isStreaming) return -1
+    for (let index = turns.length - 1; index >= 0; index -= 1) {
+      if (turns[index].kind === 'assistant') return index
+    }
+    return -1
+  }, [turns, isStreaming])
 
   const isNearBottom = () => {
     const el = scrollContainerRef.current
@@ -235,34 +257,44 @@ export const ChatView: FC<ChatViewProps> = ({
             </div>
           )}
 
-          {messages.map((msg, idx) => (
-            <div key={msg.id}>
-              {idx > 0 && messages[idx - 1]?.role === 'assistant' && msg.role === 'user' && (
+          {turns.map((turn, idx) => (
+            <div key={turn.key}>
+              {idx > 0 && turns[idx - 1]?.kind === 'assistant' && turn.kind === 'user' && (
                 <hr className="my-2 border-white/5" />
               )}
-              <MessageBubble
-                message={msg}
-                turnInFlight={isStreaming}
-                onEdit={onEditMessage}
-                onRetry={onRetryMessage}
-                onSetActiveBranch={onSetActiveBranch}
-              />
+              {turn.kind === 'user' ? (
+                <MessageBubble
+                  message={turn.message}
+                  turnInFlight={isStreaming}
+                  onEdit={onEditMessage}
+                  onRetry={onRetryMessage}
+                  onSetActiveBranch={onSetActiveBranch}
+                />
+              ) : (
+                <AssistantTurnBlock
+                  turn={turn}
+                  turnInFlight={isStreaming}
+                  showMark={idx === markedTurnIndex}
+                  onRetry={onRetryMessage}
+                  onSetActiveBranch={onSetActiveBranch}
+                />
+              )}
             </div>
           ))}
 
           {isStreaming && (
-            <MessageBubble
-              message={{
-                id: 'streaming',
-                conversationId: '',
-                role: 'assistant',
-                content: streamingText,
+            <AssistantTurnBlock
+              turn={{
+                kind: 'assistant',
+                key: 'streaming',
+                segments: streamingSegments(streamingText, streamingSteps, streamingSources),
                 reasoning: streamingReasoning || undefined,
                 createdAt: Date.now(),
-                sources: streamingSources,
+                branchMessage: { id: 'streaming', conversationId: '', role: 'assistant', content: '', createdAt: Date.now() },
+                copyText: streamingText,
               }}
               isStreaming
-              toolInteractions={streamingToolInteractions}
+              showMark
             />
           )}
 

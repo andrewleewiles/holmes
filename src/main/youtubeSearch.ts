@@ -1,4 +1,4 @@
-// YouTube Data API v3 client for the Play feed.
+// YouTube Data API v3 client for the Tabloid feed.
 //
 // Two endpoints, and both are needed: `search.list` finds videos but reports no
 // duration, no embeddable flag and no view count, and HTML-escapes its titles.
@@ -9,18 +9,18 @@
 // matches URLs under the provider base URL, so googleapis.com passes through
 // untouched. That is deliberate — adding logging here would double-count every
 // provider call the wrapper already records (AGENTS.md landmine 11). The quota
-// ledger on the Play page is what makes this spend visible instead.
+// ledger on the Tabloid page is what makes this spend visible instead.
 
 import { redactMemoryContent } from './memory'
 import {
   classifyYoutubeError,
   decodeHtmlEntities,
-  playItemKey,
+  tabloidItemKey,
   youtubeDurationToSeconds,
-  type PlayCandidate,
-  type PlayYoutubeError,
-} from '../shared/playFeed'
-import type { PlayIntent } from '../shared/types'
+  type TabloidCandidate,
+  type TabloidYoutubeError,
+} from '../shared/tabloidFeed'
+import type { TabloidIntent } from '../shared/types'
 
 const YOUTUBE_BASE = 'https://www.googleapis.com/youtube/v3'
 
@@ -47,7 +47,7 @@ const MAX_DESCRIPTION_CHARS = 600
 
 export interface YoutubeRetrievalInput {
   apiKey: string
-  intents: PlayIntent[]
+  intents: TabloidIntent[]
   /** `kind|provider|externalId` keys the retrieval must not surface again. */
   suppressed: Set<string>
   unitsAvailable: number
@@ -58,16 +58,16 @@ export interface YoutubeRetrievalInput {
 }
 
 export interface YoutubeRetrievalOutcome {
-  candidates: PlayCandidate[]
+  candidates: TabloidCandidate[]
   unitsUsed: number
   /** Per-intent failures that did not stop the run. */
-  errors: PlayYoutubeError[]
+  errors: TabloidYoutubeError[]
   /**
    * Set when the key itself is the problem. Every remaining search would fail
    * identically, so the run stops and the page explains rather than burning
    * quota discovering the same thing ten times.
    */
-  fatal: PlayYoutubeError | null
+  fatal: TabloidYoutubeError | null
 }
 
 interface YoutubeSearchHit {
@@ -91,7 +91,7 @@ async function youtubeGet(
   } catch (error) {
     if (signal?.aborted) throw error
     throw Object.assign(new Error(error instanceof Error ? error.message : 'network error'), {
-      youtube: { kind: 'transient', message: 'Could not reach YouTube.' } satisfies PlayYoutubeError,
+      youtube: { kind: 'transient', message: 'Could not reach YouTube.' } satisfies TabloidYoutubeError,
     })
   }
 
@@ -113,13 +113,13 @@ async function youtubeGet(
     return JSON.parse(text)
   } catch {
     throw Object.assign(new Error('YouTube returned an invalid response'), {
-      youtube: { kind: 'unknown', message: 'YouTube returned an invalid response' } satisfies PlayYoutubeError,
+      youtube: { kind: 'unknown', message: 'YouTube returned an invalid response' } satisfies TabloidYoutubeError,
     })
   }
 }
 
-function youtubeErrorOf(error: unknown): PlayYoutubeError {
-  const carried = (error as { youtube?: PlayYoutubeError } | null)?.youtube
+function youtubeErrorOf(error: unknown): TabloidYoutubeError {
+  const carried = (error as { youtube?: TabloidYoutubeError } | null)?.youtube
   if (carried) return carried
   return { kind: 'unknown', message: error instanceof Error ? error.message : 'YouTube request failed' }
 }
@@ -128,7 +128,7 @@ function youtubeErrorOf(error: unknown): PlayYoutubeError {
  * Maps the planner's minute hints onto the coarse bucket the API offers. Free:
  * it narrows the same 100-unit search rather than costing another one.
  */
-function durationBucket(filters: PlayIntent['filters']): string | null {
+function durationBucket(filters: TabloidIntent['filters']): string | null {
   const min = filters?.minMinutes
   const max = filters?.maxMinutes
   if (max !== undefined && max <= 4) return 'short'
@@ -138,7 +138,7 @@ function durationBucket(filters: PlayIntent['filters']): string | null {
 }
 
 async function searchOneIntent(
-  intent: PlayIntent,
+  intent: TabloidIntent,
   input: YoutubeRetrievalInput
 ): Promise<YoutubeSearchHit[]> {
   // The query was built from the user's own profile, so it is user data leaving
@@ -272,7 +272,7 @@ async function pooled<T, R>(items: T[], limit: number, worker: (item: T) => Prom
   return results
 }
 
-function passesDurationFilter(seconds: number | null, filters: PlayIntent['filters']): boolean {
+function passesDurationFilter(seconds: number | null, filters: TabloidIntent['filters']): boolean {
   if (seconds === null) return true
   const minSeconds = filters?.minMinutes !== undefined ? filters.minMinutes * 60 : MIN_DURATION_SECONDS
   if (seconds < minSeconds) return false
@@ -295,8 +295,8 @@ export async function retrieveYoutubeCandidates(
   const affordable = Math.max(0, Math.floor(input.unitsAvailable / YOUTUBE_SEARCH_UNITS))
   const runnable = videoIntents.slice(0, Math.min(MAX_SEARCHES_PER_REFRESH, affordable))
 
-  const errors: PlayYoutubeError[] = []
-  let fatal: PlayYoutubeError | null = null
+  const errors: TabloidYoutubeError[] = []
+  let fatal: TabloidYoutubeError | null = null
   let unitsUsed = 0
 
   if (runnable.length === 0) {
@@ -338,7 +338,7 @@ export async function retrieveYoutubeCandidates(
   }
 
   const ids = [...intentIdsByVideo.keys()].filter(
-    (videoId) => !input.suppressed.has(playItemKey('video', 'youtube', videoId))
+    (videoId) => !input.suppressed.has(tabloidItemKey('video', 'youtube', videoId))
   )
   if (ids.length === 0) return { candidates: [], unitsUsed, errors, fatal }
 
@@ -354,7 +354,7 @@ export async function retrieveYoutubeCandidates(
     return { candidates: [], unitsUsed, errors, fatal: classified }
   }
 
-  const candidates: PlayCandidate[] = []
+  const candidates: TabloidCandidate[] = []
   for (const [videoId, intentIds] of intentIdsByVideo) {
     const video = hydrated.get(videoId)
     if (!video || !video.embeddable) continue

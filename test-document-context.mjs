@@ -2557,6 +2557,130 @@ try {
   globalThis.fetch = realFetch
 }
 
+// --- evidence basis ----------------------------------------------------------
+console.log('evidence basis')
+
+const {
+  EVIDENCE_BASES,
+  STATED_MARKER,
+  RECORDED_MARKER,
+  INFERRED_MARKER,
+  evidenceBasisPromptSection,
+  evidenceBasisCarryForwardRule,
+  normalizeEvidenceBasis,
+  normalizeEvidenceMarkers,
+  stripEvidenceMarkers,
+  countEvidenceMarkers,
+  hasEvidenceMarkers,
+} = await import('./src/shared/evidenceBasis.ts')
+
+check('the three bases are the vocabulary, in markers braces not brackets', () => {
+  assert.deepEqual(EVIDENCE_BASES, ['stated', 'recorded', 'inferred'])
+  // Brackets are the citation namespace and are stripped before storage; a basis
+  // marker written in brackets would vanish with them.
+  for (const marker of [STATED_MARKER, RECORDED_MARKER, INFERRED_MARKER]) {
+    assert.ok(marker.startsWith('{') && marker.endsWith('}'), `${marker} uses braces`)
+  }
+})
+
+check('the words models actually write fold to the vocabulary', () => {
+  assert.equal(normalizeEvidenceBasis('self-reported'), 'stated')
+  assert.equal(normalizeEvidenceBasis('Self Reported'), 'stated')
+  assert.equal(normalizeEvidenceBasis('measured'), 'recorded')
+  assert.equal(normalizeEvidenceBasis('logged'), 'recorded')
+  assert.equal(normalizeEvidenceBasis('interpretation'), 'inferred')
+  assert.equal(normalizeEvidenceBasis('nonsense-word'), null)
+  assert.equal(normalizeEvidenceBasis(''), null)
+  assert.equal(normalizeEvidenceBasis(null), null)
+})
+
+check('normalizing rewrites synonyms and leaves everything else alone', () => {
+  assert.equal(
+    normalizeEvidenceMarkers('Trains four mornings a week {measured}. Feels behind {self-reported}.'),
+    'Trains four mornings a week {recorded}. Feels behind {stated}.'
+  )
+  const prose = 'The config used ${HOME} and {a phrase nobody anticipated}.'
+  assert.equal(normalizeEvidenceMarkers(prose), prose, 'unrecognized braces are prose, not markers to delete')
+})
+
+check('stripping removes the markers and the space they leave behind', () => {
+  assert.equal(
+    stripEvidenceMarkers('Trains four mornings a week {recorded}. Feels behind {stated}.'),
+    'Trains four mornings a week. Feels behind.'
+  )
+  assert.equal(stripEvidenceMarkers(''), '')
+})
+
+check('the marker mix is countable, which is the whole diagnostic', () => {
+  const text = 'A {stated}. B {recorded}. C {inferred}. D {inferred}. E {measured}.'
+  assert.deepEqual(countEvidenceMarkers(text), { stated: 1, recorded: 1, inferred: 2 })
+  assert.deepEqual(countEvidenceMarkers(normalizeEvidenceMarkers(text)), { stated: 1, recorded: 2, inferred: 2 })
+  assert.ok(hasEvidenceMarkers(text))
+  assert.ok(!hasEvidenceMarkers('A context written before the contract existed.'))
+})
+
+check('the contract names all three bases and refuses to let an inference pass as fact', () => {
+  const section = evidenceBasisPromptSection()
+  assert.ok(section.includes(STATED_MARKER))
+  assert.ok(section.includes(RECORDED_MARKER))
+  assert.ok(section.includes(INFERRED_MARKER))
+  assert.ok(/Never upgrade an inference/.test(section))
+  assert.ok(/oscillates between/.test(section), 'the exact failure it exists to prevent is named')
+  assert.ok(/stay in the stored text/.test(section), 'and the markers are kept, unlike citations')
+})
+
+check('the synthesis levels are told to carry markers forward, never to re-base them', () => {
+  const rule = evidenceBasisCarryForwardRule('child summary')
+  assert.ok(/carry each child summary's markers forward/.test(rule))
+  assert.ok(/nothing becomes firmer by being repeated/.test(rule))
+  assert.ok(/including the opening portrait/.test(rule), 'the through-line paragraph is inference too')
+  assert.ok(/before this contract existed/.test(rule), 'an untagged older child is handled explicitly')
+})
+
+check('every behavioral level of the index carries the contract', () => {
+  const docSource = fs.readFileSync(new URL('./src/main/documentContext.ts', import.meta.url), 'utf8')
+  const styleSource = fs.readFileSync(new URL('./src/main/indexStyles.ts', import.meta.url), 'utf8')
+  // File, folder, project and user prompts, plus the behavioral conversation
+  // prompt: the chain has to be unbroken or the folder pass inherits nothing.
+  assert.equal((docSource.match(/\$\{evidenceBasisPromptSection\(\)\}/g) ?? []).length, 4)
+  assert.equal((docSource.match(/\$\{evidenceBasisCarryForwardRule\(/g) ?? []).length, 3)
+  assert.ok(/\$\{evidenceBasisPromptSection\(\)\}/.test(styleSource), 'and the conversation prompt')
+  assert.ok(/most-read paragraph the system produces/.test(docSource), 'the portrait paragraph is called out by name')
+})
+
+check('a prompt change bumps the version that invalidates its cached tier', () => {
+  const docSource = fs.readFileSync(new URL('./src/main/documentContext.ts', import.meta.url), 'utf8')
+  const conversationSource = fs.readFileSync(new URL('./src/main/conversationContext.ts', import.meta.url), 'utf8')
+  for (const line of [
+    /FILE_PROMPT_VERSION = 'v7-basis-marked'/,
+    /FOLDER_PROMPT_VERSION = 'v11-basis-marked'/,
+    /USER_PROMPT_VERSION = 'v14-basis-marked'/,
+    /PROJECT_PROMPT_VERSION = 'v3-basis-marked'/,
+  ]) {
+    assert.ok(line.test(docSource), `${line} is bumped`)
+  }
+  assert.ok(/CONVERSATION_PROMPT_VERSION = 'v3-conversation-basis-marked'/.test(conversationSource))
+})
+
+check('markers are normalized before claims are extracted, never after', () => {
+  // Normalizing after extraction would change the text length and shift every
+  // claim offset the extractor just measured.
+  const raw = 'SHORT: A headline {self-reported}.\n---\nTrains four mornings {measured} [F1]. Reads that as discipline {inference} [F2].'
+  const markerToRef = new Map([['F1', 'a.txt'], ['F2', 'b.txt']])
+  const finished = finishSynthesis(raw, markerToRef, 5_000)
+  assert.ok(finished.long.includes('{recorded}'), 'synonyms are canonical in the stored text')
+  assert.ok(finished.long.includes('{inferred}'))
+  assert.ok(!finished.long.includes('{measured}'))
+  assert.equal(finished.short, 'A headline.', 'the headline keeps neither citations nor markers')
+  for (const claim of finished.claims) {
+    assert.ok(claim.start >= 0 && claim.end <= finished.long.length, 'offsets still describe the stored prose')
+    assert.ok(finished.long.slice(claim.start, claim.end).trim().length > 0, 'and still land on real text')
+  }
+  const trained = finished.claims.find((claim) => finished.long.slice(claim.start, claim.end).includes('four mornings'))
+  assert.ok(trained, 'the first claim is anchored where the marker was normalized')
+  assert.deepEqual(trained.sourceRefs, ['a.txt'])
+})
+
 closeDatabase()
 fs.rmSync(provDir, { recursive: true, force: true })
 fs.rmSync(sigDir, { recursive: true, force: true })

@@ -1,18 +1,18 @@
-// The Play feed contract: parsing, validation and the pure arithmetic the
+// The Tabloid feed contract: parsing, validation and the pure arithmetic the
 // pipeline runs on.
 //
 // Import-free leaf (type-only imports are stripped at runtime), so
-// `test-play.mjs` can drive the parsers without the bootstrap loader. Landmine
+// `test-tabloid.mjs` can drive the parsers without the bootstrap loader. Landmine
 // 9 applies: do not give this file a runtime import.
 
 import type {
-  PlayFlag,
-  PlayFlagKind,
-  PlayFlagSeverity,
-  PlayIntent,
-  PlayItemKind,
-  PlayRetrieverId,
-  PlaySourceRef,
+  TabloidFlag,
+  TabloidFlagKind,
+  TabloidFlagSeverity,
+  TabloidIntent,
+  TabloidItemKind,
+  TabloidRetrieverId,
+  TabloidSourceRef,
 } from './types'
 
 /**
@@ -20,10 +20,10 @@ import type {
  * assigned by the retriever and is the ONLY handle the curator is given: a pick
  * naming anything else was invented and is dropped.
  */
-export interface PlayCandidate {
+export interface TabloidCandidate {
   candidateId: string
-  kind: PlayItemKind
-  provider: PlayRetrieverId
+  kind: TabloidItemKind
+  provider: TabloidRetrieverId
   externalId: string
   url: string
   title: string
@@ -39,7 +39,7 @@ export interface PlayCandidate {
 }
 
 /** One accepted pick from the curator, before it is joined to its candidate. */
-export interface PlayCuratorPick {
+export interface TabloidCuratorPick {
   candidateId: string
   intentIds: string[]
   rationale: string
@@ -55,10 +55,10 @@ export interface TranscriptCue {
   text: string
 }
 
-export type PlayYoutubeErrorKind = 'key-invalid' | 'quota' | 'not-configured' | 'transient' | 'unknown'
+export type TabloidYoutubeErrorKind = 'key-invalid' | 'quota' | 'not-configured' | 'transient' | 'unknown'
 
-export interface PlayYoutubeError {
-  kind: PlayYoutubeErrorKind
+export interface TabloidYoutubeError {
+  kind: TabloidYoutubeErrorKind
   message: string
 }
 
@@ -74,7 +74,7 @@ export const MAX_MEMORY_VALUE_CHARS = 60
  * the upsert all key on this, so it must not include anything that changes
  * between runs (rank, rationale, the intent that happened to surface it).
  */
-export function playItemKey(kind: string, provider: string, externalId: string): string {
+export function tabloidItemKey(kind: string, provider: string, externalId: string): string {
   return `${kind}|${provider}|${externalId}`
 }
 
@@ -194,9 +194,9 @@ function asStringArray(value: unknown): string[] {
 }
 
 export interface ParsePlannerOptions {
-  allowedKinds: readonly PlayItemKind[]
+  allowedKinds: readonly TabloidItemKind[]
   /** Tag (`S1`, `M2`, `W1`) to the ref the code built for it. */
-  refsByTag: Record<string, PlaySourceRef>
+  refsByTag: Record<string, TabloidSourceRef>
   maxIntents: number
 }
 
@@ -209,14 +209,14 @@ export interface ParsePlannerOptions {
  * `documentContext.ts`. An intent left with no resolvable source is kept, but
  * with an empty ref list, so the card shows no provenance rather than a wrong one.
  */
-export function parsePlannerResponse(raw: string, options: ParsePlannerOptions): PlayIntent[] {
+export function parsePlannerResponse(raw: string, options: ParsePlannerOptions): TabloidIntent[] {
   const parsed = salvageJsonObject(raw, 'intents')
   const list = (parsed as { intents?: unknown } | null)?.intents
   if (!Array.isArray(list)) return []
 
   const allowed = new Set<string>(options.allowedKinds)
   const seenQueries = new Set<string>()
-  const intents: PlayIntent[] = []
+  const intents: TabloidIntent[] = []
 
   for (const entry of list) {
     if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue
@@ -231,7 +231,7 @@ export function parsePlannerResponse(raw: string, options: ParsePlannerOptions):
     if (seenQueries.has(dedupeKey)) continue
     seenQueries.add(dedupeKey)
 
-    const sourceRefs: PlaySourceRef[] = []
+    const sourceRefs: TabloidSourceRef[] = []
     const seenRefs = new Set<string>()
     for (const tag of asStringArray(record['sources'])) {
       const ref = options.refsByTag[tag] ?? options.refsByTag[tag.toUpperCase()]
@@ -244,7 +244,7 @@ export function parsePlannerResponse(raw: string, options: ParsePlannerOptions):
       // The model's own id is ignored: the curator cites these back, so they
       // have to be unique and dense whatever the model numbered them.
       id: `i${intents.length + 1}`,
-      kind: kind as PlayItemKind,
+      kind: kind as TabloidItemKind,
       query,
       rationale: asString(record['rationale'], MAX_RATIONALE_CHARS * 2),
       sourceRefs,
@@ -257,10 +257,10 @@ export function parsePlannerResponse(raw: string, options: ParsePlannerOptions):
   return intents
 }
 
-function parseFilters(value: unknown): PlayIntent['filters'] | undefined {
+function parseFilters(value: unknown): TabloidIntent['filters'] | undefined {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
   const record = value as Record<string, unknown>
-  const filters: NonNullable<PlayIntent['filters']> = {}
+  const filters: NonNullable<TabloidIntent['filters']> = {}
 
   const publishedAfter = asString(record['publishedAfter'], 32)
   if (/^\d{4}-\d{2}-\d{2}/.test(publishedAfter)) filters.publishedAfter = publishedAfter.slice(0, 10)
@@ -295,7 +295,7 @@ export interface ParseCuratorOptions {
  * plan is dropped. The curator never authors a source ref at all — the item's
  * refs are computed from the intents it cited.
  */
-export function parseCuratorResponse(raw: string, options: ParseCuratorOptions): PlayCuratorPick[] {
+export function parseCuratorResponse(raw: string, options: ParseCuratorOptions): TabloidCuratorPick[] {
   const parsed = salvageJsonObject(raw, 'picks')
   const list = (parsed as { picks?: unknown } | null)?.picks
   if (!Array.isArray(list)) return []
@@ -304,7 +304,7 @@ export function parseCuratorResponse(raw: string, options: ParseCuratorOptions):
   const intents = new Set(options.allowedIntentIds)
   const memoryKeys = new Set(options.allowedMemoryFieldKeys)
   const seen = new Set<string>()
-  const picks: PlayCuratorPick[] = []
+  const picks: TabloidCuratorPick[] = []
 
   for (const entry of list) {
     if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue
@@ -334,7 +334,7 @@ export function parseCuratorResponse(raw: string, options: ParseCuratorOptions):
   return picks
 }
 
-const FLAG_KINDS: readonly PlayFlagKind[] = [
+const FLAG_KINDS: readonly TabloidFlagKind[] = [
   'unsupported',
   'false',
   'misleading',
@@ -344,7 +344,7 @@ const FLAG_KINDS: readonly PlayFlagKind[] = [
   'speculation',
 ]
 
-const FLAG_SEVERITIES: readonly PlayFlagSeverity[] = ['low', 'medium', 'high']
+const FLAG_SEVERITIES: readonly TabloidFlagSeverity[] = ['low', 'medium', 'high']
 
 /** A video with more than this many flags is being nitpicked, not analysed. */
 export const MAX_FLAGS_PER_VIDEO = 12
@@ -360,7 +360,7 @@ export interface ParseAnalysisOptions {
 
 export interface ParsedAnalysis {
   summary: string
-  flags: PlayFlag[]
+  flags: TabloidFlag[]
 }
 
 /**
@@ -414,18 +414,18 @@ export function parseAnalysisResponse(raw: string, options: ParseAnalysisOptions
 
   if (!Array.isArray(list)) return { summary, flags: [] }
 
-  const flags: PlayFlag[] = []
+  const flags: TabloidFlag[] = []
   const seen = new Set<string>()
 
   for (const entry of list) {
     if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue
     const record = entry as Record<string, unknown>
 
-    const kind = asString(record['kind'], 32).toLowerCase() as PlayFlagKind
+    const kind = asString(record['kind'], 32).toLowerCase() as TabloidFlagKind
     if (!FLAG_KINDS.includes(kind)) continue
 
-    const severityRaw = asString(record['severity'], 16).toLowerCase() as PlayFlagSeverity
-    const severity: PlayFlagSeverity = FLAG_SEVERITIES.includes(severityRaw) ? severityRaw : 'medium'
+    const severityRaw = asString(record['severity'], 16).toLowerCase() as TabloidFlagSeverity
+    const severity: TabloidFlagSeverity = FLAG_SEVERITIES.includes(severityRaw) ? severityRaw : 'medium'
 
     const at = parseClock(record['at'] ?? record['timestamp'] ?? record['startSeconds'])
     if (at === null) continue
@@ -462,7 +462,7 @@ export function parseAnalysisResponse(raw: string, options: ParseAnalysisOptions
  * Shaped like `describeTavilyError` in `webSearch.ts`: read the body once, pull
  * the reason, and never let a 429 look like a dead key.
  */
-export function classifyYoutubeError(status: number, body: string): PlayYoutubeError {
+export function classifyYoutubeError(status: number, body: string): TabloidYoutubeError {
   let message = `HTTP ${status}`
   let reason = ''
 

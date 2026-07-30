@@ -17,7 +17,7 @@ import { isLibraryProject } from '../shared/defaultProjects'
 import { AUDIO_SCHEME_PRIVILEGES, installAudioProtocol } from './audioProtocol'
 import { OFFICE_SCHEME, OFFICE_SCHEME_PRIVILEGES, installOfficeProtocol } from './officeProtocol'
 import { DESIGN_SCHEME, DESIGN_SCHEME_PRIVILEGES, installDesignProtocol } from './designProtocol'
-import { MEDIA_SCHEME_PRIVILEGES, installPlayMediaProtocol } from './playProtocol'
+import { MEDIA_SCHEME_PRIVILEGES, installTabloidMediaProtocol } from './tabloidProtocol'
 import * as settings from './settings'
 // Every background pass is gated on this rather than on the key alone: a key
 // the provider is answering with 402 buys nothing, and a pass that starts anyway
@@ -55,6 +55,7 @@ import { beginTimelineRun, finishTimelineRun, isTimelineRunActive, reportTimelin
 import { rebuildPeople } from './people'
 import { beginPeopleRun, finishPeopleRun, isPeopleRunActive, isPeopleRunPaused, reportPeopleRunProgress } from './peopleRuns'
 import { checkForUpdates } from './updater'
+import { setCurrentVersion } from './updateRuns'
 
 let mainWindow: BrowserWindow | null = null
 let summaryTimer: NodeJS.Timeout | null = null
@@ -224,7 +225,7 @@ function createWindow(): void {
     if (event.isMainFrame) return
     if (event.url.startsWith(`${OFFICE_SCHEME}://editor/`)) return
     if (event.url.startsWith(`${DESIGN_SCHEME}://graphite/`)) return
-    // The Play feed's embedded player. Written as an origin prefix rather than
+    // The Tabloid feed's embedded player. Written as an origin prefix rather than
     // an exact URL because the player navigates itself internally as it plays;
     // without this the frame comes up blank with nothing in the console naming
     // the cause, since a preventDefault here is silent.
@@ -258,7 +259,7 @@ app.whenReady().then(() => {
   installAudioProtocol()
   installOfficeProtocol()
   installDesignProtocol()
-  installPlayMediaProtocol()
+  installTabloidMediaProtocol()
   // Before the handlers: installing it wraps ipcMain.handle, so a channel
   // registered earlier would go unlabelled.
   installProviderCallLog()
@@ -278,8 +279,10 @@ app.whenReady().then(() => {
   // must not delay the window.
   void initRemoteServer()
 
-  // Quiet update check shortly after launch, then every 6 hours; only ever
-  // interrupts the user when a newer GitHub release actually exists.
+  // Quiet update check shortly after launch, then every 6 hours. Nothing is
+  // interrupted either way: a newer release raises the sidebar strip, and the
+  // download only starts when the user clicks it.
+  setCurrentVersion(app.getVersion())
   setTimeout(() => void checkForUpdates(false), 15 * 1000)
   updateTimer = setInterval(() => void checkForUpdates(false), 6 * 60 * 60 * 1000)
 

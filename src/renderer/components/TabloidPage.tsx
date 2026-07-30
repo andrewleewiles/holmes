@@ -1,17 +1,17 @@
 import { type FC, useCallback, useEffect, useMemo, useState } from 'react'
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
 import { faArrowRotateRight, faPlay, faStop, faTriangleExclamation } from '@fortawesome/free-solid-svg-icons'
-import { PLAY_ITEM_KINDS, type PlayFeed, type PlayItem, type PlayItemKind, type PlayReaction } from '@shared/types'
+import { TABLOID_ITEM_KINDS, type TabloidFeed, type TabloidItem, type TabloidItemKind, type TabloidReaction } from '@shared/types'
 import { PageHeader, PAGE_HEADER_ICON } from './PageHeader'
-import { PlayCard } from './PlayCard'
-import { PlayPlayer } from './PlayPlayer'
+import { TabloidCard } from './TabloidCard'
+import { TabloidPlayer } from './TabloidPlayer'
 import { ProvenanceExplorer } from './ProvenanceExplorer'
-import { usePlayRun } from '../hooks/usePlayRun'
+import { useTabloidRun } from '../hooks/useTabloidRun'
 
 /** Only `video` retrieves today; the rest advertise the shape of what is coming. */
-const ENABLED_KINDS: readonly PlayItemKind[] = ['video']
+const ENABLED_KINDS: readonly TabloidItemKind[] = ['video']
 
-const KIND_LABEL: Record<PlayItemKind, string> = {
+const KIND_LABEL: Record<TabloidItemKind, string> = {
   video: 'Videos',
   article: 'Articles',
   podcast: 'Podcasts',
@@ -35,7 +35,7 @@ function relativeTime(timestamp: number): string {
 }
 
 interface EmptyStateProps {
-  feed: PlayFeed
+  feed: TabloidFeed
   onOpenSettings: () => void
   onOpenData: () => void
 }
@@ -97,20 +97,20 @@ const EmptyState: FC<EmptyStateProps> = ({ feed, onOpenSettings, onOpenData }) =
   )
 }
 
-interface PlayPageProps {
+interface TabloidPageProps {
   onOpenSettings: () => void
   onOpenData: () => void
 }
 
-export const PlayPage: FC<PlayPageProps> = ({ onOpenSettings, onOpenData }) => {
-  const [feed, setFeed] = useState<PlayFeed | null>(null)
+export const TabloidPage: FC<TabloidPageProps> = ({ onOpenSettings, onOpenData }) => {
+  const [feed, setFeed] = useState<TabloidFeed | null>(null)
   const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [playing, setPlaying] = useState<PlayItem | null>(null)
+  const [playing, setPlaying] = useState<TabloidItem | null>(null)
   const [showSources, setShowSources] = useState(false)
   // The build reports through the shared run registry, so the page shows the
   // same state the sidebar strip does even when another window started it.
-  const runState = usePlayRun()
+  const runState = useTabloidRun()
   const building = runState?.status === 'building'
   const archivingIds = new Set(
     (runState?.archives ?? [])
@@ -122,7 +122,7 @@ export const PlayPage: FC<PlayPageProps> = ({ onOpenSettings, onOpenData }) => {
     setRefreshing(true)
     setError(null)
     try {
-      setFeed(await window.electronAPI.play.refresh(force))
+      setFeed(await window.electronAPI.tabloid.refresh(force))
     } catch (err) {
       setError(cleanError(err))
     } finally {
@@ -132,16 +132,16 @@ export const PlayPage: FC<PlayPageProps> = ({ onOpenSettings, onOpenData }) => {
 
   const stop = useCallback(async () => {
     try {
-      await window.electronAPI.play.stop()
+      await window.electronAPI.tabloid.stop()
     } catch (err) {
       setError(cleanError(err))
     }
   }, [])
 
-  const archive = useCallback(async (item: PlayItem) => {
+  const archive = useCallback(async (item: TabloidItem) => {
     setError(null)
     try {
-      setFeed(await window.electronAPI.play.archive(item.id))
+      setFeed(await window.electronAPI.tabloid.archive(item.id))
     } catch (err) {
       setError(cleanError(err))
     }
@@ -151,7 +151,7 @@ export const PlayPage: FC<PlayPageProps> = ({ onOpenSettings, onOpenData }) => {
   // so the feed is re-read whenever a build finishes — whoever started it.
   useEffect(() => {
     if (runState?.status !== 'idle') return
-    void window.electronAPI.play.get().then(setFeed).catch(() => undefined)
+    void window.electronAPI.tabloid.get().then(setFeed).catch(() => undefined)
   }, [runState?.status])
 
   // Paint what is stored immediately, then refresh only if a refresh would
@@ -159,7 +159,7 @@ export const PlayPage: FC<PlayPageProps> = ({ onOpenSettings, onOpenData }) => {
   // nothing has moved.
   useEffect(() => {
     let cancelled = false
-    void window.electronAPI.play
+    void window.electronAPI.tabloid
       .get()
       .then((stored) => {
         if (cancelled) return
@@ -174,15 +174,15 @@ export const PlayPage: FC<PlayPageProps> = ({ onOpenSettings, onOpenData }) => {
     }
   }, [refresh])
 
-  const react = useCallback(async (item: PlayItem, reaction: PlayReaction | null) => {
+  const react = useCallback(async (item: TabloidItem, reaction: TabloidReaction | null) => {
     try {
-      setFeed(await window.electronAPI.play.react(item.id, reaction))
+      setFeed(await window.electronAPI.tabloid.react(item.id, reaction))
     } catch (err) {
       setError(cleanError(err))
     }
   }, [])
 
-  const open = useCallback((item: PlayItem) => {
+  const open = useCallback((item: TabloidItem) => {
     if (item.embeddable) setPlaying(item)
     else void window.electronAPI.app.openExternal(item.url)
   }, [])
@@ -193,7 +193,7 @@ export const PlayPage: FC<PlayPageProps> = ({ onOpenSettings, onOpenData }) => {
   // The feed arrives newest-batch-first and ranked within each batch, so the
   // grouping only has to preserve that order rather than re-sort anything.
   const batches = useMemo(() => {
-    const groups: Array<{ batch: number; batchAt: number; items: PlayItem[] }> = []
+    const groups: Array<{ batch: number; batchAt: number; items: TabloidItem[] }> = []
     for (const item of items) {
       const current = groups[groups.length - 1]
       if (current && current.batch === item.batch) current.items.push(item)
@@ -210,7 +210,7 @@ export const PlayPage: FC<PlayPageProps> = ({ onOpenSettings, onOpenData }) => {
     <div className="flex-1 overflow-y-auto">
       <PageHeader
         icon={<FontAwesomeIcon icon={faPlay} className={PAGE_HEADER_ICON} />}
-        title="Play"
+        title="Tabloid"
         aside={
           feed && items.length > 0 ? (
             <span className="ml-1 flex items-center gap-2 text-[12px] text-white/30">
@@ -267,7 +267,7 @@ export const PlayPage: FC<PlayPageProps> = ({ onOpenSettings, onOpenData }) => {
         }
         below={
           <div className="flex items-center gap-1.5">
-            {PLAY_ITEM_KINDS.map((kind) => {
+            {TABLOID_ITEM_KINDS.map((kind) => {
               const enabled = ENABLED_KINDS.includes(kind)
               return (
                 <span
@@ -331,7 +331,7 @@ export const PlayPage: FC<PlayPageProps> = ({ onOpenSettings, onOpenData }) => {
               )}
               <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
                 {batch.items.map((item) => (
-                  <PlayCard
+                  <TabloidCard
                     key={item.id}
                     item={item}
                     onPlay={open}
@@ -347,13 +347,13 @@ export const PlayPage: FC<PlayPageProps> = ({ onOpenSettings, onOpenData }) => {
       )}
 
       {playing && (
-        <PlayPlayer
+        <TabloidPlayer
           item={playing}
           onClose={() => setPlaying(null)}
           onProgress={() => {
             // Closing the player wrote a new position; re-read so the card's
             // progress bar matches where it was actually left.
-            void window.electronAPI.play.get().then(setFeed).catch(() => undefined)
+            void window.electronAPI.tabloid.get().then(setFeed).catch(() => undefined)
           }}
         />
       )}

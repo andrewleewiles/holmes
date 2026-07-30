@@ -42,6 +42,9 @@ const {
 const { parseTimelineBlock, stripTimelineBlock } = await import('./src/shared/timeline.ts')
 
 const {
+  findPossibleDuplicateGroups,
+  IDENTITY_BASIS_CONFIDENCE,
+  MIN_IDENTITY_CONFIDENCE_FOR_CERTAINTY,
   MIN_SCORE_FOR_DOSSIER,
   MIN_SCORE_FOR_PERSON,
   personScore,
@@ -53,7 +56,8 @@ const settingsModule = await import('./src/main/settings.ts')
 const database = await import('./src/main/database.ts')
 database.initDatabase()
 
-const { buildPeopleContext, collectPersonSeeds, harvestPersonMentions } = await import('./src/main/people.ts')
+const { buildPeopleContext, collectPersonSeeds, harvestPersonMentions, renderYearMessages } =
+  await import('./src/main/people.ts')
 
 const {
   beginPeopleRun,
@@ -444,6 +448,51 @@ check('resolution is deterministic under input reordering', () => {
   assert.equal(forward, reversed)
 })
 
+check('one source naming a person twice yields one mention, not a UNIQUE violation', () => {
+  // The mention key is (source, normalized name), so a PEOPLE block listing both
+  // "Sarah Wiles" and "sarah wiles" produced two rows for one key — which the
+  // mentions table rejects, failing the whole rebuild transaction.
+  const key = 'dup-key'
+  const result = resolvePeople({
+    seeds: [seed('Sarah Wiles', { relation: 'family' })],
+    mentions: [
+      mention('Sarah Wiles', { mentionKey: key, sourceRef: 's1' }),
+      mention('sarah wiles', { mentionKey: key, sourceRef: 's1' }),
+    ],
+    overrides: [],
+  })
+  assert.equal(result.mentions.length, 1)
+  assert.equal(new Set(result.mentions.map((m) => m.mentionKey)).size, 1)
+  assert.equal(result.people[0].mentionCount, 1, 'a repeated line must not inflate the score')
+})
+
+check('the surviving duplicate is the informative one, whichever arrives first', () => {
+  const key = 'dup-rich'
+  const thin = mention('Mum', { mentionKey: key, sourceRef: 's1', evidence: '' })
+  const rich = mention('Mum', { mentionKey: key, sourceRef: 's1', relation: 'family', role: 'mother', evidence: 'named in the note', aka: ['Sarah'] })
+  const seeds = [seed('Sarah Wiles', { relation: 'family' })]
+  const forward = resolvePeople({ seeds, mentions: [thin, rich], overrides: [] })
+  const reversed = resolvePeople({ seeds, mentions: [rich, thin], overrides: [] })
+  assert.equal(forward.mentions[0].role, 'mother')
+  assert.equal(forward.mentions[0].evidence, 'named in the note')
+  assert.equal(JSON.stringify(forward.people), JSON.stringify(reversed.people), 'dedupe cannot depend on harvest order')
+})
+
+check('a duplicate contributes its aka list to the survivor', () => {
+  const key = 'dup-aka'
+  const result = resolvePeople({
+    seeds: [seed('Sarah Wiles', { relation: 'family' })],
+    mentions: [
+      mention('Mum', { mentionKey: key, sourceRef: 's1', relation: 'family', role: 'mother', aka: [] }),
+      mention('Mum', { mentionKey: key, sourceRef: 's1', aka: ['Sarah Wiles'] }),
+    ],
+    overrides: [],
+  })
+  // R3 runs on aka, so dropping it would lose the co-reference the model saw.
+  assert.deepEqual(result.mentions[0].aka, ['Sarah Wiles'])
+  assert.equal(result.mentions[0].personKey, 'contact:Sarah Wiles')
+})
+
 check('scores combine mention count and message volume, with a cap', () => {
   assert.equal(personScore(3, 0), 3)
   assert.equal(personScore(1, 500), 11)
@@ -518,6 +567,8 @@ const storedPerson = (person) => ({
   lastSeen: person.lastSeen,
   score: person.score,
   confidence: person.confidence,
+  identityBasis: person.identityBasis,
+  identityConfidence: person.identityConfidence,
   projectIds: person.projectIds,
   platforms: person.platforms,
   aliases: person.aliases,
@@ -561,6 +612,17 @@ check('a resolved pass round-trips through the database', () => {
   assert.equal(sarah.messageCount, 400)
   assert.ok(sarah.aliases.length > 0, 'aliases persist alongside the person')
   assert.equal(database.listPersonMentions(sarah.id).length, 1)
+})
+
+check('a duplicated mention key does not blow up the rebuild transaction', () => {
+  // Belt and braces: the resolver collapses duplicates, but this write is the
+  // one that ran inside a transaction — a UNIQUE violation here rolled back the
+  // whole rebuild, people and all, over one repeated line in one context.
+  const doubled = roundOne.mentions.map(storedMention)
+  const stats = database.mergeDerivedPeople(roundOne.people.map(storedPerson), [...doubled, ...doubled])
+  assert.ok(stats.updated >= 1)
+  const sarah = byName(database.listPeople({ minScore: 0 }), 'Sarah Wiles')
+  assert.equal(database.listPersonMentions(sarah.id).length, 1, 'the second copy updates the row it collides with')
 })
 
 check('a person whose sources went quiet is archived, never deleted', () => {
@@ -682,6 +744,195 @@ check('collectPersonSeeds never throws without Contacts access', () => {
 check('absorbing the retired relationship analysis is idempotent', () => {
   assert.equal(typeof database.absorbRelationshipAnalyses(), 'number')
   assert.equal(database.absorbRelationshipAnalyses(), 0, 'a second pass moves nothing')
+})
+
+// --- identity confidence -----------------------------------------------------
+console.log('identity confidence')
+
+check('an asserted identity grades higher than one joined on a shared first name', () => {
+  assert.ok(IDENTITY_BASIS_CONFIDENCE.asserted > IDENTITY_BASIS_CONFIDENCE.handle)
+  assert.ok(IDENTITY_BASIS_CONFIDENCE.handle > IDENTITY_BASIS_CONFIDENCE['name-exact'])
+  assert.ok(IDENTITY_BASIS_CONFIDENCE['name-exact'] > IDENTITY_BASIS_CONFIDENCE['name-partial'])
+  assert.ok(IDENTITY_BASIS_CONFIDENCE['name-partial'] > IDENTITY_BASIS_CONFIDENCE.unresolved)
+  assert.ok(IDENTITY_BASIS_CONFIDENCE.unresolved > IDENTITY_BASIS_CONFIDENCE.ambiguous)
+})
+
+check('a Contacts seed matched on the full name is an asserted identity', () => {
+  const result = resolvePeople({
+    seeds: [seed('Sarah Jennings', { relation: 'family' })],
+    mentions: [mention('Sarah Jennings', { mentionKey: 'i1', sourceRef: 'is1', relation: 'family' })],
+    overrides: [],
+  })
+  const sarah = byName(result.people, 'Sarah Jennings')
+  assert.equal(sarah.identityBasis, 'name-exact', 'the mention joined on a name, and that is the weakest link')
+  assert.equal(sarah.identityConfidence, IDENTITY_BASIS_CONFIDENCE['name-exact'])
+})
+
+check('a handle join outranks a name join', () => {
+  const result = resolvePeople({
+    seeds: [seed('Erika Duffin', { aliases: [{ alias: 'erika@example.com', kind: 'email' }] })],
+    mentions: [mention('erika@example.com', { mentionKey: 'i2', sourceRef: 'is2' })],
+    overrides: [],
+  })
+  const erika = byName(result.people, 'Erika Duffin')
+  assert.equal(erika.identityBasis, 'handle')
+})
+
+check('the weakest link governs: one initialled mention drags a seeded person down', () => {
+  const result = resolvePeople({
+    seeds: [seed('Trista Culver', { relation: 'friend' })],
+    mentions: [
+      mention('Trista Culver', { mentionKey: 'i3', sourceRef: 'is3', relation: 'friend' }),
+      mention('Trista C', { mentionKey: 'i4', sourceRef: 'is4', relation: 'friend' }),
+    ],
+    overrides: [],
+  })
+  const trista = byName(result.people, 'Trista Culver')
+  assert.equal(trista.mentionCount, 2, 'both mentions landed on one person')
+  assert.equal(trista.identityBasis, 'name-partial', 'because one of them could have brought a stranger in')
+  assert.ok(trista.identityConfidence < MIN_IDENTITY_CONFIDENCE_FOR_CERTAINTY)
+})
+
+check('a seeded person nobody mentioned keeps the basis their seed asserts', () => {
+  const result = resolvePeople({
+    seeds: [seed('Linda Wiles', { relation: 'family' })],
+    mentions: [],
+    overrides: [],
+  })
+  assert.equal(result.people[0].identityBasis, 'asserted')
+  assert.equal(result.people[0].identityConfidence, 1)
+})
+
+check('a quarantined name is graded ambiguous however many sources report it', () => {
+  const result = resolvePeople({
+    seeds: [seed('Sarah Wiles'), seed('Sarah Phillips')],
+    mentions: [mention('Sarah', { mentionKey: 'i5', sourceRef: 'is5' }), mention('Sarah', { mentionKey: 'i6', sourceRef: 'is6' })],
+    overrides: [],
+  })
+  const bare = result.people.find((person) => person.personKey === 'bare:sarah')
+  assert.equal(bare.identityBasis, 'ambiguous')
+  assert.equal(bare.identityConfidence, IDENTITY_BASIS_CONFIDENCE.ambiguous)
+})
+
+check('one unmatched mention from one source is unresolved, not confirmed identity', () => {
+  const result = resolvePeople({
+    seeds: [],
+    mentions: [mention('Nobody Known', { mentionKey: 'i7', sourceRef: 'is7' })],
+    overrides: [],
+  })
+  assert.equal(result.people[0].identityBasis, 'unresolved')
+})
+
+check('identity basis and confidence survive the round trip through the database', () => {
+  const result = resolvePeople({
+    seeds: [seed('Roundtrip Person', { relation: 'friend', messageCount: 500 })],
+    mentions: [mention('Roundtrip P', { mentionKey: 'i8', sourceRef: 'is8', relation: 'friend' })],
+    overrides: [],
+  })
+  persist(result)
+  const stored = database.getPersonByKey('contact:Roundtrip Person')
+  assert.ok(stored)
+  assert.equal(stored.identityBasis, 'name-partial')
+  assert.equal(stored.identityConfidence, IDENTITY_BASIS_CONFIDENCE['name-partial'])
+})
+
+check('the dossier is told how solid the identity is, and stales when that changes', () => {
+  const source = fs.readFileSync(new URL('./src/main/people.ts', import.meta.url), 'utf8')
+  assert.ok(/HOW THIS IDENTITY WAS ESTABLISHED: \$\{IDENTITY_BASIS_DESCRIPTION/.test(source), 'the basis is in the prompt')
+  assert.ok(/Never write a settled profile of someone the evidence has not settled/.test(source))
+  assert.ok(/\$\{person\.identityBasis\}`$/m.test(source.split('\n').find((line) => line.includes('const stats = ')) ?? ''),
+    'and in the dossier cache key, or a confident profile outlives its basis')
+  assert.ok(/DOSSIER_PROMPT_VERSION = 'v3-person-dossier-identity-basis'/.test(source))
+})
+
+check('the widget names a shaky identity in words the user can act on', () => {
+  const widget = fs.readFileSync(new URL('./src/renderer/components/PeopleWidget.tsx', import.meta.url), 'utf8')
+  assert.ok(/person\.identityConfidence < 0\.75/.test(widget), 'shown only when it is a caveat')
+  assert.ok(/one name, nothing to match it to/.test(widget))
+  assert.ok(/several people fit this name/.test(widget))
+  assert.ok(!/asserted:/.test(widget), 'a Contacts-backed row is not labelled at all')
+})
+
+// --- duplicate candidates ----------------------------------------------------
+console.log('possible duplicates')
+
+const dupePerson = (personKey, displayName, over = {}) => ({
+  personKey,
+  displayName,
+  relation: over.relation ?? 'unknown',
+  isPseudonym: over.isPseudonym ?? false,
+})
+
+check('two rows for one name are named as candidates rather than merged', () => {
+  const groups = findPossibleDuplicateGroups([
+    dupePerson('contact:sarah jennings', 'Sarah Jennings', { relation: 'family' }),
+    dupePerson('name:sarah', 'Sarah', { relation: 'unknown' }),
+    dupePerson('contact:mark reilly', 'Mark Reilly', { relation: 'friend' }),
+  ])
+  assert.equal(groups.length, 1)
+  assert.deepEqual(groups[0].personKeys, ['contact:sarah jennings', 'name:sarah'])
+  assert.ok(groups[0].displayNames.includes('Sarah Jennings'))
+})
+
+check('two different people who share a first name are not candidates', () => {
+  const groups = findPossibleDuplicateGroups([
+    dupePerson('contact:sarah jennings', 'Sarah Jennings'),
+    dupePerson('contact:sarah phillips', 'Sarah Phillips'),
+  ])
+  assert.equal(groups.length, 0, 'differing surnames are the resolver refusing for a reason')
+})
+
+check('the relation veto applies to duplicate candidates too', () => {
+  const groups = findPossibleDuplicateGroups([
+    dupePerson('contact:james clear', 'James Clear', { relation: 'family' }),
+    dupePerson('name:james clear', 'James Clear', { relation: 'public' }),
+  ])
+  assert.equal(groups.length, 0, 'a public figure is never a candidate for a family member')
+})
+
+check('pseudonyms and the archive owner are never duplicate candidates', () => {
+  const groups = findPossibleDuplicateGroups([
+    dupePerson('pseudo:imessage:contact-a1b2', 'contact-a1b2', { isPseudonym: true }),
+    dupePerson('name:contact a1b2', 'contact-a1b2'),
+    dupePerson('contact:me', 'Andrew Wiles', { relation: 'self' }),
+    dupePerson('name:andrew', 'Andrew', { relation: 'self' }),
+  ])
+  assert.equal(groups.length, 0)
+})
+
+check('a three-way cluster collapses into one group, stably ordered', () => {
+  const groups = findPossibleDuplicateGroups([
+    dupePerson('c', 'Trista Culver'),
+    dupePerson('a', 'Trista'),
+    dupePerson('b', 'Trista C'),
+  ])
+  assert.equal(groups.length, 1)
+  assert.deepEqual(groups[0].personKeys, ['a', 'b', 'c'])
+})
+
+check('the chat block flags a shaky identity and a possible duplicate', () => {
+  // The real under-merge this catches: seeds only join on an EXACT name key, so
+  // a Contacts card reading "Dana Whitfield" and a message thread stored under
+  // "Dana" stay two rows — both seeded, both confirmed, both presented.
+  const resolved = resolvePeople({
+    seeds: [
+      seed('Dana Whitfield', { relation: 'friend' }),
+      seed('Dana', { seedSource: 'messaging', personKey: 'messaging:dana', messageCount: 500, confidence: 0.9 }),
+    ],
+    mentions: [
+      ...[1, 2, 3, 4].map((n) => mention('Dana Whitfield', { mentionKey: `dw${n}`, sourceRef: `dws${n}`, relation: 'friend' })),
+      // Nothing to join to: a name four sources report and no seed asserts.
+      ...[1, 2, 3, 4].map((n) => mention('Marcus Bell', { mentionKey: `mb${n}`, sourceRef: `mbs${n}`, relation: 'colleague' })),
+    ],
+    overrides: [],
+  })
+  persist(resolved)
+  const block = buildPeopleContext({ includeDossiers: false })
+  assert.ok(block, 'the rows clear the threshold')
+  assert.ok(/Dana Whitfield.*may be the same person as Dana/.test(block.content), 'the under-merge is stated, not hidden')
+  assert.ok(/Marcus Bell.*identity unresolved, low confidence/.test(block.content), 'and so is a name nobody asserted')
+  assert.ok(!/Dana Whitfield.*identity .*low confidence/.test(block.content), 'a Contacts-backed name is not caveated')
+  assert.ok(/deliberately cautious/.test(block.content), 'the block explains why two rows can be one person')
 })
 
 // --- platforms and message history -------------------------------------------
@@ -998,6 +1249,75 @@ check('no component subscribes to the People IPC channels directly', () => {
   }
   const hook = fs.readFileSync(new URL('./src/renderer/hooks/usePeopleRun.ts', import.meta.url), 'utf8')
   assert.equal(hook.match(/people\.onState\(/g)?.length, 1)
+})
+
+check('the Life Dashboard opens a People page holding the whole roster', () => {
+  const dashboard = fs.readFileSync(new URL('./src/renderer/components/Dashboard.tsx', import.meta.url), 'utf8')
+  const widget = fs.readFileSync(new URL('./src/renderer/components/PeopleWidget.tsx', import.meta.url), 'utf8')
+  const app = fs.readFileSync(new URL('./src/renderer/App.tsx', import.meta.url), 'utf8')
+  const page = fs.readFileSync(new URL('./src/renderer/components/PeoplePage.tsx', import.meta.url), 'utf8')
+  assert.ok(/onOpenPeople={onOpenPeople}/.test(dashboard), 'the dashboard hands the widget a way out')
+  assert.ok(/onClick={onOpenPeople}/.test(widget), 'the widget links to the page')
+  assert.ok(/showPeople \? \(/.test(app) && /<PeoplePage/.test(app), 'App renders it')
+  assert.ok(/onOpenPeople={handlePeople}/.test(app))
+  // The point of the page: the widget's twelve and the chat block's threshold
+  // both hide people, and this is where they are all visible.
+  assert.ok(/minScore: 0/.test(page), 'the page asks for everyone, not the chat threshold')
+  assert.ok(/selected\.dossier}/.test(page), 'the full profile is shown, not just the one-line gist')
+})
+
+check('leaving the People page is wired like every other page switch', () => {
+  // The router is N booleans, so a handler that forgets one leaves two pages
+  // rendered at once — or rather, the earlier branch wins and the click looks
+  // dead.
+  const app = fs.readFileSync(new URL('./src/renderer/App.tsx', import.meta.url), 'utf8')
+  for (const [, name, body] of app.matchAll(/\n {2}const (handle\w+) = [^\n]*\n((?:.*\n)*?) {2}\}\n/g)) {
+    if (!/setShow\w+\(true\)|setPsychologyProjectId\(null\)/.test(body)) continue
+    if (/setShowPeople\(true\)/.test(body)) continue
+    assert.ok(/setShowPeople\(false\)/.test(body), `${name} must close the People page`)
+  }
+})
+
+// --- iMessage attribution -----------------------------------------------------
+console.log('iMessage attribution')
+
+check("the importer attributes the owner's own messages", () => {
+  // `message.handle_id` is 0 on 78% of sent rows on the development machine,
+  // because the column records who a message came FROM. Reading it alone drops
+  // the owner's half of nearly every thread, and the year summaries then report
+  // that the owner never speaks.
+  const source = fs.readFileSync(new URL('./src/main/activityIMessage.ts', import.meta.url), 'utf8')
+  const query = source.match(/SELECT m\.date[\s\S]*?LIMIT \?/)
+  assert.ok(query, 'the message query is still there')
+  assert.ok(/chat_message_join/.test(query[0]), 'an unattributed message falls back to its chat')
+  assert.ok(
+    /COUNT\(\*\) FROM chat_handle_join p WHERE p\.chat_id = cmj\.chat_id\) = 1/.test(query[0]),
+    'only a one-participant chat may name a counterparty — a group message must not invent a relationship'
+  )
+  // Stored rows were written by the old query, and the watermark would never
+  // revisit them.
+  const version = source.match(/const SYNC_FORMAT_VERSION = (\d+)/)
+  assert.ok(version && Number(version[1]) >= 3, 'the format bump forces those rows to be rebuilt')
+})
+
+check('a year sample too big for the budget is thinned across the year, not truncated', () => {
+  // 600 sampled messages routinely exceed the character budget. Filling from
+  // January and stopping described eight months of the year under a header
+  // promising twelve.
+  const messages = Array.from({ length: 300 }, (_, index) => ({
+    occurredAt: `2024-${String(Math.floor(index / 25) + 1).padStart(2, '0')}-15T12:00:00.000Z`,
+    direction: index % 2 === 0 ? 'sent' : 'received',
+    text: 'x'.repeat(60),
+  }))
+  const full = renderYearMessages(messages, 1_000_000)
+  assert.equal(full.used, 300, 'everything fits when the budget allows')
+
+  const thinned = renderYearMessages(messages, 4_000)
+  assert.ok(thinned.used > 10 && thinned.used < 300, 'the sample is reduced')
+  assert.ok(thinned.text.length <= 4_000, 'and it respects the budget')
+  assert.ok(/^2024-01/.test(thinned.text), 'it still starts in January')
+  assert.ok(/2024-12/.test(thinned.text), 'and it still reaches December')
+  assert.ok(/owner:/.test(thinned.text) && /them:/.test(thinned.text), 'both sides survive the thinning')
 })
 
 database.closeDatabase()

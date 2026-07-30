@@ -17,6 +17,8 @@ import {
 } from '../shared/people'
 import { stripTimelineBlock } from '../shared/timeline'
 import {
+  findPossibleDuplicateGroups,
+  MIN_IDENTITY_CONFIDENCE_FOR_CERTAINTY,
   MIN_SCORE_FOR_DOSSIER,
   MIN_SCORE_FOR_PERSON,
   PERSON_SOURCE_CONFIDENCE,
@@ -31,6 +33,7 @@ import type {
   PeopleRebuildProgress,
   PeopleRebuildResult,
   Person,
+  PersonIdentityBasis,
   PersonRelation,
   PersonSeed,
   PersonSourceType,
@@ -39,20 +42,41 @@ import type {
 
 type ProgressSender = (progress: PeopleRebuildProgress) => void
 
-export const DOSSIER_PROMPT_VERSION = 'v1-person-dossier'
+export const DOSSIER_PROMPT_VERSION = 'v3-person-dossier-identity-basis'
 
-const MAX_DOSSIER_INPUT_CHARS = 30_000
-const MAX_DOSSIER_CHARS = 4_000
+const MAX_DOSSIER_INPUT_CHARS = 60_000
+/**
+ * A person profile is the people-side equivalent of a folder super-context, so
+ * it gets the same ceiling (13,000) rather than the 4,000 it started with. The
+ * old cap was the binding constraint: a decade of message history compressed
+ * into four paragraphs threw away most of what the year summaries below it had
+ * already paid for.
+ */
+const MAX_DOSSIER_CHARS = 13_000
+/**
+ * Years are the bulk of the input for anyone with real message history, so they
+ * are packed against their own budget — otherwise a person with twelve years of
+ * summaries leaves nothing for the cross-source mentions, which are the only
+ * evidence that a relationship exists outside of messaging.
+ */
+const MAX_DOSSIER_YEARS_CHARS = 40_000
 const MAX_DOSSIER_SHORT_CHARS = 240
-const DOSSIER_MAX_TOKENS = 8_000
+const DOSSIER_MAX_TOKENS = 16_000
 const DOSSIER_CONCURRENCY = 3
 /** Below this a counterparty is noise: a two-message thread is not a relationship. */
 const MIN_MESSAGES_FOR_SEED = 5
-const MAX_CHAT_PEOPLE_CHARS = 6_000
+/** Matches the chat timeline budget: people and chronology are peers in a chat. */
+const MAX_CHAT_PEOPLE_CHARS = 20_000
 
 export const PERSON_YEAR_PROMPT_VERSION = 'v1-person-year'
 const MAX_YEAR_INPUT_CHARS = 40_000
-const MAX_YEAR_CONTEXT_CHARS = 2_000
+/**
+ * Deliberately NOT gated behind a prompt-version bump: the year hash is keyed on
+ * the message count, so years that gain messages pick the longer form up on the
+ * next run and the rest keep what they have. Bumping the version instead would
+ * re-summarize every person-year in the archive in one go.
+ */
+const MAX_YEAR_CONTEXT_CHARS = 4_000
 const MAX_YEAR_SAMPLE = 600
 const YEAR_MAX_TOKENS = 4_000
 const YEAR_CONCURRENCY = 3
@@ -332,9 +356,10 @@ export function collectPersonSeeds(): PersonSeed[] {
 
 const PERSON_YEAR_SYSTEM_PROMPT = `You are summarizing one year of message history between the owner of an archive and one other person, so that a later pass can describe the relationship without re-reading tens of thousands of messages.
 
-Write 1-2 paragraphs of plain prose covering: what this year of the relationship was actually about — the recurring subjects, plans, and shared context; how the two of them relate, as the messages themselves show it; and anything that visibly began, changed, or ended during the year.
+Write 2-3 paragraphs of plain prose covering: what this year of the relationship was actually about — the recurring subjects, plans, and shared context, with the specifics the messages carry rather than categories; how the two of them relate, as the messages themselves show it, including who initiates, how they talk to each other, and the rhythm of contact across the year; and anything that visibly began, changed, or ended during the year, placed in the part of the year it happened.
 
 Rules:
+- You are the only pass that will ever see these messages: a later pass writes the relationship profile from your summary alone. Anything specific you leave out is lost. Prefer the concrete detail over the general characterization.
 - Use ONLY these messages. Never add anything you were not shown, and never infer facts because they are likely.
 - These are excerpts, evenly sampled across the year, not the whole thread. Describe what they show; do not claim completeness.
 - Do not quote more than a short phrase, and never reproduce anything that reads as private detail — an address, an account, a medical fact about a third party.
@@ -342,14 +367,50 @@ Rules:
 - If the messages are thin or purely logistical, say that plainly in one or two sentences. A short honest summary is correct; do not pad.
 - Output prose only. No headings, no lists, no TIMELINE block, no PEOPLE block.`
 
-function renderYearMessages(
+/**
+ * Renders one year's sampled messages, thinning evenly when they exceed the
+ * budget.
+ *
+ * The even spread is the whole contract: the header tells the model these are
+ * evenly sampled across the year, and the 600-message sample routinely runs to
+ * more than the character budget, so filling the budget from the start and
+ * stopping handed it eight months of the year under a promise of twelve. A year
+ * summary built that way reports that everything stopped in August.
+ */
+export function renderYearMessages(
   messages: Array<{ occurredAt: string; direction: string; text: string }>,
   maxChars: number
 ): { text: string; used: number } {
+  const all = messages.map(
+    (message) => `${message.occurredAt.slice(0, 10)} ${message.direction === 'sent' ? 'owner' : 'them'}: ${message.text}`
+  )
+  const total = all.reduce((sum, line) => sum + line.length + 1, 0)
+
+  const chosen = total <= maxChars
+    ? all
+    : (() => {
+        const keep = Math.max(2, Math.floor(all.length * (maxChars / total)))
+        // Taken in adjacent pairs, not one line every N: a reply belongs next to
+        // the message it answers, and a thread that strictly alternates would
+        // otherwise land a fixed stride on one speaker and sample the owner out
+        // of their own conversation.
+        const anchors = Math.max(1, Math.floor(keep / 2))
+        const stride = all.length / anchors
+        const picked = new Set<number>()
+        for (let index = 0; index < anchors; index += 1) {
+          const at = Math.min(all.length - 1, Math.floor(index * stride))
+          picked.add(at)
+          if (at + 1 < all.length) picked.add(at + 1)
+        }
+        return [...picked].sort((a, b) => a - b).map((index) => all[index])
+      })()
+
   const lines: string[] = []
   let length = 0
-  for (const message of messages) {
-    const line = `${message.occurredAt.slice(0, 10)} ${message.direction === 'sent' ? 'owner' : 'them'}: ${message.text}`
+  for (const line of chosen) {
+    // A run of unusually long messages can still overrun the estimate; the
+    // remaining lines are already spread across the year, so stopping here
+    // shortens the sample without re-biasing it toward January.
     if (length + line.length + 1 > maxChars) break
     lines.push(line)
     length += line.length + 1
@@ -466,7 +527,17 @@ Write exactly this shape:
 
 SHORT: <one sentence, under 200 characters, naming who this person is to the archive's owner and the single most telling thing the evidence shows>
 ---
-<the long profile: 2-4 paragraphs covering who they are to the owner and on what evidence; how the relationship appears across the sources, including how it changed over time when the evidence shows that; and what the evidence does NOT establish>
+<the long profile>
+
+The long profile is the whole point of this output. It is the only place the evidence about this person is ever assembled in one piece, and everything downstream reads it instead of the sources. When the evidence carries real signal — more than one source, or message history covering more than one year — write AT LEAST five substantial paragraphs (roughly 900-1,500 words), in this order:
+
+1. Who this person is to the owner, and on exactly what evidence: which sources name them, what each source calls them, how long they have been present, and how the relation was arrived at.
+2. What the relationship actually consists of: the recurring subjects, the shared plans and context, what the two of them do together or for each other, and how they talk — as the evidence shows it, in its specifics.
+3. How it developed, year by year but not one-year-per-sentence: name the years, say what each stretch was about, and say what changed between them and what held constant. Where the record goes quiet or has gaps, say so and say when.
+4. Where this person appears outside of messaging: the other sources that mention them, what each one adds, and where two sources describe the same person differently.
+5. What the evidence does not establish: the parts of this relationship the archive cannot see, and which readings above rest on inference rather than on something a source says.
+
+Extra length must buy more evidence — more of what the sources actually say, more named years, subjects and sources. It must never buy restatement, a source-by-source inventory, a recap of the section above it, or hedging padded out into prose.
 
 Rules:
 - Use ONLY the evidence given below. Never add biography, employment, location or history from outside it, and never infer a fact because it is likely.
@@ -474,9 +545,20 @@ Rules:
 - Messaging statistics describe volume and cadence, nothing more. Never read closeness, affection, conflict or sentiment out of a message count.
 - Never state a diagnosis, a judgment of character, or a sentiment the evidence does not carry in words.
 - When per-year message summaries are given, the history is the point: say how the relationship actually developed across those years, naming the years. Do not simply restate each year in turn.
-- Name what is missing: if the evidence is one mention from one source, say that, and keep the profile to a single short paragraph. A thin honest profile is correct; do not pad.
+- Name what is missing: if the evidence is one mention from one source, say that, and keep the profile to a single short paragraph. A thin honest profile is correct and the length target above does not apply to it. Length comes from evidence or not at all.
+- Read "HOW THIS IDENTITY WAS ESTABLISHED" before writing a word. When the identity rests on a name rather than on an address, a handle, or the owner's own assertion, say so in the profile and treat each mention as possibly describing a different person who shares that name. Never write a settled profile of someone the evidence has not settled.
 - This is a real person who did not consent to being profiled. Write nothing you could not show them.
 - Do not output a TIMELINE or PEOPLE block.`
+
+/** How each basis reads to the model writing the profile. */
+const IDENTITY_BASIS_DESCRIPTION: Record<PersonIdentityBasis, string> = {
+  asserted: 'the archive owner asserted this identity themselves, in their address book, their stored Memory, or a correction they made by hand. It is as settled as this system gets.',
+  handle: 'the mentions were joined on an email address or phone number, which identifies a person reliably.',
+  'name-exact': 'the mentions were joined on a full name, or on a co-reference the material itself stated. Reasonably solid, but a namesake would look the same.',
+  'name-partial': 'at least one mention was joined on a shortened or initialled form of the name because exactly one known person fitted it. This is the weakest join here and it can be wrong.',
+  unresolved: 'nothing anchors this identity: it is a name that appeared in the sources with no address book entry, no handle and no assertion from the owner behind it.',
+  ambiguous: 'several different people fitted this name and the resolver refused to choose. Anything below may describe more than one person.',
+}
 
 function packMentions(
   mentions: Array<{ sourceLabel: string; rawName: string; relation: string; role: string; evidence: string }>,
@@ -505,7 +587,9 @@ function dossierHashFor(
   person: Person,
   mentions: Array<{ sourceRef: string; rawName: string; relation: string; evidence: string }>
 ): string {
-  const stats = `${person.messageCount}:${person.sentCount}:${person.daysActive}:${person.firstSeen ?? ''}:${person.lastSeen ?? ''}:${person.relation}:${person.role}`
+  // identityBasis is in the key because it is in the prompt: a mention that
+  // weakened the identity has to make the confident profile stale.
+  const stats = `${person.messageCount}:${person.sentCount}:${person.daysActive}:${person.firstSeen ?? ''}:${person.lastSeen ?? ''}:${person.relation}:${person.role}:${person.identityBasis}`
   // The year summaries are an input to the profile, so a regenerated year has to
   // invalidate it — otherwise the dossier keeps quoting a summary that changed.
   const yearFingerprint = database
@@ -523,6 +607,10 @@ function buildDossierPrompt(person: Person, mentions: ReturnType<typeof database
   const parts: string[] = []
   parts.push(`PERSON: ${person.displayName}`)
   parts.push(`RELATION TO THE ARCHIVE'S OWNER: ${person.relation}${person.role ? ` (${person.role})` : ''}`)
+  // A profile written from mentions joined on a shortened name reads exactly as
+  // confident as one joined on a phone number. Telling the model which it has is
+  // the only way the caveat reaches the prose.
+  parts.push(`HOW THIS IDENTITY WAS ESTABLISHED: ${IDENTITY_BASIS_DESCRIPTION[person.identityBasis]}`)
   if (person.aliases.length > 0) {
     parts.push(`ALSO APPEARS AS: ${person.aliases.map((alias) => alias.alias).slice(0, 12).join(', ')}`)
   }
@@ -538,8 +626,13 @@ function buildDossierPrompt(person: Person, mentions: ReturnType<typeof database
     parts.push(
       `\nMESSAGE HISTORY BY YEAR (each year below is a summary of that year's messages, not the messages themselves):`
     )
+    // Every year keeps a share of the budget rather than the early years
+    // spending it all: the profile has to describe how the relationship
+    // changed, which it cannot do if the recent years fell off the end.
+    const perYear = Math.floor(MAX_DOSSIER_YEARS_CHARS / years.length)
     for (const year of years) {
-      parts.push(`${year.year} (${year.messageCount} messages, ${year.sampledCount} read): ${year.context}`)
+      const text = year.context.length > perYear ? `${year.context.slice(0, perYear)}…` : year.context
+      parts.push(`${year.year} (${year.messageCount} messages, ${year.sampledCount} read): ${text}`)
     }
   }
   const packed = packMentions(mentions, MAX_DOSSIER_INPUT_CHARS - parts.join('\n').length - 200)
@@ -673,6 +766,8 @@ export async function rebuildPeople(
       lastSeen: person.lastSeen,
       score: person.score,
       confidence: person.confidence,
+      identityBasis: person.identityBasis,
+      identityConfidence: person.identityConfidence,
       projectIds: person.projectIds,
       platforms: person.platforms,
       aliases: person.aliases,
@@ -781,6 +876,20 @@ export function buildPeopleContext(options: {
     return b.score - a.score || b.messageCount - a.messageCount || a.displayName.localeCompare(b.displayName)
   })
 
+  // Rows the cascade declined to merge but that may be one person. Named rather
+  // than merged: the under-merge bias is deliberate, but a reader who is not told
+  // about it reads two lines as two people.
+  const duplicateGroups = findPossibleDuplicateGroups(people)
+  const duplicatePartners = new Map<string, string[]>()
+  for (const group of duplicateGroups) {
+    for (const key of group.personKeys) {
+      duplicatePartners.set(
+        key,
+        group.displayNames.filter((_, index) => group.personKeys[index] !== key)
+      )
+    }
+  }
+
   const spine: string[] = []
   for (const person of ranked) {
     const label = person.role ? `${person.relation}, ${person.role}` : person.relation
@@ -790,6 +899,13 @@ export function buildPeopleContext(options: {
     if (person.firstSeen && person.lastSeen) {
       stats.push(`${person.firstSeen.slice(0, 4)}–${person.lastSeen.slice(0, 4)}`)
     }
+    // Only said when it is a caveat. Printing "identity: asserted" on every
+    // Contacts-backed person would spend the budget saying nothing.
+    if (person.identityConfidence < MIN_IDENTITY_CONFIDENCE_FOR_CERTAINTY) {
+      stats.push(`identity ${person.identityBasis}, low confidence`)
+    }
+    const partners = duplicatePartners.get(person.personKey)
+    if (partners?.length) stats.push(`may be the same person as ${partners.join(', ')}`)
     const gist = person.dossierShort ? ` — ${person.dossierShort}` : ''
     spine.push(`- ${person.displayName} (${label})${gist}${stats.length > 0 ? ` [${stats.join(' · ')}]` : ''}`)
   }
@@ -815,9 +931,12 @@ export function buildPeopleContext(options: {
     if (details.length > 0) parts.push(`\nPROFILES\n${details.join('\n')}`)
   }
 
-  const coverage = expanded > 0
+  const duplicateNote = duplicateGroups.length > 0
+    ? ` Identity resolution is deliberately cautious, so ${duplicateGroups.length} name${duplicateGroups.length === 1 ? '' : 's'} below may be duplicated across rows; where that is possible the row says so, and you should not treat those as separate people without checking.`
+    : ''
+  const coverage = (expanded > 0
     ? `${people.length} recorded people; ${expanded} given in full below and the rest one line each.`
-    : `${people.length} recorded people, one line each.`
+    : `${people.length} recorded people, one line each.`) + duplicateNote
 
   return { content: `${coverage}\n\n${parts.join('\n')}`, personCount: people.length }
 }

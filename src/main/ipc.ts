@@ -70,15 +70,17 @@ import { generateDocumentContexts, getDocumentContextTree, listProjectIndexSumma
 import { hasGeneratedContexts } from './contextSearch'
 import { getHomeIdeas, refreshHomeIdeas } from './homeIdeas'
 import {
-  archivePlayItemById,
-  getPlayFeed,
-  getPlayRunStateForRenderer,
-  reactToPlayItem,
-  recordPlayProgress,
-  refreshPlayFeed,
-  requestPlayRunStop,
-} from './playFeed'
-import { subscribePlayRunState } from './playRuns'
+  archiveTabloidItemById,
+  getTabloidFeed,
+  getTabloidRunStateForRenderer,
+  reactToTabloidItem,
+  recordTabloidProgress,
+  refreshTabloidFeed,
+  requestTabloidRunStop,
+} from './tabloidFeed'
+import { subscribeTabloidRunState } from './tabloidRuns'
+import { getUpdateRunState, subscribeUpdateRunState } from './updateRuns'
+import { checkForUpdates, downloadUpdate, openReleasesPage, restartForUpdate } from './updater'
 import { estimateProjectIndex, combineEstimates } from './indexEstimate'
 import { getPriceTable } from './modelPricing'
 import {
@@ -514,6 +516,8 @@ async function runChatWithTools(
             parentId: lastParentId,
             toolCallId: tr.callId,
             toolName: tr.name,
+            // Kept so the tool row still shows a failure after a reload.
+            ...(tr.error ? { toolError: true } : {}),
           })
           lastParentId = toolMessage.id
           apiMessages.push({ role: 'tool', content: tr.content, tool_call_id: tr.callId, name: tr.name })
@@ -2612,6 +2616,40 @@ export function registerIpcHandlers(): void {
     broadcast(IPC.PEOPLE.STATE, state)
   })
 
+  subscribeUpdateRunState((state) => {
+    broadcast(IPC.UPDATER.STATE, state)
+  })
+
+  // Deliberately absent from OWNER_CALLABLE_CHANNELS in shared/remote.ts: a
+  // paired phone must not be able to relaunch the desktop app out from under
+  // whoever is sitting at it.
+  handle(IPC.UPDATER.GET_STATE, (event) => {
+    assertTrustedSender(event, 'Updater')
+    return getUpdateRunState()
+  })
+
+  handle(IPC.UPDATER.CHECK, (event) => {
+    assertTrustedSender(event, 'Updater')
+    // No dialog — the strip is the answer — but a check the user clicked must
+    // report its own failure rather than silently going quiet.
+    return checkForUpdates(false, true)
+  })
+
+  handle(IPC.UPDATER.DOWNLOAD, (event) => {
+    assertTrustedSender(event, 'Updater')
+    return downloadUpdate()
+  })
+
+  handle(IPC.UPDATER.RESTART, (event) => {
+    assertTrustedSender(event, 'Updater')
+    restartForUpdate()
+  })
+
+  handle(IPC.UPDATER.OPEN_RELEASES, (event) => {
+    assertTrustedSender(event, 'Updater')
+    return openReleasesPage()
+  })
+
   handle(IPC.DOCUMENTS.GENERATE, async (event, projectId: unknown, tierArg: unknown, runOptions: unknown) => {
     assertTrustedSender(event, 'Document context')
     if (typeof projectId !== 'string' || !projectId.trim()) throw new Error('Project ID is required')
@@ -3222,59 +3260,59 @@ export function registerIpcHandlers(): void {
     return refreshHomeIdeas(settings.getProvider(), settings.getTextModel('budget'), undefined, force === true)
   })
 
-  // The Play feed. GET never calls a model; REFRESH makes at most two mid-tier
+  // The Tabloid feed. GET never calls a model; REFRESH makes at most two mid-tier
   // calls plus real YouTube retrieval, and refuses at every gate that would make
   // the run pointless (no key, no profile, no credit, quota spent) before
   // spending anything. REACT writes locally and may offer one memory candidate.
-  handle(IPC.PLAY.GET, (event) => {
-    assertTrustedSender(event, 'Play')
-    return getPlayFeed()
+  handle(IPC.TABLOID.GET, (event) => {
+    assertTrustedSender(event, 'Tabloid')
+    return getTabloidFeed()
   })
 
-  handle(IPC.PLAY.REFRESH, (event, force: unknown) => {
-    assertTrustedSender(event, 'Play')
+  handle(IPC.TABLOID.REFRESH, (event, force: unknown) => {
+    assertTrustedSender(event, 'Tabloid')
     const model = settings.getTextModel('mid')
-    return refreshPlayFeed(settings.getProvider(), { planner: model, curator: model }, undefined, force === true)
+    return refreshTabloidFeed(settings.getProvider(), { planner: model, curator: model }, undefined, force === true)
   })
 
-  handle(IPC.PLAY.REACT, (event, id: unknown, reaction: unknown) => {
-    assertTrustedSender(event, 'Play')
-    if (typeof id !== 'string' || !id.trim()) throw new Error('A play item id is required')
+  handle(IPC.TABLOID.REACT, (event, id: unknown, reaction: unknown) => {
+    assertTrustedSender(event, 'Tabloid')
+    if (typeof id !== 'string' || !id.trim()) throw new Error('A tabloid item id is required')
     if (reaction !== 'up' && reaction !== 'down' && reaction !== null) {
       throw new Error('A reaction must be "up", "down" or null')
     }
-    return reactToPlayItem(id, reaction)
+    return reactToTabloidItem(id, reaction)
   })
 
-  handle(IPC.PLAY.STOP, (event) => {
-    assertTrustedSender(event, 'Play')
-    return requestPlayRunStop()
+  handle(IPC.TABLOID.STOP, (event) => {
+    assertTrustedSender(event, 'Tabloid')
+    return requestTabloidRunStop()
   })
 
-  handle(IPC.PLAY.GET_STATE, (event) => {
-    assertTrustedSender(event, 'Play')
-    return getPlayRunStateForRenderer()
+  handle(IPC.TABLOID.GET_STATE, (event) => {
+    assertTrustedSender(event, 'Tabloid')
+    return getTabloidRunStateForRenderer()
   })
 
   // Written from the player as it ticks, so it is deliberately cheap: one upsert
   // and no feed rebuild. The renderer throttles the calls.
-  handle(IPC.PLAY.SET_PROGRESS, (event, id: unknown, positionSeconds: unknown, durationSeconds: unknown) => {
-    assertTrustedSender(event, 'Play')
-    if (typeof id !== 'string' || !id.trim()) throw new Error('A play item id is required')
+  handle(IPC.TABLOID.SET_PROGRESS, (event, id: unknown, positionSeconds: unknown, durationSeconds: unknown) => {
+    assertTrustedSender(event, 'Tabloid')
+    if (typeof id !== 'string' || !id.trim()) throw new Error('A tabloid item id is required')
     if (typeof positionSeconds !== 'number' || !Number.isFinite(positionSeconds)) {
       throw new Error('A playback position is required')
     }
-    return recordPlayProgress(
+    return recordTabloidProgress(
       id,
       positionSeconds,
       typeof durationSeconds === 'number' && Number.isFinite(durationSeconds) ? durationSeconds : null
     )
   })
 
-  handle(IPC.PLAY.ARCHIVE, async (event, id: unknown) => {
-    assertTrustedSender(event, 'Play')
-    if (typeof id !== 'string' || !id.trim()) throw new Error('A play item id is required')
-    return archivePlayItemById(id)
+  handle(IPC.TABLOID.ARCHIVE, async (event, id: unknown) => {
+    assertTrustedSender(event, 'Tabloid')
+    if (typeof id !== 'string' || !id.trim()) throw new Error('A tabloid item id is required')
+    return archiveTabloidItemById(id)
   })
 
   handle(IPC.CONTEXT_VERSIONS.LIST, (event, filter: unknown) => {

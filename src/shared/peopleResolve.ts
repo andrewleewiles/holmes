@@ -2,6 +2,7 @@ import { handleKey, isPseudonymName, personKey, personTokens } from './people'
 import type {
   PersonAliasKind,
   PersonAliasOrigin,
+  PersonIdentityBasis,
   PersonMentionInput,
   PersonOverride,
   PersonRelation,
@@ -100,6 +101,57 @@ export function relationsCompatible(a: PersonRelation, b: PersonRelation): boole
   return !INCOMPATIBLE_KEYS.has(`${a}|${b}`)
 }
 
+/**
+ * How much each way of establishing an identity is worth.
+ *
+ * Distinct from `PERSON_SOURCE_CONFIDENCE`, which grades how much a SOURCE's
+ * claim about a person is worth. This grades something else entirely: how sure
+ * we are that the row is one real person rather than two people fused or one
+ * person guessed at. A dossier assembled from mentions joined on a shared first
+ * name is exactly as authoritative-sounding as one joined on a phone number, and
+ * before this there was nothing in the record to tell them apart.
+ */
+export const IDENTITY_BASIS_CONFIDENCE: Record<PersonIdentityBasis, number> = {
+  // The user asserted this identity: a Contacts card, a Memory field, or a
+  // correction they made by hand.
+  asserted: 1,
+  // Joined on an email address or a phone number.
+  handle: 0.9,
+  // Joined on a full normalized name, or on a co-reference the material stated.
+  'name-exact': 0.75,
+  // Joined on a shortened or initialled form that fitted exactly one person.
+  'name-partial': 0.55,
+  // Nothing to join to: one name from one source, standing alone.
+  unresolved: 0.45,
+  // Several people fitted and the resolver refused to choose. Quarantined.
+  ambiguous: 0.2,
+}
+
+/** Which cascade rule produced which basis. R3 is graded as the weaker of the two things it can be. */
+function basisForRule(rule: string): PersonIdentityBasis {
+  if (rule.endsWith('-ambiguous')) return 'ambiguous'
+  if (rule === 'R0') return 'asserted'
+  if (rule === 'R1') return 'handle'
+  if (rule === 'R2' || rule === 'R3') return 'name-exact'
+  if (rule === 'R4' || rule === 'R5') return 'name-partial'
+  return 'unresolved'
+}
+
+function basisForSeed(seedSource: PersonSeedSource | null): PersonIdentityBasis | null {
+  if (seedSource === 'contacts' || seedSource === 'memory') return 'asserted'
+  // A messaging seed is a counterparty the message store identified by handle.
+  if (seedSource === 'messaging') return 'handle'
+  return null
+}
+
+/** The weaker of two bases — the one that governs how much the record can be trusted. */
+function weakerBasis(a: PersonIdentityBasis, b: PersonIdentityBasis): PersonIdentityBasis {
+  return IDENTITY_BASIS_CONFIDENCE[a] <= IDENTITY_BASIS_CONFIDENCE[b] ? a : b
+}
+
+/** Below this the chat block says so rather than presenting the person as settled. */
+export const MIN_IDENTITY_CONFIDENCE_FOR_CERTAINTY = 0.75
+
 /** A person appears in the widget and the chat block at this score. */
 export const MIN_SCORE_FOR_PERSON = 3
 /** A person earns an LLM-generated dossier at this score. */
@@ -146,6 +198,14 @@ export interface ResolvedPerson {
   lastSeen: string | null
   score: number
   confidence: number
+  /**
+   * How this identity was established — the WEAKEST link in it, not the
+   * strongest. A Contacts-seeded person who also absorbed a mention matched on
+   * initials alone reads `name-partial`, because that mention is the one that
+   * could have brought a stranger into the record.
+   */
+  identityBasis: PersonIdentityBasis
+  identityConfidence: number
   projectIds: string[]
   platforms: PersonPlatform[]
   aliases: ResolvedAlias[]
@@ -196,6 +256,52 @@ function addAlias(person: WorkingPerson, alias: string, kind: PersonAliasKind, o
   if (!person.aliases.has(mapKey)) {
     person.aliases.set(mapKey, { alias: trimmed, aliasKey: key, kind, origin })
   }
+}
+
+/**
+ * Collapses mentions that share a mention key.
+ *
+ * A mention key is (source, normalized name), so two of them means one source
+ * named one person twice — a PEOPLE block listing both "Sarah Klein" and "sarah
+ * klein", or simply repeating a line. Nothing upstream prevents that, and left
+ * alone it both inflates `mentionCount` (the score is a mention count) and
+ * violates the UNIQUE index the mentions table is stored under, which fails the
+ * whole rebuild transaction over one duplicated line.
+ *
+ * The survivor is chosen by information, not by arrival order: the resolver
+ * guarantees two runs over the same evidence produce byte-identical people, so
+ * the tie-break has to be on content rather than on harvest order.
+ */
+function dedupeMentions(mentions: ResolvableMention[]): ResolvableMention[] {
+  const best = new Map<string, ResolvableMention>()
+  for (const mention of mentions) {
+    const existing = best.get(mention.mentionKey)
+    if (!existing) {
+      best.set(mention.mentionKey, mention)
+      continue
+    }
+    const winner = richerMention(existing, mention)
+    const loser = winner === existing ? mention : existing
+    // The aka lists are the one field where a duplicate can carry something the
+    // survivor does not: it is what R3 co-reference resolution runs on.
+    const aka = [...winner.aka]
+    for (const alias of loser.aka) {
+      if (!aka.some((known) => known.toLowerCase() === alias.toLowerCase())) aka.push(alias)
+    }
+    best.set(mention.mentionKey, aka.length === winner.aka.length ? winner : { ...winner, aka })
+  }
+  return [...best.values()]
+}
+
+function richerMention(a: ResolvableMention, b: ResolvableMention): ResolvableMention {
+  const rank = (mention: ResolvableMention): number =>
+    (mention.relation !== 'unknown' ? 4 : 0) + (mention.role ? 2 : 0) + (mention.evidence ? 1 : 0)
+  const byRank = rank(b) - rank(a)
+  if (byRank !== 0) return byRank > 0 ? b : a
+  const byEvidence = b.evidence.length - a.evidence.length
+  if (byEvidence !== 0) return byEvidence > 0 ? b : a
+  // Nothing distinguishes them by content, so fall back to something stable.
+  return `${b.rawName} ${b.relation} ${b.role}` < `${a.rawName} ${a.relation} ${a.role}` ? b : a
 }
 
 /** Two names describe one person when one is an initialled or shortened form of the other. */
@@ -375,7 +481,7 @@ export function resolvePeople(input: ResolveInput): ResolveResult {
   // --- 3. The cascade -------------------------------------------------------
   // Mentions are sorted first so the result never depends on harvest order: two
   // runs over the same evidence must produce byte-identical people.
-  const ordered = [...input.mentions].sort((a, b) => a.mentionKey.localeCompare(b.mentionKey))
+  const ordered = dedupeMentions(input.mentions).sort((a, b) => a.mentionKey.localeCompare(b.mentionKey))
   const resolved: ResolvedMention[] = []
   const ambiguousKeys = new Set<string>()
 
@@ -616,6 +722,17 @@ export function resolvePeople(input: ResolveInput): ResolveResult {
       0
     )
 
+    // A seed anchors the identity; every mention attached to it can only weaken
+    // that anchor, never strengthen it. A person with neither a seed nor a
+    // mention cannot happen (both are the only ways a person is created), but
+    // `unresolved` is the honest floor if one ever did.
+    let identityBasis: PersonIdentityBasis = person.ambiguous
+      ? 'ambiguous'
+      : basisForSeed(person.seedSource) ?? 'unresolved'
+    if (!person.ambiguous) {
+      for (const mention of mentions) identityBasis = weakerBasis(identityBasis, basisForRule(mention.resolutionRule))
+    }
+
     out.push({
       personKey: person.personKey,
       displayName,
@@ -634,6 +751,8 @@ export function resolvePeople(input: ResolveInput): ResolveResult {
       lastSeen: person.lastSeen,
       score,
       confidence,
+      identityBasis,
+      identityConfidence: IDENTITY_BASIS_CONFIDENCE[identityBasis],
       projectIds,
       platforms: [...person.platforms.values()].sort((a, b) => b.messageCount - a.messageCount),
       aliases: [...person.aliases.values()].sort((a, b) => a.aliasKey.localeCompare(b.aliasKey)),
@@ -650,4 +769,82 @@ export function resolvePeople(input: ResolveInput): ResolveResult {
     a.personKey.localeCompare(b.personKey))
 
   return { people: out, mentions: resolved, ambiguous: ambiguousKeys.size, overridesApplied }
+}
+
+export interface DuplicateGroup {
+  /** Person keys in the group, sorted, so the grouping is stable across runs. */
+  personKeys: string[]
+  /** Their display names, in the same order, for a message the user can read. */
+  displayNames: string[]
+}
+
+/**
+ * Finds rows that may be one person the cascade refused to merge.
+ *
+ * The resolver's bias toward under-merging is correct and stays: fusing two real
+ * people produces a confident dossier about somebody who does not exist. But the
+ * cost of that bias was silent — two rows for one person, presented as two
+ * people, with nothing marking them as the same candidate. This names the
+ * candidates without merging them, which is the honest middle: the People page
+ * can offer the one-click merge, and the chat block can say "these two may be
+ * the same person" instead of implying they are not.
+ *
+ * Pure and read-only: it groups on the same name compatibility the cascade uses,
+ * so a group here is precisely a merge the cascade considered and declined.
+ */
+export function findPossibleDuplicateGroups(
+  people: Array<{
+    personKey: string
+    displayName: string
+    relation: PersonRelation
+    isPseudonym: boolean
+  }>
+): DuplicateGroup[] {
+  // A pseudonym has no name to compare, and `self` is the archive's owner.
+  const candidates = people.filter((person) => !person.isPseudonym && person.relation !== 'self')
+  const parent = new Map<string, string>(candidates.map((person) => [person.personKey, person.personKey]))
+
+  const find = (key: string): string => {
+    let root = key
+    while (parent.get(root) !== root) root = parent.get(root) as string
+    // Path compression keeps this linear over the thousands of rows a real
+    // archive produces.
+    let cursor = key
+    while (parent.get(cursor) !== root) {
+      const next = parent.get(cursor) as string
+      parent.set(cursor, root)
+      cursor = next
+    }
+    return root
+  }
+
+  const tokens = new Map(candidates.map((person) => [person.personKey, personTokens(person.displayName)]))
+  for (let i = 0; i < candidates.length; i += 1) {
+    for (let j = i + 1; j < candidates.length; j += 1) {
+      const a = candidates[i]
+      const b = candidates[j]
+      if (!relationsCompatible(a.relation, b.relation)) continue
+      if (!nameCompatible(tokens.get(a.personKey) ?? [], tokens.get(b.personKey) ?? [])) continue
+      const rootA = find(a.personKey)
+      const rootB = find(b.personKey)
+      if (rootA !== rootB) parent.set(rootA, rootB)
+    }
+  }
+
+  const byRoot = new Map<string, string[]>()
+  for (const person of candidates) {
+    const root = find(person.personKey)
+    const bucket = byRoot.get(root)
+    if (bucket) bucket.push(person.personKey)
+    else byRoot.set(root, [person.personKey])
+  }
+
+  const nameOf = new Map(candidates.map((person) => [person.personKey, person.displayName]))
+  return [...byRoot.values()]
+    .filter((group) => group.length > 1)
+    .map((group) => {
+      const personKeys = [...group].sort()
+      return { personKeys, displayNames: personKeys.map((key) => nameOf.get(key) ?? key) }
+    })
+    .sort((a, b) => a.personKeys[0].localeCompare(b.personKeys[0]))
 }

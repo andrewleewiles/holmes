@@ -5,7 +5,7 @@ import path from 'path'
 import { v4 as uuidv4 } from 'uuid'
 import { deriveContextShort, isFailedContext } from '../shared/contextVersions'
 import { getAssistantName } from '../shared/assistantIdentity'
-import type { TranscriptCue } from '../shared/playFeed'
+import type { TranscriptCue } from '../shared/tabloidFeed'
 import type {
   ChatAttachment,
   CitedSource,
@@ -13,19 +13,19 @@ import type {
   Message,
   SearchResult,
   ReasoningEffort,
-  PlayAnalysis,
-  PlayAnalysisStatus,
-  PlayArchive,
-  PlayArchiveStatus,
-  PlayFeedStatus,
-  PlayFlag,
-  PlayIntent,
-  PlayItem,
-  PlayItemKind,
-  PlayReaction,
-  PlayRetrieverId,
-  PlaySourceRef,
-  PlayWatchState,
+  TabloidAnalysis,
+  TabloidAnalysisStatus,
+  TabloidArchive,
+  TabloidArchiveStatus,
+  TabloidFeedStatus,
+  TabloidFlag,
+  TabloidIntent,
+  TabloidItem,
+  TabloidItemKind,
+  TabloidReaction,
+  TabloidRetrieverId,
+  TabloidSourceRef,
+  TabloidWatchState,
   Project,
   PsychologyAnalysis,
   HealthAnalysis,
@@ -64,6 +64,7 @@ import type {
   PersonAlias,
   PersonAliasKind,
   PersonAliasOrigin,
+  PersonIdentityBasis,
   PersonMention,
   PersonOverride,
   PersonOverrideKind,
@@ -151,12 +152,99 @@ import {
 
 let db: Database.Database
 
+/**
+ * The Play feed became the Tabloid feed, so its seven tables are renamed.
+ *
+ * This MUST run before the CREATE TABLE block, not with the other migrations
+ * after it. `CREATE TABLE IF NOT EXISTS tabloid_items` would otherwise make an
+ * empty table first, and the rename would then fail against the name it just
+ * created — leaving the user's picks, reactions, watch positions and archives
+ * stranded in the old tables while the app read from empty new ones.
+ *
+ * Each rename is guarded both ways: nothing to move on a fresh database, and
+ * nothing to do on a second launch.
+ *
+ * Any column the CREATE block INDEXES on one of these tables must be added here
+ * too, for the same reason — see the ALTERs at the bottom.
+ */
+function migrateTabloidTables(): void {
+  const suffixes = ['feed', 'items', 'media', 'transcripts', 'analyses', 'watch_state', 'archives']
+  for (const suffix of suffixes) {
+    try {
+      const oldName = `play_${suffix}`
+      const newName = `tabloid_${suffix}`
+      const exists = (name: string): boolean =>
+        db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name) !== undefined
+      if (exists(oldName) && !exists(newName)) db.exec(`ALTER TABLE ${oldName} RENAME TO ${newName}`)
+    } catch {
+      // A rename that will not apply leaves the CREATE below to make the new
+      // table empty, which is the same state a fresh install starts in.
+    }
+  }
+
+  // SQLite keeps an index attached across a table rename but does NOT rename it,
+  // so the old names would survive alongside the new ones the CREATE block makes.
+  // Dropped here rather than left as duplicates — including the UNIQUE identity
+  // index, which the ON CONFLICT upsert depends on and which the CREATE below
+  // immediately recreates under its new name.
+  for (const legacy of [
+    'idx_play_items_identity',
+    'idx_play_items_current',
+    'idx_play_items_batch',
+    'idx_play_items_reaction',
+    'idx_play_items_shown',
+    'idx_play_media_used',
+    'idx_play_archives_status',
+  ]) {
+    try {
+      db.exec(`DROP INDEX IF EXISTS ${legacy}`)
+    } catch {
+      // Nothing to drop on a fresh database.
+    }
+  }
+
+  // Batch columns, added here rather than with the other column migrations below
+  // for the same ordering reason as the renames: the CREATE block indexes
+  // tabloid_items(feed_batch), and CREATE INDEX against a renamed table that
+  // predates the column fails the whole schema exec before any migration runs.
+  //
+  // Rows written before the feed stacked all belong to one notional first batch,
+  // so an existing feed keeps its picks and simply gains a new batch above them
+  // on the next refresh.
+  try {
+    db.exec('ALTER TABLE tabloid_items ADD COLUMN feed_batch INTEGER NOT NULL DEFAULT 1')
+  } catch { /* column already exists, or fresh database with no table yet */ }
+  try {
+    db.exec('ALTER TABLE tabloid_items ADD COLUMN batch_at INTEGER NOT NULL DEFAULT 0')
+  } catch { /* column already exists, or fresh database with no table yet */ }
+  // Backfill only rows the ALTER defaulted: batch_at 0 would sort and render as
+  // 1970, and shown_at is when the row was last put in front of the user.
+  try {
+    db.prepare('UPDATE tabloid_items SET batch_at = shown_at WHERE batch_at = 0').run()
+  } catch { /* table does not exist yet on a fresh database */ }
+
+  // The reaction source type is stored inside memory_fields.sources_json, so it
+  // is rewritten in place rather than left as an unknown type the budget table
+  // has no entry for.
+  try {
+    db.prepare(
+      `UPDATE memory_fields SET sources_json =
+         REPLACE(REPLACE(sources_json, '"play-reaction"', '"tabloid-reaction"'), '"play:', '"tabloid:')
+       WHERE sources_json LIKE '%play-reaction%'`
+    ).run()
+  } catch {
+    // The table does not exist yet on a fresh database.
+  }
+}
+
 export function initDatabase(): void {
   const dbPath = path.join(app.getPath('userData'), 'holmes.db')
   db = new Database(dbPath)
 
   db.pragma('journal_mode = WAL')
   db.pragma('foreign_keys = ON')
+
+  migrateTabloidTables()
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS conversations (
@@ -335,10 +423,10 @@ export function initDatabase(): void {
       updated_at INTEGER NOT NULL DEFAULT 0
     );
 
-    -- The Play feed. One row, for the same reason as home_ideas above: the whole
+    -- The Tabloid feed. One row, for the same reason as home_ideas above: the whole
     -- feed is planned, retrieved and curated together. Unlike home_ideas this one
     -- carries provenance -- a pick has to be able to say why it was picked.
-    CREATE TABLE IF NOT EXISTS play_feed (
+    CREATE TABLE IF NOT EXISTS tabloid_feed (
       id INTEGER PRIMARY KEY CHECK(id = 1),
       generated_at INTEGER NOT NULL DEFAULT 0,
       input_hash TEXT NOT NULL DEFAULT '',
@@ -354,7 +442,7 @@ export function initDatabase(): void {
     );
 
     -- kind and provider carry no CHECK, for the reason spelled out on
-    -- activity_records.source_type below: the valid set lives in PLAY_ITEM_KINDS
+    -- activity_records.source_type below: the valid set lives in TABLOID_ITEM_KINDS
     -- in shared/types.ts, and a CHECK here would mean a full table rebuild every
     -- time a kind is added.
     --
@@ -365,7 +453,7 @@ export function initDatabase(): void {
     -- feed_batch is which refresh produced the row. Earlier batches stay ON THE
     -- PAGE below the newest one rather than only in the seen-set, so a refresh
     -- adds to the feed instead of replacing it.
-    CREATE TABLE IF NOT EXISTS play_items (
+    CREATE TABLE IF NOT EXISTS tabloid_items (
       id TEXT PRIMARY KEY,
       kind TEXT NOT NULL DEFAULT 'video',
       provider TEXT NOT NULL,
@@ -397,21 +485,21 @@ export function initDatabase(): void {
       reaction_written_to_memory INTEGER NOT NULL DEFAULT 0 CHECK(reaction_written_to_memory IN (0,1))
     );
 
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_play_items_identity
-      ON play_items(kind, provider, external_id);
-    CREATE INDEX IF NOT EXISTS idx_play_items_current
-      ON play_items(in_current_feed, rank);
-    CREATE INDEX IF NOT EXISTS idx_play_items_batch
-      ON play_items(feed_batch DESC, rank ASC);
-    CREATE INDEX IF NOT EXISTS idx_play_items_reaction
-      ON play_items(reaction, reacted_at DESC);
-    CREATE INDEX IF NOT EXISTS idx_play_items_shown
-      ON play_items(shown_at DESC);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_tabloid_items_identity
+      ON tabloid_items(kind, provider, external_id);
+    CREATE INDEX IF NOT EXISTS idx_tabloid_items_current
+      ON tabloid_items(in_current_feed, rank);
+    CREATE INDEX IF NOT EXISTS idx_tabloid_items_batch
+      ON tabloid_items(feed_batch DESC, rank ASC);
+    CREATE INDEX IF NOT EXISTS idx_tabloid_items_reaction
+      ON tabloid_items(reaction, reacted_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_tabloid_items_shown
+      ON tabloid_items(shown_at DESC);
 
     -- Cached artwork, addressed by an OPAQUE id resolved through this table. The
     -- holmes-media:// URL never carries a path, so traversal is impossible by
     -- construction rather than by sanitizing.
-    CREATE TABLE IF NOT EXISTS play_media (
+    CREATE TABLE IF NOT EXISTS tabloid_media (
       id TEXT PRIMARY KEY,
       source_url TEXT NOT NULL UNIQUE,
       file_path TEXT NOT NULL,
@@ -421,13 +509,13 @@ export function initDatabase(): void {
       last_used_at INTEGER NOT NULL
     );
 
-    CREATE INDEX IF NOT EXISTS idx_play_media_used
-      ON play_media(last_used_at);
+    CREATE INDEX IF NOT EXISTS idx_tabloid_media_used
+      ON tabloid_media(last_used_at);
 
     -- Auto-generated captions, keyed by the video rather than the feed row so a
     -- video suggested again months later is not re-downloaded. Kept separate
-    -- from play_items for the same reason: a transcript outlives a suggestion.
-    CREATE TABLE IF NOT EXISTS play_transcripts (
+    -- from tabloid_items for the same reason: a transcript outlives a suggestion.
+    CREATE TABLE IF NOT EXISTS tabloid_transcripts (
       external_id TEXT PRIMARY KEY,
       provider TEXT NOT NULL DEFAULT 'youtube',
       language TEXT NOT NULL DEFAULT 'en',
@@ -439,7 +527,7 @@ export function initDatabase(): void {
 
     -- The fact/bias pass. Keyed on the transcript hash AND the prompt version, so
     -- re-analysing is free until the words or the prompt actually change.
-    CREATE TABLE IF NOT EXISTS play_analyses (
+    CREATE TABLE IF NOT EXISTS tabloid_analyses (
       external_id TEXT PRIMARY KEY,
       provider TEXT NOT NULL DEFAULT 'youtube',
       text_hash TEXT NOT NULL DEFAULT '',
@@ -455,7 +543,7 @@ export function initDatabase(): void {
 
     -- Where you got to. Keyed by the video, not the feed row, so closing a video
     -- and coming back to it weeks later resumes even if the feed has moved on.
-    CREATE TABLE IF NOT EXISTS play_watch_state (
+    CREATE TABLE IF NOT EXISTS tabloid_watch_state (
       external_id TEXT NOT NULL,
       provider TEXT NOT NULL DEFAULT 'youtube',
       position_seconds REAL NOT NULL DEFAULT 0,
@@ -468,7 +556,7 @@ export function initDatabase(): void {
       PRIMARY KEY (provider, external_id)
     );
 
-    CREATE TABLE IF NOT EXISTS play_archives (
+    CREATE TABLE IF NOT EXISTS tabloid_archives (
       external_id TEXT NOT NULL,
       provider TEXT NOT NULL DEFAULT 'youtube',
       status TEXT NOT NULL DEFAULT 'queued',
@@ -482,8 +570,8 @@ export function initDatabase(): void {
       PRIMARY KEY (provider, external_id)
     );
 
-    CREATE INDEX IF NOT EXISTS idx_play_archives_status
-      ON play_archives(status, archived_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_tabloid_archives_status
+      ON tabloid_archives(status, archived_at DESC);
 
     CREATE TABLE IF NOT EXISTS health_records (
       id TEXT PRIMARY KEY,
@@ -782,6 +870,13 @@ export function initDatabase(): void {
       confidence REAL,
       dedupe_key TEXT NOT NULL UNIQUE,
       archived_at TEXT,
+      -- Set when reconciliation judged the entry a data-quality artifact rather
+      -- than a fact about this person's life: a birth year that contradicts the
+      -- recorded one, or one of six re-runs of the same weekly metric. Distinct
+      -- from archived_at, which only means no current context still reports it.
+      -- Excluded rows are KEPT with the reason, and left out of the life record.
+      excluded_at TEXT,
+      excluded_reason TEXT,
       last_seen_at TEXT,
       context_version_id TEXT,
       created_at TEXT NOT NULL,
@@ -845,6 +940,11 @@ export function initDatabase(): void {
       last_seen TEXT,
       score INTEGER NOT NULL DEFAULT 0,
       confidence REAL NOT NULL DEFAULT 0.5,
+      -- How the identity itself was established, and what that method is worth.
+      -- Separate from the confidence column above, which grades the sources'
+      -- claims about the person rather than whether this row is one real person.
+      identity_basis TEXT NOT NULL DEFAULT 'unresolved',
+      identity_confidence REAL NOT NULL DEFAULT 0.45,
       project_ids_json TEXT NOT NULL DEFAULT '[]',
       platforms_json TEXT NOT NULL DEFAULT '[]',
       dossier_short TEXT NOT NULL DEFAULT '',
@@ -1359,6 +1459,27 @@ export function initDatabase(): void {
     db.exec("ALTER TABLE people ADD COLUMN platforms_json TEXT NOT NULL DEFAULT '[]'")
   } catch { /* column already exists */ }
 
+  // Reconciliation verdicts on harvested timeline entries. Nullable with no
+  // default, so every existing row reads as "not excluded" until a rebuild
+  // reconciles it.
+  try {
+    db.exec('ALTER TABLE timeline_events ADD COLUMN excluded_at TEXT')
+  } catch { /* column already exists */ }
+  try {
+    db.exec('ALTER TABLE timeline_events ADD COLUMN excluded_reason TEXT')
+  } catch { /* column already exists */ }
+
+  // How a person's identity was established, and how much that method is worth.
+  // 'unresolved'/0.45 is the honest default for a row written before the
+  // resolver recorded this: it says "one unmatched mention", which is what an
+  // un-backfilled person most often is.
+  try {
+    db.exec("ALTER TABLE people ADD COLUMN identity_basis TEXT NOT NULL DEFAULT 'unresolved'")
+  } catch { /* column already exists */ }
+  try {
+    db.exec('ALTER TABLE people ADD COLUMN identity_confidence REAL NOT NULL DEFAULT 0.45')
+  } catch { /* column already exists */ }
+
   // No CHECK constraint on `kind`, for the reason spelled out on
   // activity_records.source_type: the valid set is enforced by ProjectKind in
   // shared/defaultProjects.ts, and a CHECK here would mean a full table rebuild
@@ -1737,21 +1858,6 @@ export function initDatabase(): void {
   try {
     db.exec("ALTER TABLE remote_devices ADD COLUMN scope TEXT NOT NULL DEFAULT 'owner'")
   } catch { /* column already exists */ }
-
-  // Play feed batches. Rows written before the feed stacked all belong to one
-  // notional first batch, so an existing feed keeps its picks and simply gains
-  // a new batch above them on the next refresh.
-  try {
-    db.exec('ALTER TABLE play_items ADD COLUMN feed_batch INTEGER NOT NULL DEFAULT 1')
-  } catch { /* column already exists */ }
-  try {
-    db.exec('ALTER TABLE play_items ADD COLUMN batch_at INTEGER NOT NULL DEFAULT 0')
-  } catch { /* column already exists */ }
-  // Backfill only rows the ALTER defaulted: batch_at 0 would sort and render as
-  // 1970, and shown_at is when the row was last put in front of the user.
-  try {
-    db.prepare('UPDATE play_items SET batch_at = shown_at WHERE batch_at = 0').run()
-  } catch { /* table does not exist yet on a fresh database */ }
 
   // Backfill parent_id for existing messages: chain by created_at within each conversation
   const convIds = db.prepare('SELECT DISTINCT conversation_id FROM messages WHERE parent_id IS NULL').all() as Array<{ conversation_id: string }>
@@ -3037,21 +3143,21 @@ export function setHomeIdeas(ideas: string[], inputHash: string): void {
   ).run(JSON.stringify(ideas), inputHash, Date.now())
 }
 
-export interface PlayFeedRow {
+export interface TabloidFeedRow {
   generatedAt: number
   inputHash: string
-  intents: PlayIntent[]
+  intents: TabloidIntent[]
   provenance: ContextProvenance | null
   plannerModel: string
   curatorModel: string
   promptVersion: string
-  status: PlayFeedStatus
+  status: TabloidFeedStatus
   lastError: string | null
   quotaDay: string
   searchUnitsUsed: number
 }
 
-const EMPTY_PLAY_FEED_ROW: PlayFeedRow = {
+const EMPTY_PLAY_FEED_ROW: TabloidFeedRow = {
   generatedAt: 0,
   inputHash: '',
   intents: [],
@@ -3076,12 +3182,12 @@ function parseJsonOr<T>(raw: string | null | undefined, fallback: T): T {
   }
 }
 
-export function getPlayFeedRow(): PlayFeedRow {
+export function getTabloidFeedRow(): TabloidFeedRow {
   const row = db
     .prepare(
       `SELECT generated_at, input_hash, intents_json, provenance_json, planner_model, curator_model,
               prompt_version, status, last_error, quota_day, search_units_used
-       FROM play_feed WHERE id = 1`
+       FROM tabloid_feed WHERE id = 1`
     )
     .get() as
     | {
@@ -3102,32 +3208,32 @@ export function getPlayFeedRow(): PlayFeedRow {
   return {
     generatedAt: row.generated_at,
     inputHash: row.input_hash,
-    intents: parseJsonOr<PlayIntent[]>(row.intents_json, []),
+    intents: parseJsonOr<TabloidIntent[]>(row.intents_json, []),
     provenance: parseJsonOr<ContextProvenance | null>(row.provenance_json, null),
     plannerModel: row.planner_model,
     curatorModel: row.curator_model,
     promptVersion: row.prompt_version,
-    status: row.status as PlayFeedStatus,
+    status: row.status as TabloidFeedStatus,
     lastError: row.last_error,
     quotaDay: row.quota_day,
     searchUnitsUsed: row.search_units_used,
   }
 }
 
-export interface PlayFeedSaveInput {
+export interface TabloidFeedSaveInput {
   inputHash: string
-  intents: PlayIntent[]
+  intents: TabloidIntent[]
   provenance: ContextProvenance | null
   plannerModel: string
   curatorModel: string
   promptVersion: string
-  status: PlayFeedStatus
+  status: TabloidFeedStatus
   lastError: string | null
 }
 
-export function savePlayFeed(input: PlayFeedSaveInput): void {
+export function saveTabloidFeed(input: TabloidFeedSaveInput): void {
   db.prepare(
-    `INSERT INTO play_feed (
+    `INSERT INTO tabloid_feed (
        id, generated_at, input_hash, intents_json, provenance_json, planner_model,
        curator_model, prompt_version, status, last_error
      ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -3159,9 +3265,9 @@ export function savePlayFeed(input: PlayFeedSaveInput): void {
  * Refresh that silently returns the same cards reads as broken, so the status
  * outlives the call that produced it.
  */
-export function setPlayFeedStatus(status: PlayFeedStatus, lastError: string | null): void {
+export function setTabloidFeedStatus(status: TabloidFeedStatus, lastError: string | null): void {
   db.prepare(
-    `INSERT INTO play_feed (id, status, last_error) VALUES (1, ?, ?)
+    `INSERT INTO tabloid_feed (id, status, last_error) VALUES (1, ?, ?)
      ON CONFLICT(id) DO UPDATE SET status = excluded.status, last_error = excluded.last_error`
   ).run(status, lastError)
 }
@@ -3170,27 +3276,27 @@ export function setPlayFeedStatus(status: PlayFeedStatus, lastError: string | nu
  * The YouTube quota ledger. Keyed on the Pacific date because that is when
  * YouTube resets, not when the user's own midnight arrives.
  */
-export function getPlaySearchUnits(quotaDay: string): number {
-  const row = db.prepare('SELECT quota_day, search_units_used FROM play_feed WHERE id = 1').get() as
+export function getTabloidSearchUnits(quotaDay: string): number {
+  const row = db.prepare('SELECT quota_day, search_units_used FROM tabloid_feed WHERE id = 1').get() as
     | { quota_day: string; search_units_used: number }
     | undefined
   if (!row || row.quota_day !== quotaDay) return 0
   return row.search_units_used
 }
 
-export function addPlaySearchUnits(quotaDay: string, units: number): void {
+export function addTabloidSearchUnits(quotaDay: string, units: number): void {
   db.prepare(
-    `INSERT INTO play_feed (id, quota_day, search_units_used) VALUES (1, ?, ?)
+    `INSERT INTO tabloid_feed (id, quota_day, search_units_used) VALUES (1, ?, ?)
      ON CONFLICT(id) DO UPDATE SET
        quota_day = excluded.quota_day,
        search_units_used = CASE
-         WHEN play_feed.quota_day = excluded.quota_day THEN play_feed.search_units_used + excluded.search_units_used
+         WHEN tabloid_feed.quota_day = excluded.quota_day THEN tabloid_feed.search_units_used + excluded.search_units_used
          ELSE excluded.search_units_used
        END`
   ).run(quotaDay, units)
 }
 
-interface PlayItemRow {
+interface TabloidItemRow {
   id: string
   kind: string
   provider: string
@@ -3215,11 +3321,11 @@ interface PlayItemRow {
   reacted_at: number | null
 }
 
-function mapPlayItem(row: PlayItemRow): PlayItem {
+function mapTabloidItem(row: TabloidItemRow): TabloidItem {
   return {
     id: row.id,
-    kind: row.kind as PlayItemKind,
-    provider: row.provider as PlayRetrieverId,
+    kind: row.kind as TabloidItemKind,
+    provider: row.provider as TabloidRetrieverId,
     externalId: row.external_id,
     url: row.url,
     title: row.title,
@@ -3232,22 +3338,22 @@ function mapPlayItem(row: PlayItemRow): PlayItem {
     embeddable: row.embeddable === 1,
     rationale: row.rationale,
     intentIds: parseJsonOr<string[]>(row.intent_ids_json, []),
-    sourceRefs: parseJsonOr<PlaySourceRef[]>(row.source_refs_json, []),
+    sourceRefs: parseJsonOr<TabloidSourceRef[]>(row.source_refs_json, []),
     rank: row.rank,
     batch: row.feed_batch,
     batchAt: row.batch_at,
-    reaction: (row.reaction as PlayReaction | null) ?? null,
+    reaction: (row.reaction as TabloidReaction | null) ?? null,
     reactedAt: row.reacted_at,
     shownAt: row.shown_at,
     // Joined on the video's own identity rather than stored on the row: all
     // three outlive the suggestion that introduced them.
-    analysis: getPlayAnalysis(row.external_id),
-    watch: getPlayWatchState(row.external_id),
-    archive: getPlayArchive(row.external_id),
+    analysis: getTabloidAnalysis(row.external_id),
+    watch: getTabloidWatchState(row.external_id),
+    archive: getTabloidArchive(row.external_id),
   }
 }
 
-const PLAY_ITEM_COLUMNS = `id, kind, provider, external_id, url, title, creator, description,
+const TABLOID_ITEM_COLUMNS = `id, kind, provider, external_id, url, title, creator, description,
   published_at, duration_seconds, thumbnail_url, thumbnail_media_id, embeddable, rationale,
   intent_ids_json, source_refs_json, rank, feed_batch, batch_at, shown_at, reaction, reacted_at`
 
@@ -3258,14 +3364,14 @@ const PLAY_ITEM_COLUMNS = `id, kind, provider, external_id, url, title, creator,
  * one rather than replacing it, so the default of one batch is only useful to
  * callers that specifically want "what was just picked".
  */
-export function listPlayItems(
+export function listTabloidItems(
   options: { currentOnly?: boolean; maxBatches?: number } = {}
-): PlayItem[] {
+): TabloidItem[] {
   let where = ''
   const params: unknown[] = []
 
   if (options.maxBatches !== undefined) {
-    where = `WHERE feed_batch > COALESCE((SELECT MAX(feed_batch) FROM play_items), 0) - ?`
+    where = `WHERE feed_batch > COALESCE((SELECT MAX(feed_batch) FROM tabloid_items), 0) - ?`
     params.push(options.maxBatches)
   } else if (options.currentOnly !== false) {
     where = 'WHERE in_current_feed = 1'
@@ -3273,23 +3379,23 @@ export function listPlayItems(
 
   const rows = db
     .prepare(
-      `SELECT ${PLAY_ITEM_COLUMNS} FROM play_items ${where}
+      `SELECT ${TABLOID_ITEM_COLUMNS} FROM tabloid_items ${where}
        ORDER BY feed_batch DESC, rank ASC`
     )
-    .all(...params) as PlayItemRow[]
-  return rows.map(mapPlayItem)
+    .all(...params) as TabloidItemRow[]
+  return rows.map(mapTabloidItem)
 }
 
-export function getPlayItemById(id: string): PlayItem | null {
-  const row = db.prepare(`SELECT ${PLAY_ITEM_COLUMNS} FROM play_items WHERE id = ?`).get(id) as
-    | PlayItemRow
+export function getTabloidItemById(id: string): TabloidItem | null {
+  const row = db.prepare(`SELECT ${TABLOID_ITEM_COLUMNS} FROM tabloid_items WHERE id = ?`).get(id) as
+    | TabloidItemRow
     | undefined
-  return row ? mapPlayItem(row) : null
+  return row ? mapTabloidItem(row) : null
 }
 
-export interface PlayItemInput {
-  kind: PlayItemKind
-  provider: PlayRetrieverId
+export interface TabloidItemInput {
+  kind: TabloidItemKind
+  provider: TabloidRetrieverId
   externalId: string
   url: string
   title: string
@@ -3301,14 +3407,14 @@ export interface PlayItemInput {
   embeddable: boolean
   rationale: string
   intentIds: string[]
-  sourceRefs: PlaySourceRef[]
+  sourceRefs: TabloidSourceRef[]
   memoryFieldKey: string | null
   rank: number
 }
 
 /** The curator's chosen target field for a thumbs-up on this item. */
-export function getPlayItemMemoryFieldKey(id: string): string | null {
-  const row = db.prepare('SELECT memory_field_key FROM play_items WHERE id = ?').get(id) as
+export function getTabloidItemMemoryFieldKey(id: string): string | null {
+  const row = db.prepare('SELECT memory_field_key FROM tabloid_items WHERE id = ?').get(id) as
     | { memory_field_key: string | null }
     | undefined
   return row?.memory_field_key ?? null
@@ -3332,17 +3438,17 @@ export function getPlayItemMemoryFieldKey(id: string): string | null {
  * Returns only the new batch: the analysis pass that follows must review what
  * was just picked, not re-review everything on the page.
  */
-export function replacePlayFeedItems(items: PlayItemInput[]): PlayItem[] {
+export function replaceTabloidFeedItems(items: TabloidItemInput[]): TabloidItem[] {
   const now = Date.now()
   // Derived rather than counted on the feed row: pruning can remove whole
   // batches, and MAX+1 stays correct across that where a stored counter would
   // need reconciling with what is actually left.
   const batch =
-    ((db.prepare('SELECT COALESCE(MAX(feed_batch), 0) AS max FROM play_items').get() as { max: number }).max ?? 0) + 1
+    ((db.prepare('SELECT COALESCE(MAX(feed_batch), 0) AS max FROM tabloid_items').get() as { max: number }).max ?? 0) + 1
 
-  const clear = db.prepare('UPDATE play_items SET in_current_feed = 0 WHERE in_current_feed = 1')
+  const clear = db.prepare('UPDATE tabloid_items SET in_current_feed = 0 WHERE in_current_feed = 1')
   const upsert = db.prepare(
-    `INSERT INTO play_items (
+    `INSERT INTO tabloid_items (
        id, kind, provider, external_id, url, title, creator, description, published_at,
        duration_seconds, thumbnail_url, thumbnail_media_id, embeddable, rationale,
        intent_ids_json, source_refs_json, memory_field_key, rank, feed_batch, batch_at,
@@ -3397,54 +3503,54 @@ export function replacePlayFeedItems(items: PlayItemInput[]): PlayItem[] {
     }
   })()
 
-  return listPlayItems({ maxBatches: 1 })
+  return listTabloidItems({ maxBatches: 1 })
 }
 
-export function setPlayItemThumbnail(id: string, mediaId: string | null): void {
-  db.prepare('UPDATE play_items SET thumbnail_media_id = ? WHERE id = ?').run(mediaId, id)
+export function setTabloidItemThumbnail(id: string, mediaId: string | null): void {
+  db.prepare('UPDATE tabloid_items SET thumbnail_media_id = ? WHERE id = ?').run(mediaId, id)
 }
 
-export function setPlayItemReaction(id: string, reaction: PlayReaction | null): PlayItem | null {
-  db.prepare('UPDATE play_items SET reaction = ?, reacted_at = ? WHERE id = ?').run(
+export function setTabloidItemReaction(id: string, reaction: TabloidReaction | null): TabloidItem | null {
+  db.prepare('UPDATE tabloid_items SET reaction = ?, reacted_at = ? WHERE id = ?').run(
     reaction,
     reaction ? Date.now() : null,
     id
   )
-  return getPlayItemById(id)
+  return getTabloidItemById(id)
 }
 
-export function markPlayReactionWritten(id: string): void {
-  db.prepare('UPDATE play_items SET reaction_written_to_memory = 1 WHERE id = ?').run(id)
+export function markTabloidReactionWritten(id: string): void {
+  db.prepare('UPDATE tabloid_items SET reaction_written_to_memory = 1 WHERE id = ?').run(id)
 }
 
-export function hasPlayReactionBeenWritten(id: string): boolean {
-  const row = db.prepare('SELECT reaction_written_to_memory FROM play_items WHERE id = ?').get(id) as
+export function hasTabloidReactionBeenWritten(id: string): boolean {
+  const row = db.prepare('SELECT reaction_written_to_memory FROM tabloid_items WHERE id = ?').get(id) as
     | { reaction_written_to_memory: number }
     | undefined
   return row?.reaction_written_to_memory === 1
 }
 
 /** The most recent reactions, newest first — what the next plan is told about. */
-export function listPlayReactions(limit: number): PlayItem[] {
+export function listTabloidReactions(limit: number): TabloidItem[] {
   const rows = db
     .prepare(
-      `SELECT ${PLAY_ITEM_COLUMNS} FROM play_items
+      `SELECT ${TABLOID_ITEM_COLUMNS} FROM tabloid_items
        WHERE reaction IS NOT NULL ORDER BY reacted_at DESC LIMIT ?`
     )
-    .all(limit) as PlayItemRow[]
-  return rows.map(mapPlayItem)
+    .all(limit) as TabloidItemRow[]
+  return rows.map(mapTabloidItem)
 }
 
 /**
  * Items the next retrieval must not surface again: everything the user turned
  * down, forever, plus everything already shown inside the recency window.
  *
- * Keys are `kind|provider|externalId`, matching `playItemKey` in the shared leaf.
+ * Keys are `kind|provider|externalId`, matching `tabloidItemKey` in the shared leaf.
  */
-export function listPlaySuppressedKeys(shownSinceMs: number): Set<string> {
+export function listTabloidSuppressedKeys(shownSinceMs: number): Set<string> {
   const rows = db
     .prepare(
-      `SELECT kind, provider, external_id FROM play_items
+      `SELECT kind, provider, external_id FROM tabloid_items
        WHERE reaction = 'down' OR (reaction IS NULL AND shown_at >= ?)`
     )
     .all(shownSinceMs) as Array<{ kind: string; provider: string; external_id: string }>
@@ -3456,9 +3562,9 @@ export function listPlaySuppressedKeys(shownSinceMs: number): Set<string> {
  * moves whenever a reaction is added or changed, which is all the input hash
  * needs — hashing the rows themselves would buy nothing.
  */
-export function getPlayReactionSignature(): { count: number; newestAt: number } {
+export function getTabloidReactionSignature(): { count: number; newestAt: number } {
   const row = db
-    .prepare('SELECT COUNT(*) AS count, COALESCE(MAX(reacted_at), 0) AS newest FROM play_items WHERE reaction IS NOT NULL')
+    .prepare('SELECT COUNT(*) AS count, COALESCE(MAX(reacted_at), 0) AS newest FROM tabloid_items WHERE reaction IS NOT NULL')
     .get() as { count: number; newest: number }
   return { count: row.count, newestAt: row.newest }
 }
@@ -3478,15 +3584,15 @@ export function getPlayReactionSignature(): { count: number; newestAt: number } 
  *
  * Everything else is the tail: old, unreacted, and off the bottom of the page.
  */
-export function prunePlayItems(visibleBatches: number, maxUnreacted: number): void {
+export function pruneTabloidItems(visibleBatches: number, maxUnreacted: number): void {
   db.prepare(
-    `DELETE FROM play_items
+    `DELETE FROM tabloid_items
      WHERE reaction IS NULL
-       AND feed_batch <= COALESCE((SELECT MAX(feed_batch) FROM play_items), 0) - ?
+       AND feed_batch <= COALESCE((SELECT MAX(feed_batch) FROM tabloid_items), 0) - ?
        AND id NOT IN (
-         SELECT id FROM play_items
+         SELECT id FROM tabloid_items
          WHERE reaction IS NULL
-           AND feed_batch <= COALESCE((SELECT MAX(feed_batch) FROM play_items), 0) - ?
+           AND feed_batch <= COALESCE((SELECT MAX(feed_batch) FROM tabloid_items), 0) - ?
          ORDER BY shown_at DESC LIMIT ?
        )`
   ).run(visibleBatches, visibleBatches, maxUnreacted)
@@ -3503,11 +3609,11 @@ export function getYoutubeEventsSignature(): { count: number; newestOccurredAt: 
   return { count: row.count, newestOccurredAt: row.newest }
 }
 
-export function getPlayTranscript(
+export function getTabloidTranscript(
   externalId: string
 ): { language: string; cues: TranscriptCue[]; textHash: string } | null {
   const row = db
-    .prepare('SELECT language, cues_json, text_hash FROM play_transcripts WHERE external_id = ?')
+    .prepare('SELECT language, cues_json, text_hash FROM tabloid_transcripts WHERE external_id = ?')
     .get(externalId) as { language: string; cues_json: string; text_hash: string } | undefined
   if (!row) return null
   return {
@@ -3517,14 +3623,14 @@ export function getPlayTranscript(
   }
 }
 
-export function savePlayTranscript(input: {
+export function saveTabloidTranscript(input: {
   externalId: string
   language: string
   cues: TranscriptCue[]
   textHash: string
 }): void {
   db.prepare(
-    `INSERT INTO play_transcripts (external_id, provider, language, cues_json, text_hash, cue_count, fetched_at)
+    `INSERT INTO tabloid_transcripts (external_id, provider, language, cues_json, text_hash, cue_count, fetched_at)
      VALUES (?, 'youtube', ?, ?, ?, ?, ?)
      ON CONFLICT(external_id) DO UPDATE SET
        language = excluded.language,
@@ -3542,11 +3648,11 @@ export function savePlayTranscript(input: {
   )
 }
 
-export function getPlayAnalysis(externalId: string): (PlayAnalysis & { textHash: string; promptVersion: string }) | null {
+export function getTabloidAnalysis(externalId: string): (TabloidAnalysis & { textHash: string; promptVersion: string }) | null {
   const row = db
     .prepare(
       `SELECT text_hash, prompt_version, status, summary, flags_json, language, analyzed_at, error
-       FROM play_analyses WHERE external_id = ?`
+       FROM tabloid_analyses WHERE external_id = ?`
     )
     .get(externalId) as
     | {
@@ -3562,9 +3668,9 @@ export function getPlayAnalysis(externalId: string): (PlayAnalysis & { textHash:
     | undefined
   if (!row) return null
   return {
-    status: row.status as PlayAnalysisStatus,
+    status: row.status as TabloidAnalysisStatus,
     summary: row.summary,
-    flags: parseJsonOr<PlayFlag[]>(row.flags_json, []),
+    flags: parseJsonOr<TabloidFlag[]>(row.flags_json, []),
     language: row.language,
     analyzedAt: row.analyzed_at,
     error: row.error,
@@ -3573,19 +3679,19 @@ export function getPlayAnalysis(externalId: string): (PlayAnalysis & { textHash:
   }
 }
 
-export function savePlayAnalysis(input: {
+export function saveTabloidAnalysis(input: {
   externalId: string
   textHash: string
   promptVersion: string
-  status: PlayAnalysisStatus
+  status: TabloidAnalysisStatus
   summary: string
-  flags: PlayFlag[]
+  flags: TabloidFlag[]
   language: string | null
   model: string
   error: string | null
 }): void {
   db.prepare(
-    `INSERT INTO play_analyses (
+    `INSERT INTO tabloid_analyses (
        external_id, provider, text_hash, prompt_version, status, summary, flags_json,
        language, model, analyzed_at, error
      ) VALUES (?, 'youtube', ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -3613,11 +3719,11 @@ export function savePlayAnalysis(input: {
   )
 }
 
-export function getPlayWatchState(externalId: string): PlayWatchState | null {
+export function getTabloidWatchState(externalId: string): TabloidWatchState | null {
   const row = db
     .prepare(
       `SELECT position_seconds, furthest_seconds, duration_seconds, completed_at, updated_at
-       FROM play_watch_state WHERE provider = 'youtube' AND external_id = ?`
+       FROM tabloid_watch_state WHERE provider = 'youtube' AND external_id = ?`
     )
     .get(externalId) as
     | {
@@ -3642,22 +3748,22 @@ export function getPlayWatchState(externalId: string): PlayWatchState | null {
  * `furthest_seconds` only ever climbs — scrubbing back to rewatch a section must
  * not undo the progress bar, the same rule `book_reading_state` follows.
  */
-export function savePlayWatchState(input: {
+export function saveTabloidWatchState(input: {
   externalId: string
   positionSeconds: number
   durationSeconds: number | null
   completed: boolean
-}): PlayWatchState {
+}): TabloidWatchState {
   const now = Date.now()
   db.prepare(
-    `INSERT INTO play_watch_state (
+    `INSERT INTO tabloid_watch_state (
        external_id, provider, position_seconds, furthest_seconds, duration_seconds, completed_at, updated_at
      ) VALUES (?, 'youtube', ?, ?, ?, ?, ?)
      ON CONFLICT(provider, external_id) DO UPDATE SET
        position_seconds = excluded.position_seconds,
-       furthest_seconds = MAX(play_watch_state.furthest_seconds, excluded.furthest_seconds),
-       duration_seconds = COALESCE(excluded.duration_seconds, play_watch_state.duration_seconds),
-       completed_at = COALESCE(play_watch_state.completed_at, excluded.completed_at),
+       furthest_seconds = MAX(tabloid_watch_state.furthest_seconds, excluded.furthest_seconds),
+       duration_seconds = COALESCE(excluded.duration_seconds, tabloid_watch_state.duration_seconds),
+       completed_at = COALESCE(tabloid_watch_state.completed_at, excluded.completed_at),
        updated_at = excluded.updated_at`
   ).run(
     input.externalId,
@@ -3667,21 +3773,21 @@ export function savePlayWatchState(input: {
     input.completed ? now : null,
     now
   )
-  return getPlayWatchState(input.externalId)!
+  return getTabloidWatchState(input.externalId)!
 }
 
-export function getPlayArchive(externalId: string): PlayArchive | null {
+export function getTabloidArchive(externalId: string): TabloidArchive | null {
   const row = db
     .prepare(
       `SELECT status, file_path, byte_size, archived_at, error
-       FROM play_archives WHERE provider = 'youtube' AND external_id = ?`
+       FROM tabloid_archives WHERE provider = 'youtube' AND external_id = ?`
     )
     .get(externalId) as
     | { status: string; file_path: string | null; byte_size: number; archived_at: number | null; error: string | null }
     | undefined
   if (!row) return null
   return {
-    status: row.status as PlayArchiveStatus,
+    status: row.status as TabloidArchiveStatus,
     filePath: row.file_path,
     byteSize: row.byte_size,
     archivedAt: row.archived_at,
@@ -3689,9 +3795,9 @@ export function getPlayArchive(externalId: string): PlayArchive | null {
   }
 }
 
-export function savePlayArchive(input: {
+export function saveTabloidArchive(input: {
   externalId: string
-  status: PlayArchiveStatus
+  status: TabloidArchiveStatus
   filePath: string | null
   transcriptPath: string | null
   byteSize: number
@@ -3700,7 +3806,7 @@ export function savePlayArchive(input: {
   error: string | null
 }): void {
   db.prepare(
-    `INSERT INTO play_archives (
+    `INSERT INTO tabloid_archives (
        external_id, provider, status, file_path, transcript_path, byte_size, title, creator, archived_at, error
      ) VALUES (?, 'youtube', ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(provider, external_id) DO UPDATE SET
@@ -3732,7 +3838,7 @@ export function savePlayArchive(input: {
  * text. Exactly the line `booksContext.ts` draws: the reading record reaches the
  * profile, the book's words do not.
  */
-export function listPlayArchiveRecord(limit: number): Array<{
+export function listTabloidArchiveRecord(limit: number): Array<{
   title: string
   creator: string | null
   archivedAt: number | null
@@ -3745,8 +3851,8 @@ export function listPlayArchiveRecord(limit: number): Array<{
       `SELECT a.title, a.creator, a.archived_at AS archivedAt,
               COALESCE(w.furthest_seconds, 0) AS furthestSeconds,
               w.duration_seconds AS durationSeconds, w.completed_at AS completedAt
-       FROM play_archives a
-       LEFT JOIN play_watch_state w
+       FROM tabloid_archives a
+       LEFT JOIN tabloid_watch_state w
          ON w.provider = a.provider AND w.external_id = a.external_id
        WHERE a.status = 'done'
        ORDER BY a.archived_at DESC
@@ -3762,7 +3868,7 @@ export function listPlayArchiveRecord(limit: number): Array<{
   }>
 }
 
-export interface PlayWatchHistory {
+export interface TabloidWatchHistory {
   channels: Array<{ channel: string; count: number; lastWatched: string | null }>
   recentTitles: Array<{ title: string; channel: string | null; occurredAt: string }>
   total: number
@@ -3775,7 +3881,7 @@ export interface PlayWatchHistory {
  * on right now. The raw table is Google Takeout history and can run to six
  * figures, so it is aggregated in SQL rather than read into the process.
  */
-export function summarizeYoutubeWatchHistory(topChannels: number, recentTitles: number): PlayWatchHistory {
+export function summarizeYoutubeWatchHistory(topChannels: number, recentTitles: number): TabloidWatchHistory {
   const channels = db
     .prepare(
       `SELECT channel, COUNT(*) AS count, MAX(occurred_at) AS last_watched
@@ -3814,7 +3920,7 @@ export function summarizeYoutubeWatchHistory(topChannels: number, recentTitles: 
   }
 }
 
-export interface PlayMediaRow {
+export interface TabloidMediaRow {
   id: string
   sourceUrl: string
   filePath: string
@@ -3824,9 +3930,9 @@ export interface PlayMediaRow {
   lastUsedAt: number
 }
 
-export function getPlayMediaById(id: string): PlayMediaRow | null {
+export function getTabloidMediaById(id: string): TabloidMediaRow | null {
   const row = db
-    .prepare('SELECT id, source_url, file_path, content_type, byte_size, fetched_at, last_used_at FROM play_media WHERE id = ?')
+    .prepare('SELECT id, source_url, file_path, content_type, byte_size, fetched_at, last_used_at FROM tabloid_media WHERE id = ?')
     .get(id) as
     | {
         id: string
@@ -3850,10 +3956,10 @@ export function getPlayMediaById(id: string): PlayMediaRow | null {
   }
 }
 
-export function upsertPlayMedia(row: Omit<PlayMediaRow, 'lastUsedAt'>): void {
+export function upsertTabloidMedia(row: Omit<TabloidMediaRow, 'lastUsedAt'>): void {
   const now = Date.now()
   db.prepare(
-    `INSERT INTO play_media (id, source_url, file_path, content_type, byte_size, fetched_at, last_used_at)
+    `INSERT INTO tabloid_media (id, source_url, file_path, content_type, byte_size, fetched_at, last_used_at)
      VALUES (?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(id) DO UPDATE SET
        source_url = excluded.source_url,
@@ -3865,18 +3971,18 @@ export function upsertPlayMedia(row: Omit<PlayMediaRow, 'lastUsedAt'>): void {
   ).run(row.id, row.sourceUrl, row.filePath, row.contentType, row.byteSize, row.fetchedAt, now)
 }
 
-export function touchPlayMedia(id: string): void {
-  db.prepare('UPDATE play_media SET last_used_at = ? WHERE id = ?').run(Date.now(), id)
+export function touchTabloidMedia(id: string): void {
+  db.prepare('UPDATE tabloid_media SET last_used_at = ? WHERE id = ?').run(Date.now(), id)
 }
 
 /** LRU eviction candidates: too old, or past the cache ceiling. */
-export function listPlayMediaForEviction(keep: number, olderThanMs: number): PlayMediaRow[] {
+export function listTabloidMediaForEviction(keep: number, olderThanMs: number): TabloidMediaRow[] {
   const rows = db
     .prepare(
       `SELECT id, source_url, file_path, content_type, byte_size, fetched_at, last_used_at
-       FROM play_media
+       FROM tabloid_media
        WHERE last_used_at < ? OR id NOT IN (
-         SELECT id FROM play_media ORDER BY last_used_at DESC LIMIT ?
+         SELECT id FROM tabloid_media ORDER BY last_used_at DESC LIMIT ?
        )`
     )
     .all(olderThanMs, keep) as Array<{
@@ -3899,9 +4005,9 @@ export function listPlayMediaForEviction(keep: number, olderThanMs: number): Pla
   }))
 }
 
-export function deletePlayMedia(ids: string[]): void {
+export function deleteTabloidMedia(ids: string[]): void {
   if (ids.length === 0) return
-  const remove = db.prepare('DELETE FROM play_media WHERE id = ?')
+  const remove = db.prepare('DELETE FROM tabloid_media WHERE id = ?')
   db.transaction(() => {
     for (const id of ids) remove.run(id)
   })()
@@ -4288,6 +4394,7 @@ function mapMessage(row: {
   tool_name: string | null
   attachments_json?: string | null
   sources_json?: string | null
+  tool_error?: number | null
 }): Message {
   let toolCalls: ToolCall[] | undefined
   if (row.tool_calls_json) {
@@ -4329,6 +4436,7 @@ function mapMessage(row: {
     toolCalls,
     toolCallId: row.tool_call_id ?? undefined,
     toolName: row.tool_name ?? undefined,
+    toolError: row.tool_error ? true : undefined,
     attachments,
     sources,
   }
@@ -6914,6 +7022,8 @@ interface TimelineEventRow {
   precision: string
   confidence: number | null
   archived_at: string | null
+  excluded_at: string | null
+  excluded_reason: string | null
   last_seen_at: string | null
   context_version_id: string | null
   created_at: string
@@ -6936,6 +7046,8 @@ function mapTimelineEvent(row: TimelineEventRow): TimelineEvent {
     precision: row.precision as TimelinePrecision,
     confidence: row.confidence,
     archivedAt: row.archived_at,
+    excludedAt: row.excluded_at,
+    excludedReason: row.excluded_reason,
     lastSeenAt: row.last_seen_at,
     contextVersionId: row.context_version_id,
     createdAt: row.created_at,
@@ -6945,8 +7057,8 @@ function mapTimelineEvent(row: TimelineEventRow): TimelineEvent {
 
 const TIMELINE_SELECT = `SELECT e.id, e.source_type, e.source_ref, e.source_label, e.project_id,
     p.name AS project_name, e.category, e.title, e.detail, e.start_date, e.end_date,
-    e.precision, e.confidence, e.archived_at, e.last_seen_at, e.context_version_id,
-    e.created_at, e.updated_at
+    e.precision, e.confidence, e.archived_at, e.excluded_at, e.excluded_reason,
+    e.last_seen_at, e.context_version_id, e.created_at, e.updated_at
   FROM timeline_events e
   LEFT JOIN projects p ON p.id = e.project_id`
 
@@ -6956,6 +7068,13 @@ export function listTimelineEvents(filter?: TimelineFilter): TimelineEvent[] {
 
   if (filter?.includeArchived === false) {
     clauses.push('e.archived_at IS NULL')
+  }
+  // Excluded entries are opt-in, the reverse of archived ones: an archived event
+  // was true when it was recorded, while an excluded one was judged never to
+  // have belonged to this person's record at all. Only a caller that wants to
+  // show the user what was cleaned up asks for them.
+  if (filter?.includeExcluded !== true) {
+    clauses.push('e.excluded_at IS NULL')
   }
   if (filter?.categories && filter.categories.length > 0) {
     clauses.push(`e.category IN (${filter.categories.map(() => '?').join(',')})`)
@@ -7005,8 +7124,8 @@ export function getTimelineEventById(id: string): TimelineEvent | null {
 }
 
 const TIMELINE_INSERT_SQL = `INSERT OR IGNORE INTO timeline_events
-   (id, source_type, source_ref, source_label, project_id, category, title, detail, start_date, end_date, precision, confidence, dedupe_key, archived_at, last_seen_at, context_version_id, created_at, updated_at)
-   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)`
+   (id, source_type, source_ref, source_label, project_id, category, title, detail, start_date, end_date, precision, confidence, dedupe_key, archived_at, excluded_at, excluded_reason, last_seen_at, context_version_id, created_at, updated_at)
+   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?)`
 
 export function insertTimelineEvent(input: TimelineEventInput & { dedupeKey: string; contextVersionId?: string | null }): TimelineEvent | null {
   const now = new Date().toISOString()
@@ -7027,6 +7146,10 @@ export function insertTimelineEvent(input: TimelineEventInput & { dedupeKey: str
       input.precision,
       input.confidence,
       input.dedupeKey,
+      // A hand-entered event is never excluded: the user asserting it is the
+      // highest authority the timeline has.
+      null,
+      null,
       now,
       input.contextVersionId ?? null,
       now,
@@ -7040,8 +7163,13 @@ export function insertTimelineEvent(input: TimelineEventInput & { dedupeKey: str
 // any current context is NOT deleted: it is marked archived, because the context
 // it came from was true when it was written. Manual rows are never touched.
 export function mergeDerivedTimelineEvents(
-  events: Array<TimelineEventInput & { dedupeKey: string; contextVersionId?: string | null }>
-): { inserted: number; updated: number; archived: number; manualPreserved: number } {
+  events: Array<TimelineEventInput & {
+    dedupeKey: string
+    contextVersionId?: string | null
+    /** Set by reconciliation; null re-admits an entry a previous pass excluded. */
+    excludedReason?: string | null
+  }>
+): { inserted: number; updated: number; archived: number; manualPreserved: number; excluded: number } {
   const now = new Date().toISOString()
   const existing = db
     .prepare('SELECT id, dedupe_key, source_type, archived_at FROM timeline_events')
@@ -7054,7 +7182,8 @@ export function mergeDerivedTimelineEvents(
     `UPDATE timeline_events
      SET source_type = ?, source_ref = ?, source_label = ?, project_id = ?, category = ?, title = ?,
          detail = ?, start_date = ?, end_date = ?, precision = ?, confidence = ?,
-         archived_at = NULL, last_seen_at = ?, context_version_id = ?, updated_at = ?
+         archived_at = NULL, excluded_at = ?, excluded_reason = ?,
+         last_seen_at = ?, context_version_id = ?, updated_at = ?
      WHERE id = ?`
   )
   const archive = db.prepare('UPDATE timeline_events SET archived_at = ?, updated_at = ? WHERE id = ?')
@@ -7062,11 +7191,18 @@ export function mergeDerivedTimelineEvents(
   let inserted = 0
   let updated = 0
   let archived = 0
+  let excluded = 0
   const seen = new Set<string>()
 
   runInTransaction(() => {
     for (const event of events) {
       seen.add(event.dedupeKey)
+      // Re-derived on every rebuild, so an entry that stops conflicting — the
+      // user corrected their birth date, the duplicate re-run went away — comes
+      // straight back rather than staying suppressed forever.
+      const reason = event.excludedReason ?? null
+      const excludedAt = reason ? now : null
+      if (reason) excluded += 1
       const match = byKey.get(event.dedupeKey)
       if (match) {
         if (match.source_type === 'manual') continue
@@ -7082,6 +7218,8 @@ export function mergeDerivedTimelineEvents(
           event.endDate,
           event.precision,
           event.confidence,
+          excludedAt,
+          reason,
           now,
           event.contextVersionId ?? null,
           now,
@@ -7104,6 +7242,8 @@ export function mergeDerivedTimelineEvents(
         event.precision,
         event.confidence,
         event.dedupeKey,
+        excludedAt,
+        reason,
         now,
         event.contextVersionId ?? null,
         now,
@@ -7121,7 +7261,7 @@ export function mergeDerivedTimelineEvents(
     }
   })
 
-  return { inserted, updated, archived, manualPreserved }
+  return { inserted, updated, archived, manualPreserved, excluded }
 }
 
 export function deleteTimelineEvent(id: string): void {
@@ -7141,10 +7281,12 @@ export function getTimelineEventsHash(): string {
               COALESCE(SUM(LENGTH(title) + LENGTH(detail)), 0) AS char_total
        FROM timeline_events
        -- The hash gates the LIFE narrative, so a separate project's events must
-       -- not make it look stale.
-       WHERE project_id IS NULL OR project_id NOT IN (
-         SELECT id FROM projects WHERE context_scope = 'separate'
-       )`
+       -- not make it look stale — and neither must an excluded one, which the
+       -- narrative is never shown.
+       WHERE excluded_at IS NULL
+         AND (project_id IS NULL OR project_id NOT IN (
+           SELECT id FROM projects WHERE context_scope = 'separate'
+         ))`
     )
     .get() as { count: number; first_date: string; last_date: string; char_total: number }
   return `${row.count}:${row.first_date}:${row.last_date}:${row.char_total}`
@@ -7510,6 +7652,8 @@ interface PersonRow {
   last_seen: string | null
   score: number
   confidence: number
+  identity_basis: string
+  identity_confidence: number
   project_ids_json: string
   platforms_json: string
   dossier_short: string
@@ -7541,6 +7685,8 @@ function mapPerson(row: PersonRow, aliases: PersonAlias[] = []): Person {
     lastSeen: row.last_seen,
     score: row.score,
     confidence: row.confidence,
+    identityBasis: row.identity_basis as PersonIdentityBasis,
+    identityConfidence: row.identity_confidence,
     projectIds: parseStoredJson<string[]>(row.project_ids_json, []),
     platforms: parseStoredJson<PersonPlatform[]>(row.platforms_json, []),
     dossierShort: row.dossier_short,
@@ -7734,6 +7880,8 @@ export interface StoredPersonInput {
   lastSeen: string | null
   score: number
   confidence: number
+  identityBasis: PersonIdentityBasis
+  identityConfidence: number
   projectIds: string[]
   platforms: PersonPlatform[]
   aliases: Array<{ alias: string; aliasKey: string; kind: PersonAliasKind; origin: PersonAliasOrigin }>
@@ -7785,14 +7933,16 @@ export function mergeDerivedPeople(
       INSERT INTO people (
         id, person_key, display_name, relation, role, status, is_pseudonym, is_self, seed_source,
         mention_count, source_count, message_count, sent_count, days_active, first_seen, last_seen,
-        score, confidence, project_ids_json, platforms_json, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        score, confidence, identity_basis, identity_confidence,
+        project_ids_json, platforms_json, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
     const updatePerson = db.prepare(`
       UPDATE people SET
         display_name = ?, relation = ?, role = ?, status = ?, is_pseudonym = ?, is_self = ?,
         seed_source = ?, mention_count = ?, source_count = ?, message_count = ?, sent_count = ?,
         days_active = ?, first_seen = ?, last_seen = ?, score = ?, confidence = ?,
+        identity_basis = ?, identity_confidence = ?,
         project_ids_json = ?, platforms_json = ?, archived_at = NULL, updated_at = ?
       WHERE id = ?
     `)
@@ -7812,6 +7962,7 @@ export function mergeDerivedPeople(
           person.isPseudonym ? 1 : 0, person.isSelf ? 1 : 0, person.seedSource,
           person.mentionCount, person.sourceCount, person.messageCount, person.sentCount,
           person.daysActive, person.firstSeen, person.lastSeen, person.score, person.confidence,
+          person.identityBasis, person.identityConfidence,
           projectIds, JSON.stringify(person.platforms), now, id
         )
         updated += 1
@@ -7822,6 +7973,7 @@ export function mergeDerivedPeople(
           person.isPseudonym ? 1 : 0, person.isSelf ? 1 : 0, person.seedSource,
           person.mentionCount, person.sourceCount, person.messageCount, person.sentCount,
           person.daysActive, person.firstSeen, person.lastSeen, person.score, person.confidence,
+          person.identityBasis, person.identityConfidence,
           projectIds, JSON.stringify(person.platforms), now, now
         )
         idByKey.set(person.personKey, id)
@@ -7872,11 +8024,17 @@ export function mergeDerivedPeople(
           mention.sourceLabel, mention.projectId, mention.confidence, mention.resolutionRule, now, id
         )
       } else {
+        const newId = uuidv4()
         insertMention.run(
-          uuidv4(), personId, mention.mentionKey, mention.rawName, mention.nameKey, mention.handleKey,
+          newId, personId, mention.mentionKey, mention.rawName, mention.nameKey, mention.handleKey,
           mention.relation, mention.role, aka, mention.evidence, mention.sourceType, mention.sourceRef,
           mention.sourceLabel, mention.projectId, mention.confidence, mention.resolutionRule, now, now
         )
+        // Registered so a duplicate key later in the same batch takes the update
+        // path. The resolver collapses those, but a UNIQUE violation here aborts
+        // the entire rebuild transaction — far too much to lose over one
+        // repeated line in one generated context.
+        mentionIdByKey.set(mention.mentionKey, newId)
       }
     }
 

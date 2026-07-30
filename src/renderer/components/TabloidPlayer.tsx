@@ -1,8 +1,8 @@
 import { type FC, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
 import { faArrowUpRightFromSquare, faCircleInfo, faXmark } from '@fortawesome/free-solid-svg-icons'
-import { formatClock } from '@shared/playFeed'
-import type { PlayFlag, PlayItem } from '@shared/types'
+import { formatClock } from '@shared/tabloidFeed'
+import type { TabloidFlag, TabloidItem } from '@shared/types'
 
 const EMBED_ORIGIN = 'https://www.youtube-nocookie.com'
 
@@ -15,7 +15,7 @@ const SAVE_INTERVAL_MS = 5000
  */
 const HANDSHAKE_TIMEOUT_MS = 4000
 
-const FLAG_LABEL: Record<PlayFlag['kind'], string> = {
+const FLAG_LABEL: Record<TabloidFlag['kind'], string> = {
   unsupported: 'Unsupported',
   false: 'Incorrect',
   misleading: 'Misleading',
@@ -25,7 +25,7 @@ const FLAG_LABEL: Record<PlayFlag['kind'], string> = {
   speculation: 'Speculation',
 }
 
-const SEVERITY_CLASS: Record<PlayFlag['severity'], string> = {
+const SEVERITY_CLASS: Record<TabloidFlag['severity'], string> = {
   high: 'border-red-400/40 bg-red-400/10 text-red-200/85',
   medium: 'border-amber-400/35 bg-amber-400/10 text-amber-100/85',
   low: 'border-white/15 bg-white/[0.04] text-white/60',
@@ -65,14 +65,14 @@ function embedUrl(videoId: string, startSeconds: number): string {
   return `${EMBED_ORIGIN}/embed/${encodeURIComponent(videoId)}?${params.toString()}`
 }
 
-interface PlayPlayerProps {
-  item: PlayItem
+interface TabloidPlayerProps {
+  item: TabloidItem
   onClose: () => void
   /** Fires when playback position is persisted, so cards can re-render. */
   onProgress: (positionSeconds: number, durationSeconds: number | null) => void
 }
 
-export const PlayPlayer: FC<PlayPlayerProps> = ({ item, onClose, onProgress }) => {
+export const TabloidPlayer: FC<TabloidPlayerProps> = ({ item, onClose, onProgress }) => {
   const frameRef = useRef<HTMLIFrameElement>(null)
   const [currentTime, setCurrentTime] = useState(item.watch?.positionSeconds ?? 0)
   const [duration, setDuration] = useState<number | null>(item.durationSeconds)
@@ -147,7 +147,7 @@ export const PlayPlayer: FC<PlayPlayerProps> = ({ item, onClose, onProgress }) =
     const now = Date.now()
     if (now - lastSavedAt.current < SAVE_INTERVAL_MS) return
     lastSavedAt.current = now
-    void window.electronAPI.play.setProgress(item.id, currentTime, duration)
+    void window.electronAPI.tabloid.setProgress(item.id, currentTime, duration)
   }, [currentTime, duration, item.id, synced])
 
   useEffect(() => {
@@ -155,7 +155,7 @@ export const PlayPlayer: FC<PlayPlayerProps> = ({ item, onClose, onProgress }) =
     const id = item.id
     return () => {
       if (captured.current.time <= 0) return
-      void window.electronAPI.play
+      void window.electronAPI.tabloid
         .setProgress(id, captured.current.time, captured.current.duration)
         .then(() => onProgress(captured.current.time, captured.current.duration))
     }
@@ -178,7 +178,7 @@ export const PlayPlayer: FC<PlayPlayerProps> = ({ item, onClose, onProgress }) =
   // 40:00 for want of a later one.
   const activeFlagId = useMemo(() => {
     if (!synced) return null
-    let active: PlayFlag | null = null
+    let active: TabloidFlag | null = null
     for (const flag of flags) {
       if (flag.startSeconds <= currentTime + 0.5) active = flag
     }

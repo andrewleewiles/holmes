@@ -466,6 +466,83 @@ export function timelineDedupeKey(entry: { startDate: string; title: string }): 
   return `${entry.startDate}|${timelineTitleKey(entry.title)}`
 }
 
+/**
+ * The title with its numbers taken out — what two restatements of one metric
+ * share and what distinguishes them from each other.
+ *
+ * "Screen-on time 50.1 hours" and "Screen-on time 58.8 hours" are the same
+ * sentence about the same window, re-run; `timelineTitleKey` keeps the figures
+ * and so reads them as two facts. Nothing here decides that they ARE
+ * restatements — that needs their date spans to overlap too, since a weekly
+ * metric produces the same shape key every week and those are real, distinct
+ * measurements.
+ */
+export function timelineShapeKey(title: string): string {
+  return timelineTitleKey(title)
+    .replace(/\d+(?:\.\d+)?/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+/** Every number written in a title, in the order they appear. */
+export function timelineTitleNumbers(title: string): number[] {
+  const out: number[] = []
+  for (const match of title.matchAll(/\d+(?:\.\d+)?/g)) {
+    const value = Number(match[0])
+    if (Number.isFinite(value)) out.push(value)
+  }
+  return out
+}
+
+/**
+ * Words that make a birth claim somebody else's. A timeline entry reading
+ * "Mother born 1962" is a real fact about a real person and must survive
+ * reconciliation untouched; only claims about the archive's owner are checked
+ * against the recorded birth date.
+ */
+const THIRD_PARTY_BIRTH_SUBJECT = /\b(mother|mom|mum|father|dad|parent|parents|sister|brother|sibling|son|daughter|child|children|kid|cousin|aunt|uncle|grand(?:mother|father|ma|pa|parent)|niece|nephew|wife|husband|spouse|partner|girlfriend|boyfriend|fiancee?|friend|colleague|neighbou?r|dog|cat|pet|company|business|band|team|project|idea)\b/i
+
+// "born", "birth", "date of birth", "b." as a labelled field — but never
+// "birthday" (an annual event, not a birth) and never "reborn"/"newborn".
+const BIRTH_CLAIM = /(?:\bborn\b|\bbirth\s*(?:date|year)?\b|\bdate\s+of\s+birth\b|\bd\.?o\.?b\.?\b)/i
+const BIRTHDAY_ONLY = /\bbirthdays?\b/i
+
+/**
+ * True when this entry asserts when the archive's OWNER was born.
+ *
+ * Deliberately conservative in both directions: a third-party subject or a
+ * birthday reference disqualifies the entry, because wrongly reconciling a real
+ * fact about a family member is a worse failure than leaving one stray owner
+ * birth year on the record.
+ */
+export function isOwnerBirthClaim(entry: { title: string; detail?: string }): boolean {
+  const title = entry.title ?? ''
+  if (!BIRTH_CLAIM.test(title)) return false
+  if (BIRTHDAY_ONLY.test(title) && !/\bborn\b/i.test(title)) return false
+  if (THIRD_PARTY_BIRTH_SUBJECT.test(title)) return false
+  // A detail naming someone else's birth is the same disqualification: the title
+  // is often just "Born" with the subject spelled out underneath.
+  if (THIRD_PARTY_BIRTH_SUBJECT.test(entry.detail ?? '')) return false
+  return true
+}
+
+/** The last day an entry could refer to, whether it stated an end or not. */
+export function effectiveEndDate(entry: {
+  startDate: string
+  endDate: string | null
+  precision: TimelinePrecision
+}): string {
+  return entry.endDate ?? periodEnd(entry.startDate, entry.precision)
+}
+
+/** True when two entries' date spans share at least one day. */
+export function spansOverlap(
+  a: { startDate: string; endDate: string | null; precision: TimelinePrecision },
+  b: { startDate: string; endDate: string | null; precision: TimelinePrecision }
+): boolean {
+  return a.startDate <= effectiveEndDate(b) && b.startDate <= effectiveEndDate(a)
+}
+
 export function compareTimelineEvents(
   a: { startDate: string; endDate?: string | null; title: string },
   b: { startDate: string; endDate?: string | null; title: string }

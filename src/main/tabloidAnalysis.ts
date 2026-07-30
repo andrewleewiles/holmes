@@ -22,8 +22,8 @@ import {
   parseAnalysisResponse,
   transcriptToPrompt,
   type TranscriptCue,
-} from '../shared/playFeed'
-import type { PlayFlag, ProviderConfig } from '../shared/types'
+} from '../shared/tabloidFeed'
+import type { TabloidFlag, ProviderConfig } from '../shared/types'
 
 export const ANALYSIS_PROMPT_VERSION = 'v1'
 
@@ -93,7 +93,7 @@ function responseFormatFor(config: ProviderConfig): unknown {
   return {
     type: 'json_schema',
     json_schema: {
-      name: 'holmes_play_analysis',
+      name: 'holmes_tabloid_analysis',
       strict: false,
       schema: {
         type: 'object',
@@ -133,7 +133,7 @@ export async function analyzeTranscript(
   model: string,
   input: AnalyzeInput,
   signal?: AbortSignal
-): Promise<{ summary: string; flags: PlayFlag[] }> {
+): Promise<{ summary: string; flags: TabloidFlag[] }> {
   // The transcript is third-party speech, but it is still about to be sent to a
   // provider from this machine, and a video can read out a key or a card number.
   const cues = input.cues.map((cue) => ({ ...cue, text: redactMemoryContent(cue.text) }))

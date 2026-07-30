@@ -28,6 +28,7 @@ interface DashboardProps {
   onOpenHealth: (projectId: string) => void
   onOpenActivity: (projectId: string) => void
   onOpenData: () => void
+  onOpenPeople: () => void
 }
 
 const CARD_CLASS =
@@ -51,6 +52,7 @@ export const Dashboard: FC<DashboardProps> = ({
   onOpenHealth,
   onOpenActivity,
   onOpenData,
+  onOpenPeople,
 }) => {
   const { settings } = useSettings()
   const documentContextEnabled = settings?.documentContextEnabled ?? false
@@ -186,7 +188,7 @@ export const Dashboard: FC<DashboardProps> = ({
 
         {/* Who the profile above is about. */}
         <div className="max-w-5xl w-full mx-auto mb-5">
-          <PeopleWidget enabled={peopleEnabled} />
+          <PeopleWidget enabled={peopleEnabled} onOpenPeople={onOpenPeople} />
         </div>
 
         <div className="max-w-5xl w-full mx-auto grid grid-cols-1 md:grid-cols-2 gap-5">

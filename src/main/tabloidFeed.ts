@@ -1,4 +1,4 @@
-// The Play feed orchestrator: plan -> retrieve -> curate -> store.
+// The Tabloid feed orchestrator: plan -> retrieve -> curate -> store.
 //
 // Shaped like homeIdeas.ts — a prompt version, an input hash that gates the
 // whole run, one in-flight promise shared across windows, and a failure cooldown
@@ -17,52 +17,52 @@ import { canCallProvider } from './providerCredit'
 import {
   collectPlanSources,
   planHasMaterial,
-  planPlayIntents,
+  planTabloidIntents,
   planSourcesFingerprint,
   PLANNER_PROMPT_VERSION,
-  PLAY_INTENT_TARGET,
-  PLAY_MEMORY_FIELD_KEYS,
+  TABLOID_INTENT_TARGET,
+  TABLOID_MEMORY_FIELD_KEYS,
   type PlanSources,
-} from './playPlanner'
-import { curatePlayPicks, CURATOR_PROMPT_VERSION, PLAY_ITEM_TARGET } from './playCurator'
-import { enabledPlayKinds, retrievePlayCandidates, SUPPRESS_DAYS } from './playRetrieval'
-import { cachePlayThumbnails, evictPlayMedia } from './playMedia'
-import { applyReactionToMemory } from './playReactions'
-import { analyzeTranscript, ANALYSIS_PROMPT_VERSION } from './playAnalysis'
+} from './tabloidPlanner'
+import { curateTabloidPicks, CURATOR_PROMPT_VERSION, TABLOID_ITEM_TARGET } from './tabloidCurator'
+import { enabledTabloidKinds, retrieveTabloidCandidates, SUPPRESS_DAYS } from './tabloidRetrieval'
+import { cacheTabloidThumbnails, evictTabloidMedia } from './tabloidMedia'
+import { applyReactionToMemory } from './tabloidReactions'
+import { analyzeTranscript, ANALYSIS_PROMPT_VERSION } from './tabloidAnalysis'
 import { fetchTranscript, TranscriptUnavailableError } from './youtubeTranscript'
 import {
-  beginPlayRun,
-  finishPlayRun,
-  getPlayRunState,
-  isPlayRunActive,
-  reportPlayRunProgress,
-  wasPlayRunStopped,
-  type PlayRun,
-} from './playRuns'
+  beginTabloidRun,
+  finishTabloidRun,
+  getTabloidRunState,
+  isTabloidRunActive,
+  reportTabloidRunProgress,
+  wasTabloidRunStopped,
+  type TabloidRun,
+} from './tabloidRuns'
 import { createIdleWatchdog } from './documentIndexRuns'
-import { archivePlayItem } from './playArchive'
-import { requestPlayRunStop } from './playRuns'
+import { archiveTabloidItem } from './tabloidArchive'
+import { requestTabloidRunStop } from './tabloidRuns'
 import { DAILY_UNIT_BUDGET } from './youtubeSearch'
-import { quotaDayPacific, type PlayCandidate } from '../shared/playFeed'
-import type { PlayItemInput } from './database'
+import { quotaDayPacific, type TabloidCandidate } from '../shared/tabloidFeed'
+import type { TabloidItemInput } from './database'
 import type {
   ContextProvenance,
-  PlayAnalysisStatus,
-  PlayFeed,
-  PlayFeedStatus,
-  PlayIntent,
-  PlayItem,
-  PlayRunProgress,
-  PlayRunState,
-  PlayReaction,
-  PlaySourceRef,
-  PlayWatchState,
+  TabloidAnalysisStatus,
+  TabloidFeed,
+  TabloidFeedStatus,
+  TabloidIntent,
+  TabloidItem,
+  TabloidRunProgress,
+  TabloidRunState,
+  TabloidReaction,
+  TabloidSourceRef,
+  TabloidWatchState,
   ProvenanceEdge,
   ProvenanceSourceKind,
   ProviderConfig,
 } from '../shared/types'
 
-export const PLAY_PROMPT_VERSION = 'v1'
+export const TABLOID_PROMPT_VERSION = 'v1'
 
 /** A failed refresh must not be retried on every visit to the tab. */
 const FAILURE_COOLDOWN_MS = 15 * 60 * 1000
@@ -81,10 +81,10 @@ const MAX_SUPPRESSED_TITLES = 25
 
 function inputHash(sources: PlanSources, enabledKinds: readonly string[]): string {
   const hash = createHash('sha256')
-  hash.update(PLAY_PROMPT_VERSION)
+  hash.update(TABLOID_PROMPT_VERSION)
   hash.update(CURATOR_PROMPT_VERSION)
-  hash.update(String(PLAY_ITEM_TARGET))
-  hash.update(String(PLAY_INTENT_TARGET))
+  hash.update(String(TABLOID_ITEM_TARGET))
+  hash.update(String(TABLOID_INTENT_TARGET))
   hash.update(enabledKinds.join(','))
   hash.update(planSourcesFingerprint(sources))
   return hash.digest('hex')
@@ -93,10 +93,10 @@ function inputHash(sources: PlanSources, enabledKinds: readonly string[]): strin
 /**
  * `ProvenanceEdge.kind` is a fixed vocabulary shared with the context tree, so
  * the feed's richer ref kinds are folded into the nearest one. Nothing is lost:
- * the full kind lives on the `PlaySourceRef` stored with each item, and this
+ * the full kind lives on the `TabloidSourceRef` stored with each item, and this
  * mapping only affects the feed-level record of what the planner was shown.
  */
-function provenanceKindFor(kind: PlaySourceRef['kind']): ProvenanceSourceKind {
+function provenanceKindFor(kind: TabloidSourceRef['kind']): ProvenanceSourceKind {
   if (kind === 'project') return 'project-root'
   if (kind === 'book') return 'book'
   return 'memory'
@@ -104,7 +104,7 @@ function provenanceKindFor(kind: PlaySourceRef['kind']): ProvenanceSourceKind {
 
 function buildFeedProvenance(
   sources: PlanSources,
-  intents: PlayIntent[],
+  intents: TabloidIntent[],
   models: { planner: string; curator: string },
   inputChars: number
 ): ContextProvenance {
@@ -122,7 +122,7 @@ function buildFeedProvenance(
   }))
 
   return {
-    promptVersion: `${PLAY_PROMPT_VERSION}/${PLANNER_PROMPT_VERSION}/${CURATOR_PROMPT_VERSION}`,
+    promptVersion: `${TABLOID_PROMPT_VERSION}/${PLANNER_PROMPT_VERSION}/${CURATOR_PROMPT_VERSION}`,
     model: `${models.planner} + ${models.curator}`,
     generatedAt: new Date().toISOString(),
     sources: edges,
@@ -138,9 +138,9 @@ function buildFeedProvenance(
   }
 }
 
-function toFeed(status?: PlayFeedStatus, lastError?: string | null): PlayFeed {
-  const row = database.getPlayFeedRow()
-  const items = database.listPlayItems({ maxBatches: VISIBLE_BATCHES })
+function toFeed(status?: TabloidFeedStatus, lastError?: string | null): TabloidFeed {
+  const row = database.getTabloidFeedRow()
+  const items = database.listTabloidItems({ maxBatches: VISIBLE_BATCHES })
   const quotaDay = quotaDayPacific(Date.now())
   return {
     items,
@@ -151,7 +151,7 @@ function toFeed(status?: PlayFeedStatus, lastError?: string | null): PlayFeed {
     status: status ?? row.status,
     lastError: lastError === undefined ? row.lastError : lastError,
     provenance: row.provenance,
-    searchUnitsUsedToday: database.getPlaySearchUnits(quotaDay),
+    searchUnitsUsedToday: database.getTabloidSearchUnits(quotaDay),
     searchUnitBudget: DAILY_UNIT_BUDGET,
   }
 }
@@ -160,18 +160,18 @@ function toFeed(status?: PlayFeedStatus, lastError?: string | null): PlayFeed {
  * The stored feed. Never calls a model — the page paints this immediately on
  * mount and only then asks whether a refresh is worth it.
  */
-export function getPlayFeed(): PlayFeed {
+export function getTabloidFeed(): TabloidFeed {
   const feed = toFeed()
   let stale = false
   try {
     const sources = collectPlanSources()
-    const kinds = enabledPlayKinds({ youtubeApiKey: settings.getYoutubeApiKey() })
+    const kinds = enabledTabloidKinds({ youtubeApiKey: settings.getYoutubeApiKey() })
     // Reporting stale with no profile or no key would put the page in a retry
     // loop against a gate that can never open.
     stale =
       kinds.length > 0 &&
       planHasMaterial(sources) &&
-      database.getPlayFeedRow().inputHash !== inputHash(sources, kinds)
+      database.getTabloidFeedRow().inputHash !== inputHash(sources, kinds)
   } catch {
     // A source that will not read is not a reason to claim the feed is stale.
   }
@@ -180,7 +180,7 @@ export function getPlayFeed(): PlayFeed {
 
 // One generation at a time. The page refreshes on mount and two windows (or a
 // remount mid-flight) should share the one run rather than pay for it twice.
-let inFlight: Promise<PlayFeed> | null = null
+let inFlight: Promise<TabloidFeed> | null = null
 let lastFailureAt = 0
 
 /**
@@ -191,12 +191,12 @@ let lastFailureAt = 0
  */
 const BUILD_IDLE_TIMEOUT_MS = 5 * 60 * 1000
 
-export function refreshPlayFeed(
+export function refreshTabloidFeed(
   config: ProviderConfig,
   models: { planner: string; curator: string },
   signal?: AbortSignal,
   force = false
-): Promise<PlayFeed> {
+): Promise<TabloidFeed> {
   if (!inFlight) {
     inFlight = runBuild(config, models, signal, force).finally(() => {
       inFlight = null
@@ -210,8 +210,8 @@ async function runBuild(
   models: { planner: string; curator: string },
   callerSignal: AbortSignal | undefined,
   force: boolean
-): Promise<PlayFeed> {
-  const run = beginPlayRun()
+): Promise<TabloidFeed> {
+  const run = beginTabloidRun()
   const watchdog = createIdleWatchdog(run.controller, BUILD_IDLE_TIMEOUT_MS)
   // A caller-supplied abort (the window closing) folds into the run's own.
   const onCallerAbort = (): void => run.controller.abort()
@@ -219,13 +219,13 @@ async function runBuild(
 
   try {
     const feed = await generate(config, models, run, watchdog, force)
-    finishPlayRun(run)
+    finishTabloidRun(run)
     return feed
   } catch (error) {
     // A build the user stopped is not a failure, and must not be reported as
     // one — it would blame the app for the user's own click.
-    if (wasPlayRunStopped()) {
-      finishPlayRun(run)
+    if (wasTabloidRunStopped()) {
+      finishTabloidRun(run)
       return { ...toFeed('ok', null), stale: true }
     }
     const message = watchdog.fired()
@@ -234,7 +234,7 @@ async function runBuild(
         ? error.message
         : 'The feed could not be built.'
     lastFailureAt = Date.now()
-    finishPlayRun(run, { failed: true, message })
+    finishTabloidRun(run, { failed: true, message })
     return fail('error', message)
   } finally {
     watchdog.cancel()
@@ -242,36 +242,36 @@ async function runBuild(
   }
 }
 
-export { requestPlayRunStop }
+export { requestTabloidRunStop }
 
-export function getPlayRunStateForRenderer(): PlayRunState {
-  return getPlayRunState()
+export function getTabloidRunStateForRenderer(): TabloidRunState {
+  return getTabloidRunState()
 }
 
-export function isPlayBuildActive(): boolean {
-  return isPlayRunActive()
+export function isTabloidBuildActive(): boolean {
+  return isTabloidRunActive()
 }
 
-function fail(status: PlayFeedStatus, message: string | null): PlayFeed {
-  database.setPlayFeedStatus(status, message)
+function fail(status: TabloidFeedStatus, message: string | null): TabloidFeed {
+  database.setTabloidFeedStatus(status, message)
   return { ...toFeed(status, message), stale: false }
 }
 
 async function generate(
   config: ProviderConfig,
   models: { planner: string; curator: string },
-  run: PlayRun,
+  run: TabloidRun,
   watchdog: { ping: () => void; fired: () => boolean },
   force: boolean
-): Promise<PlayFeed> {
+): Promise<TabloidFeed> {
   const signal = run.signal
-  const step = (progress: Omit<PlayRunProgress, 'completed' | 'total'> & { completed?: number; total?: number }): void => {
+  const step = (progress: Omit<TabloidRunProgress, 'completed' | 'total'> & { completed?: number; total?: number }): void => {
     watchdog.ping()
-    reportPlayRunProgress(run, { completed: 0, total: 0, ...progress })
+    reportTabloidRunProgress(run, { completed: 0, total: 0, ...progress })
   }
 
   const youtubeApiKey = settings.getYoutubeApiKey()
-  const enabledKinds = enabledPlayKinds({ youtubeApiKey })
+  const enabledKinds = enabledTabloidKinds({ youtubeApiKey })
 
   // Gate order matters: each of these is a state the page explains, and none of
   // them costs a provider call to discover.
@@ -291,35 +291,35 @@ async function generate(
   }
 
   const hash = inputHash(sources, enabledKinds)
-  const stored = database.getPlayFeedRow()
-  const currentItems = database.listPlayItems()
+  const stored = database.getTabloidFeedRow()
+  const currentItems = database.listTabloidItems()
   const isStale = stored.inputHash !== hash
 
   if (!force && !isStale && currentItems.length > 0) return { ...toFeed('ok', null), stale: false }
   if (!force && Date.now() - lastFailureAt < FAILURE_COOLDOWN_MS) return { ...toFeed(), stale: isStale }
 
   const quotaDay = quotaDayPacific(Date.now())
-  if (database.getPlaySearchUnits(quotaDay) >= DAILY_UNIT_BUDGET) {
+  if (database.getTabloidSearchUnits(quotaDay) >= DAILY_UNIT_BUDGET) {
     return fail('quota', "YouTube's daily quota for this key is used up. It resets at midnight Pacific time.")
   }
 
   try {
     step({ phase: 'planning', detail: 'Reading your profile' })
-    const intents = await planPlayIntents(config, models.planner, sources, enabledKinds, signal)
+    const intents = await planTabloidIntents(config, models.planner, sources, enabledKinds, signal)
     if (intents.length === 0) {
       lastFailureAt = Date.now()
       return fail('error', 'The planner did not return any usable search terms. Try again.')
     }
 
     step({ phase: 'retrieving', total: intents.length, detail: intents[0]?.query ?? '' })
-    const retrieval = await retrievePlayCandidates(intents, {
+    const retrieval = await retrieveTabloidCandidates(intents, {
       youtubeApiKey,
       signal,
     })
 
     if (retrieval.fatal) {
       lastFailureAt = Date.now()
-      const status: PlayFeedStatus =
+      const status: TabloidFeedStatus =
         retrieval.fatal.kind === 'quota' ? 'quota' : retrieval.fatal.kind === 'unknown' ? 'error' : 'no-api-key'
       return fail(status, retrieval.fatal.message)
     }
@@ -336,15 +336,15 @@ async function generate(
     }
 
     step({ phase: 'curating', detail: `${retrieval.candidates.length} results to choose from` })
-    const picks = await curatePlayPicks(
+    const picks = await curateTabloidPicks(
       config,
       models.curator,
       {
         candidates: retrieval.candidates,
         intents,
-        allowedMemoryFieldKeys: PLAY_MEMORY_FIELD_KEYS,
+        allowedMemoryFieldKeys: TABLOID_MEMORY_FIELD_KEYS,
         suppressedTitles: recentlyShownTitles(),
-        target: PLAY_ITEM_TARGET,
+        target: TABLOID_ITEM_TARGET,
       },
       signal
     )
@@ -357,7 +357,7 @@ async function generate(
     const byCandidateId = new Map(retrieval.candidates.map((candidate) => [candidate.candidateId, candidate]))
     const intentsById = new Map(intents.map((intent) => [intent.id, intent]))
 
-    const items: PlayItemInput[] = picks.map((pick, index) => {
+    const items: TabloidItemInput[] = picks.map((pick, index) => {
       const candidate = byCandidateId.get(pick.candidateId)!
       // The curator cited intents; the refs come from those intents, not from
       // anything the model wrote. This is what makes a "because you..." line
@@ -396,21 +396,21 @@ async function generate(
       sources.library.length +
       sources.reactions.length
 
-    database.savePlayFeed({
+    database.saveTabloidFeed({
       inputHash: hash,
       intents,
       provenance: buildFeedProvenance(sources, intents, models, inputChars),
       plannerModel: models.planner,
       curatorModel: models.curator,
-      promptVersion: PLAY_PROMPT_VERSION,
+      promptVersion: TABLOID_PROMPT_VERSION,
       status: 'ok',
       lastError: null,
     })
-    const saved = database.replacePlayFeedItems(items)
+    const saved = database.replaceTabloidFeedItems(items)
 
     // Thumbnails are fetched after the feed is committed, so a slow or dead CDN
     // costs a fallback card rather than the whole refresh.
-    await cachePlayThumbnails(saved)
+    await cacheTabloidThumbnails(saved)
 
     // The transcript pass runs LAST, over the twelve picks rather than the sixty
     // candidates. Analysing the whole candidate pool would cost five times as
@@ -418,8 +418,8 @@ async function generate(
     // video is still shown, with its flags, rather than filtered out before the
     // user gets a say.
     await analyzePicks(config, models.curator, saved, run, step)
-    database.prunePlayItems(VISIBLE_BATCHES, MAX_UNREACTED_HISTORY)
-    evictPlayMedia()
+    database.pruneTabloidItems(VISIBLE_BATCHES, MAX_UNREACTED_HISTORY)
+    evictTabloidMedia()
 
     // The memory writes for any picks the user has already reacted to are
     // handled by the reaction handler, not here: a fresh feed has no reactions.
@@ -447,17 +447,17 @@ async function generate(
 async function analyzePicks(
   config: ProviderConfig,
   model: string,
-  items: PlayItem[],
-  run: PlayRun,
-  step: (progress: { phase: PlayRunProgress['phase']; completed?: number; total?: number; detail: string }) => void
+  items: TabloidItem[],
+  run: TabloidRun,
+  step: (progress: { phase: TabloidRunProgress['phase']; completed?: number; total?: number; detail: string }) => void
 ): Promise<void> {
   const total = items.length
 
   for (const [index, item] of items.entries()) {
     if (run.signal.aborted) return
 
-    const stored = database.getPlayAnalysis(item.externalId)
-    const transcript = database.getPlayTranscript(item.externalId)
+    const stored = database.getTabloidAnalysis(item.externalId)
+    const transcript = database.getTabloidTranscript(item.externalId)
 
     // Already reviewed, by this prompt, against these exact words.
     if (
@@ -482,7 +482,7 @@ async function analyzePicks(
         cues = fetched.cues
         language = fetched.language
         textHash = fetched.hash
-        database.savePlayTranscript({
+        database.saveTabloidTranscript({
           externalId: item.externalId,
           language: fetched.language,
           cues: fetched.cues,
@@ -491,8 +491,8 @@ async function analyzePicks(
       } catch (error) {
         if (run.signal.aborted) return
         const reason = error instanceof TranscriptUnavailableError ? error.reason : 'failed'
-        const status: PlayAnalysisStatus = reason === 'no-captions' ? 'no-transcript' : 'unavailable'
-        database.savePlayAnalysis({
+        const status: TabloidAnalysisStatus = reason === 'no-captions' ? 'no-transcript' : 'unavailable'
+        database.saveTabloidAnalysis({
           externalId: item.externalId,
           textHash: '',
           promptVersion: ANALYSIS_PROMPT_VERSION,
@@ -522,7 +522,7 @@ async function analyzePicks(
         },
         run.signal
       )
-      database.savePlayAnalysis({
+      database.saveTabloidAnalysis({
         externalId: item.externalId,
         textHash,
         promptVersion: ANALYSIS_PROMPT_VERSION,
@@ -535,7 +535,7 @@ async function analyzePicks(
       })
     } catch (error) {
       if (run.signal.aborted) return
-      database.savePlayAnalysis({
+      database.saveTabloidAnalysis({
         externalId: item.externalId,
         textHash,
         promptVersion: ANALYSIS_PROMPT_VERSION,
@@ -550,9 +550,9 @@ async function analyzePicks(
   }
 }
 
-function dedupeRefs(refs: PlaySourceRef[]): PlaySourceRef[] {
+function dedupeRefs(refs: TabloidSourceRef[]): TabloidSourceRef[] {
   const seen = new Set<string>()
-  const out: PlaySourceRef[] = []
+  const out: TabloidSourceRef[] = []
   for (const ref of refs) {
     if (seen.has(ref.ref)) continue
     seen.add(ref.ref)
@@ -564,7 +564,7 @@ function dedupeRefs(refs: PlaySourceRef[]): PlaySourceRef[] {
 function recentlyShownTitles(): string[] {
   const since = Date.now() - SUPPRESS_DAYS * 24 * 60 * 60 * 1000
   return database
-    .listPlayItems({ currentOnly: false })
+    .listTabloidItems({ currentOnly: false })
     .filter((item) => item.reaction === 'down' || item.shownAt >= since)
     .slice(0, MAX_SUPPRESSED_TITLES)
     .map((item) => `${item.title}${item.creator ? ` (${item.creator})` : ''}`)
@@ -576,10 +576,10 @@ function recentlyShownTitles(): string[] {
  * Returns the whole feed rather than the one item so the page re-renders from a
  * single source of truth — including `stale`, which a reaction moves.
  */
-export function reactToPlayItem(id: string, reaction: PlayReaction | null): PlayFeed {
-  const item = database.setPlayItemReaction(id, reaction)
+export function reactToTabloidItem(id: string, reaction: TabloidReaction | null): TabloidFeed {
+  const item = database.setTabloidItemReaction(id, reaction)
   if (item && reaction === 'up') applyReactionToMemory(item)
-  return getPlayFeed()
+  return getTabloidFeed()
 }
 
 /**
@@ -587,18 +587,18 @@ export function reactToPlayItem(id: string, reaction: PlayReaction | null): Play
  * feed: this fires every few seconds while a video plays, and rebuilding twelve
  * cards to move one progress bar would be absurd.
  */
-export function recordPlayProgress(
+export function recordTabloidProgress(
   id: string,
   positionSeconds: number,
   durationSeconds: number | null
-): PlayWatchState | null {
-  const item = database.getPlayItemById(id)
+): TabloidWatchState | null {
+  const item = database.getTabloidItemById(id)
   if (!item) return null
   const duration = durationSeconds ?? item.durationSeconds
   // "Finished" is the last stretch rather than the very end: nobody watches the
   // outro, and a video that never reads as complete never leaves the progress bar.
   const completed = duration !== null && duration > 0 && positionSeconds >= duration * 0.95
-  return database.savePlayWatchState({
+  return database.saveTabloidWatchState({
     externalId: item.externalId,
     positionSeconds,
     durationSeconds: duration,
@@ -606,11 +606,11 @@ export function recordPlayProgress(
   })
 }
 
-export async function archivePlayItemById(id: string): Promise<PlayFeed> {
-  const item = database.getPlayItemById(id)
+export async function archiveTabloidItemById(id: string): Promise<TabloidFeed> {
+  const item = database.getTabloidItemById(id)
   if (!item) throw new Error('That suggestion is no longer in the feed.')
-  await archivePlayItem(item)
-  return getPlayFeed()
+  await archiveTabloidItem(item)
+  return getTabloidFeed()
 }
 
-export type { PlayCandidate }
+export type { TabloidCandidate }

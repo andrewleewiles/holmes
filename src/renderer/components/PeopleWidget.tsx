@@ -1,11 +1,13 @@
 import { type FC, useCallback, useEffect, useState } from 'react'
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
-import { faPause, faPlay, faRefresh, faStop, faUserGroup } from '@fortawesome/free-solid-svg-icons'
-import type { Person, PersonRelation } from '@shared/types'
+import { faArrowRight, faPause, faPlay, faRefresh, faStop, faUserGroup } from '@fortawesome/free-solid-svg-icons'
+import type { Person, PersonIdentityBasis, PersonRelation } from '@shared/types'
 import { usePeopleRunState } from '../hooks/usePeopleRun'
 
 interface PeopleWidgetProps {
   enabled: boolean
+  /** Opens the full roster. The widget only ever shows the top of it. */
+  onOpenPeople: () => void
 }
 
 const RELATION_STYLE: Record<PersonRelation, string> = {
@@ -22,6 +24,14 @@ const RELATION_STYLE: Record<PersonRelation, string> = {
   unknown: 'bg-white/10 text-white/40',
 }
 
+// What each identity basis means in a sentence fragment the user can act on.
+// Shown only for the bases that are a caveat — see the row below.
+const IDENTITY_BASIS_LABEL: Partial<Record<PersonIdentityBasis, string>> = {
+  'name-partial': 'matched on a shortened name only',
+  unresolved: 'one name, nothing to match it to',
+  ambiguous: 'several people fit this name',
+}
+
 const TOP_COUNT = 12
 
 function cleanError(err: unknown): string {
@@ -29,7 +39,7 @@ function cleanError(err: unknown): string {
   return message.replace(/^Error invoking remote method '[^']+': Error: /, '')
 }
 
-export const PeopleWidget: FC<PeopleWidgetProps> = ({ enabled }) => {
+export const PeopleWidget: FC<PeopleWidgetProps> = ({ enabled, onOpenPeople }) => {
   const [people, setPeople] = useState<Person[]>([])
   const [loading, setLoading] = useState(true)
   const [rebuilding, setRebuilding] = useState(false)
@@ -233,6 +243,18 @@ export const PeopleWidget: FC<PeopleWidgetProps> = ({ enabled }) => {
                     {person.firstSeen && person.lastSeen && ` · ${person.firstSeen.slice(0, 4)}–${person.lastSeen.slice(0, 4)}`}
                     {person.aliases.length > 1 && ` · also ${person.aliases.slice(0, 3).map((a) => a.alias).join(', ')}`}
                   </p>
+                  {/* How the identity itself was established, which is a different
+                      question from how much this person's sources are worth. Said
+                      out loud only when it is a caveat: "asserted" on every
+                      Contacts-backed row would be noise. */}
+                  {person.identityConfidence < 0.75 && (
+                    <p
+                      className="text-[10px] text-amber-300/50"
+                      title="Identity resolution is deliberately cautious. A low basis means this row may be the wrong person, or the same person as another row."
+                    >
+                      Identity: {IDENTITY_BASIS_LABEL[person.identityBasis] ?? person.identityBasis}
+                    </p>
+                  )}
                   {/* Where the relationship actually lives, rather than one summed
                       number that cannot tell daily texting from a stray connection. */}
                   {person.platforms.length > 0 && (
@@ -299,9 +321,17 @@ export const PeopleWidget: FC<PeopleWidgetProps> = ({ enabled }) => {
         })}
       </div>
 
-      {people.length > TOP_COUNT && (
-        <p className="mt-2 text-[10px] text-white/25">and {people.length - TOP_COUNT} more</p>
-      )}
+      {/* The widget is a summary by design; everyone recorded — including the
+          long tail below the chat threshold — lives on the People page. */}
+      <button
+        onClick={onOpenPeople}
+        className="mt-3 flex w-full items-center justify-center gap-1.5 rounded-lg bg-white/[0.03] py-2 text-[11px] text-white/45 transition-colors hover:bg-white/[0.06] hover:text-white/75 cursor-pointer"
+      >
+        {people.length > TOP_COUNT
+          ? `All people — ${people.length - TOP_COUNT} more`
+          : 'All people'}
+        <FontAwesomeIcon icon={faArrowRight} className="text-[9px]" />
+      </button>
     </div>
   )
 }

@@ -9,9 +9,9 @@
 // a four-minute feed refresh, so several can run alongside a build and each
 // other, and the sidebar shows them together.
 
-import type { PlayArchiveProgress, PlayRunProgress, PlayRunState } from '../shared/types'
+import type { TabloidArchiveProgress, TabloidRunProgress, TabloidRunState } from '../shared/types'
 
-export interface PlayRun {
+export interface TabloidRun {
   token: number
   origin: 'user'
   controller: AbortController
@@ -20,19 +20,19 @@ export interface PlayRun {
 
 const PROGRESS_NOTIFY_INTERVAL_MS = 400
 
-let active: PlayRun | null = null
-let lastProgress: PlayRunProgress | null = null
+let active: TabloidRun | null = null
+let lastProgress: TabloidRunProgress | null = null
 let statusMessage: string | null = null
 let stopRequested = false
 let nextToken = 1
 let lastNotifyAt = 0
 
-const archives = new Map<string, PlayArchiveProgress>()
+const archives = new Map<string, TabloidArchiveProgress>()
 
-type StateListener = (state: PlayRunState) => void
+type StateListener = (state: TabloidRunState) => void
 const listeners = new Set<StateListener>()
 
-export function subscribePlayRunState(listener: StateListener): () => void {
+export function subscribeTabloidRunState(listener: StateListener): () => void {
   listeners.add(listener)
   return () => {
     listeners.delete(listener)
@@ -45,7 +45,7 @@ function notify(force: boolean): void {
     if (now - lastNotifyAt < PROGRESS_NOTIFY_INTERVAL_MS) return
   }
   lastNotifyAt = Date.now()
-  const state = getPlayRunState()
+  const state = getTabloidRunState()
   for (const listener of [...listeners]) {
     try {
       listener(state)
@@ -55,7 +55,7 @@ function notify(force: boolean): void {
   }
 }
 
-export function getPlayRunState(): PlayRunState {
+export function getTabloidRunState(): TabloidRunState {
   return {
     status: active ? 'building' : 'idle',
     origin: active?.origin ?? null,
@@ -66,11 +66,11 @@ export function getPlayRunState(): PlayRunState {
   }
 }
 
-export function isPlayRunActive(): boolean {
+export function isTabloidRunActive(): boolean {
   return active !== null
 }
 
-export function beginPlayRun(): PlayRun {
+export function beginTabloidRun(): TabloidRun {
   const controller = new AbortController()
   active = { token: nextToken, origin: 'user', controller, signal: controller.signal }
   nextToken += 1
@@ -81,7 +81,7 @@ export function beginPlayRun(): PlayRun {
   return active
 }
 
-export function reportPlayRunProgress(run: PlayRun, progress: PlayRunProgress): void {
+export function reportTabloidRunProgress(run: TabloidRun, progress: TabloidRunProgress): void {
   // A superseded run must not paint over the state of the run that replaced it.
   if (active?.token !== run.token) return
   lastProgress = progress
@@ -93,20 +93,20 @@ export function reportPlayRunProgress(run: PlayRun, progress: PlayRunProgress): 
  * surfaces as "the feed could not be built", which blames the app for the user's
  * own click.
  */
-export function requestPlayRunStop(): PlayRunState {
+export function requestTabloidRunStop(): TabloidRunState {
   if (active) {
     stopRequested = true
     active.controller.abort()
     notify(true)
   }
-  return getPlayRunState()
+  return getTabloidRunState()
 }
 
-export function wasPlayRunStopped(): boolean {
+export function wasTabloidRunStopped(): boolean {
   return stopRequested
 }
 
-export function finishPlayRun(run: PlayRun, outcome?: { failed?: boolean; message?: string | null }): void {
+export function finishTabloidRun(run: TabloidRun, outcome?: { failed?: boolean; message?: string | null }): void {
   if (active?.token !== run.token) return
   active = null
   lastProgress = null
@@ -114,7 +114,7 @@ export function finishPlayRun(run: PlayRun, outcome?: { failed?: boolean; messag
   notify(true)
 }
 
-export function reportPlayArchiveProgress(progress: PlayArchiveProgress): void {
+export function reportTabloidArchiveProgress(progress: TabloidArchiveProgress): void {
   archives.set(progress.itemId, progress)
   // A finished download is announced immediately; a percentage tick is throttled
   // like any other progress.
@@ -122,16 +122,16 @@ export function reportPlayArchiveProgress(progress: PlayArchiveProgress): void {
 }
 
 /** Clears a finished download from the strip once the user has seen it land. */
-export function clearPlayArchiveProgress(itemId: string): void {
+export function clearTabloidArchiveProgress(itemId: string): void {
   if (archives.delete(itemId)) notify(true)
 }
 
-export function isPlayArchiveActive(itemId: string): boolean {
+export function isTabloidArchiveActive(itemId: string): boolean {
   const entry = archives.get(itemId)
   return entry?.status === 'queued' || entry?.status === 'downloading'
 }
 
-export function resetPlayRunsForTests(): void {
+export function resetTabloidRunsForTests(): void {
   active = null
   lastProgress = null
   statusMessage = null

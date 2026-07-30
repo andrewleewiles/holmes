@@ -140,6 +140,41 @@ check('a new canvas opens a blank document, never the Welcome panel', () => {
   assert.match(shell, /api\.holmesNewDocument\(openFileName\.replace/)
 })
 
+check('Font Awesome Pro is used by name only — no licensed data in the repo', () => {
+  const map = JSON.parse(read('./src/design-shell/fa-icon-map.json'))
+  const entries = Object.entries(map)
+  assert.ok(entries.length > 100, `expected a substantial map, got ${entries.length}`)
+  for (const [graphiteIcon, faName] of entries) {
+    // Graphite's registry keys are PascalCase; FA names are kebab-case.
+    assert.match(graphiteIcon, /^[A-Z][A-Za-z0-9]*$/, `${graphiteIcon} is not a Graphite icon key`)
+    assert.match(faName, /^[a-z0-9-]+$/, `${faName} is not a Font Awesome icon name`)
+  }
+  // Glyph data (codepoints, font binaries, path data) must never be committed:
+  // Pro is non-redistributable and Holmes is public AGPL.
+  const raw = read('./src/design-shell/fa-icon-map.json')
+  assert.ok(!/\\[a-f0-9]{4}|<svg|woff/.test(raw), 'the map must hold names only')
+  const build = read('./scripts/build-design-shell.mjs')
+  assert.match(build, /HOLMES_FA_PRO_DIR/)
+  assert.match(build, /Font Awesome Pro/)
+  // Absent pack must degrade to Graphite's own icons rather than failing.
+  assert.match(build, /keeping Graphite's own icons/)
+  assert.match(build, /__HOLMES_FA_ICONS__/)
+})
+
+check('the icon swap is wired through the patched class, not guesswork', () => {
+  const patch = read('./src/design-shell/patches/graphite-holmes-bridge.patch')
+  // IconLabel renders {@html ...} into a row that otherwise carries no icon
+  // identity, so the class is the only per-icon hook.
+  assert.match(patch, /holmes-icon-\$\{icon\}/)
+  const build = read('./scripts/build-design-shell.mjs')
+  assert.match(build, /\.icon-label\.holmes-icon-\$\{graphiteIcon\} > svg \{ display: none; \}/)
+  // Graphite recolours by fill, which does not paint a glyph.
+  assert.match(build, /color: var\(--color-2-mildblack\)/)
+  const shell = read('./src/design-shell/graphite.ts')
+  assert.match(shell, /if \(__HOLMES_FA_ICONS__\)/)
+  assert.match(shell, /fa-icons\.css/)
+})
+
 check('standalone-app chrome is hidden in the injected skin', () => {
   const shell = read('./src/design-shell/graphite.ts')
   // The logo is the only `button` among the menu bar's widgets; the real

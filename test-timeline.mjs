@@ -63,10 +63,10 @@ const {
 } = await import('./src/main/database.ts')
 initDatabase()
 
-const { mergeTimelineEntries, harvestTimelineEntries, parseNarrativeResponse, buildTimelineContext, renderYearContexts, generateYearContexts, getTimelineYearContexts, packYearEvents, clampProse, getTimelineBirthYear } =
+const { mergeTimelineEntries, harvestTimelineEntries, parseNarrativeResponse, buildTimelineContext, renderYearContexts, generateYearContexts, getTimelineYearContexts, packYearEvents, clampProse, getTimelineBirthYear, reconcileBirthClaims, collapseRestatements, reconcileTimelineEntries } =
   await import('./src/main/timeline.ts')
 
-const { yearEventsFingerprint } = await import('./src/shared/timeline.ts')
+const { yearEventsFingerprint, isOwnerBirthClaim, timelineShapeKey, timelineTitleNumbers, spansOverlap, effectiveEndDate } = await import('./src/shared/timeline.ts')
 const { upsertTimelineYearContext, listTimelineYearContexts, pruneTimelineYearContexts, listMemoryFields, updateMemoryField } =
   await import('./src/main/database.ts')
 
@@ -1159,6 +1159,175 @@ check('chat injection is wired into the system-prompt builder and states the pre
   assert.ok(/label: 'Timeline'/.test(ipcSource))
   assert.ok(/settings\.getSettings\(\)\.timelineEnabled/.test(ipcSource))
   assert.ok(/absence of an entry is not evidence/.test(ipcSource))
+})
+
+// --- reconciliation ----------------------------------------------------------
+console.log('reconcileTimelineEntries')
+
+check('recognizes a birth claim about the archive owner and nobody else', () => {
+  assert.ok(isOwnerBirthClaim({ title: 'Born in Austin' }))
+  assert.ok(isOwnerBirthClaim({ title: 'Date of birth recorded on intake form' }))
+  assert.ok(isOwnerBirthClaim({ title: 'DOB listed as 2002-08-18' }))
+  assert.ok(!isOwnerBirthClaim({ title: 'Mother born in Ohio' }), 'a family member keeps their own birth')
+  assert.ok(!isOwnerBirthClaim({ title: 'Born', detail: "Sister's birth certificate" }), 'the subject can sit in the detail')
+  assert.ok(!isOwnerBirthClaim({ title: 'Birthday dinner downtown' }), 'a birthday is an annual event, not a birth')
+  assert.ok(!isOwnerBirthClaim({ title: 'Started a new job' }))
+})
+
+check('excludes birth years that contradict the recorded one, and keeps the right one', () => {
+  const entries = [
+    entry({ title: 'Born', startDate: '1994-01-01', precision: 'year' }),
+    entry({ title: 'Born', startDate: '1998-01-01', precision: 'year' }),
+    entry({ title: 'Born', startDate: '2002-08-18' }),
+    entry({ title: 'Moved to Austin', startDate: '1998-06-01', precision: 'month' }),
+  ]
+  const result = reconcileBirthClaims(entries, 2002)
+  assert.equal(result.excluded, 2)
+  assert.deepEqual(result.yearsClaimed, [1994, 1998, 2002])
+  assert.equal(entries[0].excludedReason?.includes('1994'), true)
+  assert.equal(entries[1].excludedReason?.includes('1998'), true)
+  assert.equal(entries[2].excludedReason, undefined, 'the recorded year survives')
+  assert.equal(entries[3].excludedReason, undefined, 'an unrelated 1998 event is untouched')
+  assert.equal(result.exclusion.kind, 'birth-year-conflict')
+  assert.ok(result.exclusion.detail.includes('2002'), 'the reason names the year it reconciled against')
+})
+
+check('with no recorded birth date it reports the conflict rather than guessing a winner', () => {
+  const entries = [
+    entry({ title: 'Born', startDate: '1994-01-01', precision: 'year' }),
+    entry({ title: 'Born', startDate: '2002-08-18' }),
+  ]
+  const result = reconcileBirthClaims(entries, null)
+  assert.equal(result.excluded, 0)
+  assert.equal(entries[0].excludedReason, undefined)
+  assert.equal(entries[1].excludedReason, undefined)
+  assert.ok(result.exclusion, 'the conflict is still surfaced')
+  assert.ok(/birth_date/.test(result.exclusion.detail), 'and it says how to settle it')
+})
+
+check('a single birth claim with no recorded date is not a conflict', () => {
+  const result = reconcileBirthClaims([entry({ title: 'Born', startDate: '2002-08-18' })], null)
+  assert.equal(result.exclusion, null)
+})
+
+check('the shape key is the title without its figures', () => {
+  assert.equal(timelineShapeKey('Screen-on time 50.1 hours'), timelineShapeKey('Screen-on time 58.8 hours'))
+  assert.notEqual(timelineShapeKey('Screen-on time 50.1 hours'), timelineShapeKey('Steps walked 50.1 thousand'))
+  assert.deepEqual(timelineTitleNumbers('Screen-on time 50.1 hours over 3 days'), [50.1, 3])
+  assert.deepEqual(timelineTitleNumbers('No figures here'), [])
+})
+
+check('a span with no stated end still covers the period its precision implies', () => {
+  assert.equal(effectiveEndDate({ startDate: '2024-07-24', endDate: null, precision: 'day' }), '2024-07-24')
+  assert.equal(effectiveEndDate({ startDate: '2024-07-01', endDate: null, precision: 'month' }), '2024-07-31')
+  assert.ok(spansOverlap(
+    { startDate: '2024-07-24', endDate: '2024-07-27', precision: 'day' },
+    { startDate: '2024-07-26', endDate: null, precision: 'day' }
+  ))
+  assert.ok(!spansOverlap(
+    { startDate: '2024-07-24', endDate: '2024-07-26', precision: 'day' },
+    { startDate: '2024-07-27', endDate: '2024-07-29', precision: 'day' }
+  ))
+})
+
+check('collapses six re-runs of one week of screen time into the widest pass', () => {
+  const entries = [
+    entry({ category: 'technology', title: 'Screen-on time 50.1 hours', startDate: '2024-07-24', endDate: '2024-07-26' }),
+    entry({ category: 'technology', title: 'Screen-on time 52.5 hours', startDate: '2024-07-24', endDate: '2024-07-26' }),
+    entry({ category: 'technology', title: 'Screen-on time 55.3 hours', startDate: '2024-07-24', endDate: '2024-07-27' }),
+    entry({ category: 'technology', title: 'Screen-on time 57.5 hours', startDate: '2024-07-24', endDate: '2024-07-27' }),
+    entry({ category: 'technology', title: 'Screen-on time 58.4 hours', startDate: '2024-07-25', endDate: '2024-07-27' }),
+    entry({ category: 'technology', title: 'Screen-on time 58.8 hours', startDate: '2024-07-24', endDate: '2024-07-27' }),
+  ]
+  const result = collapseRestatements(entries)
+  assert.equal(result.excluded, 5)
+  const kept = entries.filter((item) => !item.excludedReason)
+  assert.equal(kept.length, 1)
+  assert.equal(kept[0].endDate, '2024-07-27', 'the survivor is a pass covering the whole window')
+  assert.ok(/Collapsed 5 overlapping restatements/.test(kept[0].detail))
+  assert.ok(/50\.1 to 58\.8/.test(kept[0].detail), 'the range the others reported is preserved')
+  assert.equal(result.exclusion.kind, 'restatement')
+})
+
+check('a weekly metric measured week after week is not a restatement', () => {
+  const entries = [
+    entry({ category: 'technology', title: 'Weekly screen-on time 41.2 hours', startDate: '2024-07-01', endDate: '2024-07-07' }),
+    entry({ category: 'technology', title: 'Weekly screen-on time 43.0 hours', startDate: '2024-07-08', endDate: '2024-07-14' }),
+    entry({ category: 'technology', title: 'Weekly screen-on time 39.6 hours', startDate: '2024-07-15', endDate: '2024-07-21' }),
+  ]
+  const result = collapseRestatements(entries)
+  assert.equal(result.excluded, 0, 'non-overlapping spans are distinct measurements')
+  assert.equal(entries.filter((item) => item.excludedReason).length, 0)
+})
+
+check('a title carrying no figure is never treated as a measurement', () => {
+  const entries = [
+    entry({ category: 'work', title: 'Started contracting for the agency', startDate: '2024-07-24', endDate: '2024-07-27' }),
+    entry({ category: 'work', title: 'Started contracting for the agency again', startDate: '2024-07-25', endDate: '2024-07-27' }),
+  ]
+  assert.equal(collapseRestatements(entries).excluded, 0)
+})
+
+check('an entry already excluded as a wrong birth year is never chosen as a survivor', () => {
+  const entries = [
+    entry({ title: 'Born 1994 per intake form', startDate: '1994-01-01', endDate: '1994-12-31', precision: 'year' }),
+    entry({ title: 'Born 2002 per intake form', startDate: '2002-01-01', endDate: '2002-12-31', precision: 'year' }),
+  ]
+  const result = reconcileTimelineEntries(entries, 2002)
+  assert.equal(result.excluded, 1)
+  assert.ok(/1994/.test(entries[0].excludedReason))
+  assert.equal(entries[1].excludedReason, undefined)
+  assert.equal(result.exclusions.length, 1)
+})
+
+check('an excluded entry is stored with its reason and left out of the record', () => {
+  const project = createProject({ name: 'Reconcile Test Project', icon: 'folder', color: '#ffffff', path: null })
+  const good = entry({
+    sourceRef: 'reconcile:good', projectId: project.id,
+    title: 'Reconciliation keeper', startDate: '2011-05-05',
+  })
+  const bad = entry({
+    sourceRef: 'reconcile:bad', projectId: project.id,
+    title: 'Reconciliation reject', startDate: '2011-06-06',
+    excludedReason: 'Restatement of "Reconciliation keeper" over the same period',
+  })
+  const stats = mergeDerivedTimelineEvents([good, bad])
+  assert.equal(stats.excluded, 1, 'the write reports what it set aside')
+
+  const visible = listTimelineEvents({ projectIds: [project.id] }).map((event) => event.title)
+  assert.ok(visible.includes('Reconciliation keeper'))
+  assert.ok(!visible.includes('Reconciliation reject'), 'excluded entries are out of the record by default')
+
+  const all = listTimelineEvents({ projectIds: [project.id], includeExcluded: true })
+  const rejected = all.find((event) => event.title === 'Reconciliation reject')
+  assert.ok(rejected, 'but the row is kept, not deleted')
+  assert.ok(rejected.excludedAt, 'and stamped')
+  assert.ok(/Restatement/.test(rejected.excludedReason), 'with the reason a user can read')
+
+  // Re-admitted the moment reconciliation stops objecting.
+  mergeDerivedTimelineEvents([good, { ...bad, excludedReason: null }])
+  const readmitted = listTimelineEvents({ projectIds: [project.id] }).map((event) => event.title)
+  assert.ok(readmitted.includes('Reconciliation reject'), 'exclusion is re-derived, never sticky')
+  for (const event of listTimelineEvents({ projectIds: [project.id], includeExcluded: true })) {
+    deleteTimelineEvent(event.id)
+  }
+})
+
+check('the birth year anchors the year and narrative prompts, and their cache keys', () => {
+  const source = fs.readFileSync(new URL('./src/main/timeline.ts', import.meta.url), 'utf8')
+  assert.ok(/function birthYearPreamble/.test(source))
+  assert.ok(/never state a different birth year/i.test(source), 'the year prompt forbids re-deriving one')
+  assert.ok(/getTimelineBirthYear\(\) \?\? 'unknown'/.test(source), 'the anchor is part of both cache keys')
+  assert.ok(/birthYear \?\? 'unknown'/.test(source))
+})
+
+check('the rebuild result carries the exclusions up to the UI', () => {
+  const timelineSource = fs.readFileSync(new URL('./src/main/timeline.ts', import.meta.url), 'utf8')
+  const pageSource = fs.readFileSync(new URL('./src/renderer/components/TimelinePage.tsx', import.meta.url), 'utf8')
+  assert.ok(/entriesExcluded: reconciled\.excluded/.test(timelineSource))
+  assert.ok(/exclusions: reconciled\.exclusions/.test(timelineSource))
+  assert.ok(/result\.entriesExcluded > 0/.test(pageSource), 'a cleanup is never silent')
+  assert.ok(/result\.exclusions\.map/.test(pageSource), 'and it says on what grounds')
 })
 
 // --- narrative parsing -------------------------------------------------------

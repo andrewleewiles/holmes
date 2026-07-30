@@ -30,6 +30,37 @@ clone; never hand-edit the clone without re-deriving the patch.
      the v1 shell; it is the hook for saving the native `.graphite`/`.gdd`
      format later (the bytes arrive as `TriggerSaveDocument`).
 
+3. **`frontend/src/components/widgets/labels/IconLabel.svelte` — icon names in
+   the DOM.** The component renders `{@html ICON_SVG_STRINGS[icon]}` inside a
+   row classed only `icon-label size-16`, so nothing downstream can tell one
+   icon from another. The patch adds `holmes-icon-${icon}` to that class list,
+   which is what lets the Font Awesome stylesheet target icons individually.
+   One line; no behaviour change.
+
+## Font Awesome Pro icons (build-time, licensed copy, never in this repo)
+
+Where an equivalent exists, Graphite's icon is replaced by a Font Awesome Pro
+glyph: the SVG is hidden and a `::before` glyph takes its place.
+`src/design-shell/fa-icon-map.json` (147 entries) is the tracked side and holds
+**only name→name pairs** — no glyph data, no codepoints. At build time
+`scripts/build-design-shell.mjs` reads a licensed Pro copy
+(`HOLMES_FA_PRO_DIR`, or a known local path), resolves each name to its glyph,
+copies `fa-solid-900.woff2` into the bundle and generates `holmes/fa-icons.css`
+there. Both outputs live only in the gitignored bundle.
+
+**Font Awesome Pro is commercially licensed and must not be redistributed.** A
+clone without a licensed copy simply keeps Graphite's icons — the build says so
+and carries on. Note that a *packaged* Holmes build made on a machine with the
+pack will contain the Pro webfont, which that licence governs.
+
+The remaining ~75 Graphite icons stay as they are: they are vector-editor
+concepts Font Awesome has never drawn (boolean operations, stroke caps, joins
+and alignments, handle visibility, render modes, node types, gradient
+reversal). Graphite recolours icons per state by overriding `fill`, which
+paints an SVG but not a glyph, so the generated stylesheet mirrors those
+states in `color`; a state missed there costs contrast on one icon, never a
+missing icon.
+
 ## Standalone-app chrome, hidden in CSS (not patched)
 
 The Graphite logo (the one `button` in the menu bar — every real menu beside

@@ -19,6 +19,7 @@ import { HealthPage } from './components/HealthPage'
 import { ActivityPage } from './components/ActivityPage'
 import { DataPage } from './components/DataPage'
 import { TimelinePage } from './components/TimelinePage'
+import { PeoplePage } from './components/PeoplePage'
 import { WorkPage } from './components/WorkPage'
 import { WorkspaceView } from './components/WorkspaceView'
 import type { EditorFrameHandle } from './components/WorkspaceView'
@@ -27,7 +28,7 @@ import type { PaperState } from './components/OfficeEditorFrame'
 import { isWorkDocumentKind, type WorkDocumentKind } from '@shared/workDocuments'
 import { getWorkRole } from '@shared/workRoles'
 import { LibraryPage } from './components/LibraryPage'
-import { PlayPage } from './components/PlayPage'
+import { TabloidPage } from './components/TabloidPage'
 import { CallHistoryPage } from './components/CallHistoryPage'
 import { ChatHistoryPage } from './components/ChatHistoryPage'
 import { SettingsPanel } from './components/SettingsPanel'
@@ -103,7 +104,7 @@ const App: FC = () => {
   const [showMemory, setShowMemory] = useState(false)
   const [showTimeline, setShowTimeline] = useState(false)
   const [showLibrary, setShowLibrary] = useState(false)
-  const [showPlay, setShowPlay] = useState(false)
+  const [showTabloid, setShowTabloid] = useState(false)
   const [showWork, setShowWork] = useState(false)
   // Which "New …" the sidebar asked for; null means Work was opened on its own.
   const [workKind, setWorkKind] = useState<WorkDocumentKind | null>(null)
@@ -134,6 +135,7 @@ const App: FC = () => {
   // destroys something; tearing it down otherwise just frees a wasm heap.
   const workBusy = isStreaming || workSaving || workDirty
   const [showCallHistory, setShowCallHistory] = useState(false)
+  const [showPeople, setShowPeople] = useState(false)
   const [showHistory, setShowHistory] = useState(false)
   // A draft opened with its settings already chosen (Mental Coach) rather than
   // from the home screen. Only meaningful while there is no conversation yet:
@@ -318,9 +320,10 @@ const App: FC = () => {
     setShowMemory(false)
     setShowTimeline(false)
     setShowLibrary(false)
-    setShowPlay(false)
+    setShowTabloid(false)
     setShowWork(false)
     setShowCallHistory(false)
+    setShowPeople(false)
     setShowHistory(false)
     setShowProjects(true)
   }
@@ -337,9 +340,10 @@ const App: FC = () => {
     setShowMemory(false)
     setShowTimeline(false)
     setShowLibrary(false)
-    setShowPlay(false)
+    setShowTabloid(false)
     setShowWork(false)
     setShowCallHistory(false)
+    setShowPeople(false)
     setShowHistory(false)
     setShowDashboard(true)
   }
@@ -357,9 +361,10 @@ const App: FC = () => {
     setShowMemory(false)
     setShowTimeline(false)
     setShowLibrary(false)
-    setShowPlay(false)
+    setShowTabloid(false)
     setShowWork(false)
     setShowCallHistory(false)
+    setShowPeople(false)
     setShowHistory(false)
     closeSettings()
     useChatStore.setState({
@@ -385,9 +390,10 @@ const App: FC = () => {
     setShowMemory(false)
     setShowTimeline(false)
     setShowLibrary(false)
-    setShowPlay(false)
+    setShowTabloid(false)
     setShowWork(false)
     setShowCallHistory(false)
+    setShowPeople(false)
     setShowHistory(false)
     setShowProductSearch(true)
   }
@@ -404,9 +410,10 @@ const App: FC = () => {
     setShowMemory(false)
     setShowTimeline(false)
     setShowLibrary(false)
-    setShowPlay(false)
+    setShowTabloid(false)
     setShowWork(false)
     setShowCallHistory(false)
+    setShowPeople(false)
     setShowHistory(false)
     if (initialQuery) setWebSearchPendingQuery(initialQuery)
     setShowWebSearch(true)
@@ -424,9 +431,10 @@ const App: FC = () => {
     setShowMemory(false)
     setShowTimeline(false)
     setShowLibrary(false)
-    setShowPlay(false)
+    setShowTabloid(false)
     setShowWork(false)
     setShowCallHistory(false)
+    setShowPeople(false)
     setShowHistory(false)
     setShowRecall(true)
   }
@@ -443,9 +451,10 @@ const App: FC = () => {
     setShowWebSearch(false)
     setShowTimeline(false)
     setShowLibrary(false)
-    setShowPlay(false)
+    setShowTabloid(false)
     setShowWork(false)
     setShowCallHistory(false)
+    setShowPeople(false)
     setShowHistory(false)
     setShowMemory(true)
   }
@@ -462,11 +471,34 @@ const App: FC = () => {
     setShowWebSearch(false)
     setShowMemory(false)
     setShowLibrary(false)
-    setShowPlay(false)
+    setShowTabloid(false)
+    setShowWork(false)
+    setShowCallHistory(false)
+    setShowPeople(false)
+    setShowHistory(false)
+    setShowTimeline(true)
+  }
+
+  // Reached from the People widget on the Life Dashboard, which shows only the
+  // top of the roster.
+  const handlePeople = () => {
+    setPsychologyProjectId(null)
+    setHealthProjectId(null)
+    setActivityProjectId(null)
+    setShowData(false)
+    setShowRecall(false)
+    setShowProjects(false)
+    setShowDashboard(false)
+    setShowProductSearch(false)
+    setShowWebSearch(false)
+    setShowMemory(false)
+    setShowTimeline(false)
+    setShowLibrary(false)
+    setShowTabloid(false)
     setShowWork(false)
     setShowCallHistory(false)
     setShowHistory(false)
-    setShowTimeline(true)
+    setShowPeople(true)
   }
 
   // A kind means the sidebar asked for a new one; null just opens the page.
@@ -483,9 +515,10 @@ const App: FC = () => {
     setShowMemory(false)
     setShowTimeline(false)
     setShowLibrary(false)
-    setShowPlay(false)
+    setShowTabloid(false)
     setShowWork(false)
     setShowCallHistory(false)
+    setShowPeople(false)
     setShowHistory(false)
     setWorkKind(kind)
     setWorkTool(null)
@@ -564,13 +597,14 @@ const App: FC = () => {
     setShowMemory(false)
     setShowTimeline(false)
     setShowCallHistory(false)
+    setShowPeople(false)
     setShowHistory(false)
     setShowWork(false)
-    setShowPlay(false)
+    setShowTabloid(false)
     setShowLibrary(true)
   }
 
-  const handlePlay = () => {
+  const handleTabloid = () => {
     setPsychologyProjectId(null)
     setHealthProjectId(null)
     setActivityProjectId(null)
@@ -583,10 +617,11 @@ const App: FC = () => {
     setShowMemory(false)
     setShowTimeline(false)
     setShowCallHistory(false)
+    setShowPeople(false)
     setShowHistory(false)
     setShowWork(false)
     setShowLibrary(false)
-    setShowPlay(true)
+    setShowTabloid(true)
   }
 
   const handleCallHistory = () => {
@@ -602,9 +637,10 @@ const App: FC = () => {
     setShowMemory(false)
     setShowTimeline(false)
     setShowLibrary(false)
-    setShowPlay(false)
+    setShowTabloid(false)
     setShowWork(false)
     setShowHistory(false)
+    setShowPeople(false)
     setShowCallHistory(true)
   }
 
@@ -621,9 +657,10 @@ const App: FC = () => {
     setShowMemory(false)
     setShowTimeline(false)
     setShowLibrary(false)
-    setShowPlay(false)
+    setShowTabloid(false)
     setShowWork(false)
     setShowCallHistory(false)
+    setShowPeople(false)
     setShowHistory(true)
   }
 
@@ -649,9 +686,10 @@ const App: FC = () => {
     setShowMemory(false)
     setShowTimeline(false)
     setShowLibrary(false)
-    setShowPlay(false)
+    setShowTabloid(false)
     setShowWork(false)
     setShowCallHistory(false)
+    setShowPeople(false)
     setShowHistory(false)
     startDraftConversation()
     setShowNewConversation(true)
@@ -680,9 +718,10 @@ const App: FC = () => {
     setShowMemory(false)
     setShowTimeline(false)
     setShowLibrary(false)
-    setShowPlay(false)
+    setShowTabloid(false)
     setShowWork(false)
     setShowCallHistory(false)
+    setShowPeople(false)
     setShowHistory(false)
     setHealthProjectId(project.id)
   }
@@ -705,9 +744,10 @@ const App: FC = () => {
     setShowMemory(false)
     setShowTimeline(false)
     setShowLibrary(false)
-    setShowPlay(false)
+    setShowTabloid(false)
     setShowWork(false)
     setShowCallHistory(false)
+    setShowPeople(false)
     setShowHistory(false)
     setActivityProjectId(project.id)
   }
@@ -725,9 +765,10 @@ const App: FC = () => {
     setShowMemory(false)
     setShowTimeline(false)
     setShowLibrary(false)
-    setShowPlay(false)
+    setShowTabloid(false)
     setShowWork(false)
     setShowCallHistory(false)
+    setShowPeople(false)
     setShowHistory(false)
     setDataFocusProjectId(null)
     setShowData(true)
@@ -751,9 +792,10 @@ const App: FC = () => {
     setShowMemory(false)
     setShowTimeline(false)
     setShowLibrary(false)
-    setShowPlay(false)
+    setShowTabloid(false)
     setShowWork(false)
     setShowCallHistory(false)
+    setShowPeople(false)
     setShowHistory(false)
     // A plain new chat is the home screen, whatever the last draft was.
     setShowNewConversation(false)
@@ -773,9 +815,10 @@ const App: FC = () => {
     setShowMemory(false)
     setShowTimeline(false)
     setShowLibrary(false)
-    setShowPlay(false)
+    setShowTabloid(false)
     setShowWork(false)
     setShowCallHistory(false)
+    setShowPeople(false)
     setShowHistory(false)
     selectConversation(id)
   }
@@ -876,9 +919,10 @@ const App: FC = () => {
     setShowMemory(false)
     setShowTimeline(false)
     setShowLibrary(false)
-    setShowPlay(false)
+    setShowTabloid(false)
     setShowWork(false)
     setShowCallHistory(false)
+    setShowPeople(false)
     setShowHistory(false)
     await useChatStore.getState().sendMessage(content, model, effort)
   }
@@ -919,9 +963,10 @@ const App: FC = () => {
     setShowMemory(false)
     setShowTimeline(false)
     setShowLibrary(false)
-    setShowPlay(false)
+    setShowTabloid(false)
     setShowWork(false)
     setShowCallHistory(false)
+    setShowPeople(false)
     setShowHistory(false)
     await useChatStore.getState().sendMessage(scope.seedPrompt, model, selectedEffort)
   }
@@ -948,9 +993,10 @@ const App: FC = () => {
     setShowMemory(false)
     setShowTimeline(false)
     setShowLibrary(false)
-    setShowPlay(false)
+    setShowTabloid(false)
     setShowWork(false)
     setShowCallHistory(false)
+    setShowPeople(false)
     setShowHistory(false)
     await useChatStore.getState().sendMessage(content, model, effort)
   }
@@ -977,9 +1023,10 @@ const App: FC = () => {
     setShowMemory(false)
     setShowTimeline(false)
     setShowLibrary(false)
-    setShowPlay(false)
+    setShowTabloid(false)
     setShowWork(false)
     setShowCallHistory(false)
+    setShowPeople(false)
     setShowHistory(false)
     await useChatStore.getState().sendMessage(content, model, selectedEffort)
   }
@@ -1138,7 +1185,7 @@ onSelect={handleSelectFromDashboard}
             onMemory={handleMemory}
             onTimeline={handleTimeline}
             onLibrary={handleLibrary}
-            onPlay={handlePlay}
+            onTabloid={handleTabloid}
             onWork={handleWork}
             onWorkTool={handleWorkTool}
             selectedRoleId={selectedRoleId}
@@ -1166,8 +1213,8 @@ onSelect={handleSelectFromDashboard}
                           ? 'call-history'
                           : showLibrary
                           ? 'library'
-                          : showPlay
-                          ? 'play'
+                          : showTabloid
+                          ? 'tabloid'
                           : showWork
                           ? 'work'
                           : showTimeline
@@ -1283,8 +1330,8 @@ onSelect={handleSelectFromDashboard}
             />
           ) : showCallHistory ? (
             <CallHistoryPage />
-          ) : showPlay ? (
-            <PlayPage
+          ) : showTabloid ? (
+            <TabloidPage
               onOpenSettings={() => useSettingsStore.setState({ showSettings: true })}
               onOpenData={handleData}
             />
@@ -1333,6 +1380,8 @@ onSelect={handleSelectFromDashboard}
             <MemoryPage />
           ) : showTimeline ? (
             <TimelinePage />
+          ) : showPeople ? (
+            <PeoplePage enabled={settings?.peopleEnabled ?? true} onBack={handleDashboard} />
           ) : showProjects ? (
             <ProjectsPage
               projects={userProjects}
@@ -1371,6 +1420,7 @@ onSelect={handleSelectFromDashboard}
               onOpenHealth={setHealthProjectId}
               onOpenActivity={setActivityProjectId}
               onOpenData={handleData}
+              onOpenPeople={handlePeople}
             />
           ) : currentConversationId ? (
             <ChatView

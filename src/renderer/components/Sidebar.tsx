@@ -1,6 +1,6 @@
 import { type FC, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
-import { faBagShopping, faBookOpen, faBriefcase, faCaretDown, faCirclePlus, faClockRotateLeft, faDatabase, faDiagramProject, faDownload, faFileLines, faFilePowerpoint, faFloppyDisk, faFolderOpen, faGavel, faImage, faLeaf, faMagnifyingGlass, faPause, faPenNib, faPlay, faReceipt, faRefresh, faSpa, faStop, faTable, faUmbrellaBeach, faXmark } from '@fortawesome/free-solid-svg-icons'
+import { faBagShopping, faBookOpen, faBriefcase, faCaretDown, faCirclePlus, faClockRotateLeft, faDatabase, faDiagramProject, faDownload, faFileLines, faFilePowerpoint, faFloppyDisk, faFolderOpen, faGavel, faImage, faLeaf, faMagnifyingGlass, faNewspaper, faPause, faPenNib, faReceipt, faRefresh, faSpa, faStop, faTable, faUmbrellaBeach, faXmark } from '@fortawesome/free-solid-svg-icons'
 import type { Conversation, DocumentIndexState, Project } from '@shared/types'
 import { WORK_DOCUMENT_TYPES, type WorkDocumentKind } from '@shared/workDocuments'
 import { WORK_ROLES, getWorkRole } from '@shared/workRoles'
@@ -12,9 +12,10 @@ import { useTimelineRunState } from '../hooks/useTimelineRun'
 import { usePeopleRunState } from '../hooks/usePeopleRun'
 import { useActivityRunState } from '../hooks/useActivityRun'
 import { useLibraryRun } from '../hooks/useLibraryRun'
-import { usePlayRun } from '../hooks/usePlayRun'
+import { useTabloidRun } from '../hooks/useTabloidRun'
+import { useUpdateRun } from '../hooks/useUpdateRun'
 
-type SidebarSection = 'play' | 'recall' | 'projects' | 'dashboard' | 'data' | 'product-search' | 'mental-coach' | 'memory' | 'timeline' | 'library' | 'work' | 'call-history' | 'history' | null
+type SidebarSection = 'tabloid' | 'recall' | 'projects' | 'dashboard' | 'data' | 'product-search' | 'mental-coach' | 'memory' | 'timeline' | 'library' | 'work' | 'call-history' | 'history' | null
 
 /** The icon for each work document kind, kept beside the shared type list. */
 const WORK_KIND_ICONS: Record<WorkDocumentKind, typeof faFileLines> = {
@@ -31,6 +32,18 @@ const WORK_KIND_ICONS: Record<WorkDocumentKind, typeof faFileLines> = {
  * this has to track the row markup below.
  */
 const CONVERSATION_ROW_HEIGHT = 34
+
+/**
+ * "412 MB of 1.2 GB" for the update strip. The app bundle is well over a
+ * gigabyte, so a download with no size next to it reads as a hang.
+ */
+function formatUpdateBytes(state: { bytesDownloaded: number; bytesTotal: number | null } | null): string {
+  if (!state) return 'Starting…'
+  const mb = (bytes: number) => bytes / (1024 * 1024)
+  const show = (bytes: number) => (mb(bytes) >= 1024 ? `${(mb(bytes) / 1024).toFixed(1)} GB` : `${Math.round(mb(bytes))} MB`)
+  if (!state.bytesTotal) return show(state.bytesDownloaded)
+  return `${show(state.bytesDownloaded)} of ${show(state.bytesTotal)}`
+}
 
 /**
  * The mode pills at the top of the sidebar. They swap the nav below them rather
@@ -56,7 +69,7 @@ interface SidebarProps {
   onMemory: () => void
   onTimeline: () => void
   onLibrary: () => void
-  onPlay: () => void
+  onTabloid: () => void
   /** Opens the Work page; a kind means "start a new one of these". */
   onWork: (kind: WorkDocumentKind | null) => void
   /** A role's tool was picked — the tool's label, and the role it came from. */
@@ -97,7 +110,7 @@ export const Sidebar: FC<SidebarProps> = ({
   onMemory,
   onTimeline,
   onLibrary,
-  onPlay,
+  onTabloid,
   onWork,
   onWorkTool,
   selectedRoleId,
@@ -115,7 +128,7 @@ export const Sidebar: FC<SidebarProps> = ({
   const setFilterProjectId = onFilterProjectChange
   const [filterOpen, setFilterOpen] = useState(false)
   const [mode, setMode] = useState<SidebarMode>(
-    activeSection === 'library' || activeSection === 'play' ? 'leisure' : activeSection === 'work' ? 'work' : 'life',
+    activeSection === 'library' || activeSection === 'tabloid' ? 'leisure' : activeSection === 'work' ? 'work' : 'life',
   )
   // The Work role. Kept here beside the project filter it mirrors: both are
   // sidebar-local pickers that re-shape the nav rather than app-wide state.
@@ -133,12 +146,13 @@ export const Sidebar: FC<SidebarProps> = ({
   const peopleState = usePeopleRunState()
   const activityState = useActivityRunState()
   const libraryState = useLibraryRun()
-  const playState = usePlayRun()
+  const tabloidState = useTabloidRun()
+  const updateState = useUpdateRun()
 
   // Opening a page from anywhere else — the Dashboard, a deep link — moves the
   // pills to whichever mode owns it, so the nav never contradicts the page.
   useEffect(() => {
-    if (activeSection === 'library' || activeSection === 'play') setMode('leisure')
+    if (activeSection === 'library' || activeSection === 'tabloid') setMode('leisure')
     else if (activeSection === 'work') setMode('work')
     else if (activeSection !== null) setMode('life')
   }, [activeSection])
@@ -281,34 +295,34 @@ export const Sidebar: FC<SidebarProps> = ({
   // so it gets its own row rather than competing for one.
   // Narration, annotation and lesson runs all report through the library run
   // registry, so one strip covers them — the message says which.
-  // The Play build and any archive downloads. Archives run alongside a build
+  // The Tabloid build and any archive downloads. Archives run alongside a build
   // rather than queueing behind it, so both can be showing at once.
-  const playBuilding = playState?.status === 'building'
-  const playArchives = playState?.archives ?? []
-  const playVisible = playBuilding || playArchives.length > 0
-  const playPhase = playState?.progress?.phase ?? null
-  const playHeadline =
-    playPhase === 'planning'
+  const tabloidBuilding = tabloidState?.status === 'building'
+  const tabloidArchives = tabloidState?.archives ?? []
+  const tabloidVisible = tabloidBuilding || tabloidArchives.length > 0
+  const tabloidPhase = tabloidState?.progress?.phase ?? null
+  const tabloidHeadline =
+    tabloidPhase === 'planning'
       ? 'Planning your feed'
-      : playPhase === 'retrieving'
+      : tabloidPhase === 'retrieving'
         ? 'Searching YouTube'
-        : playPhase === 'curating'
+        : tabloidPhase === 'curating'
           ? 'Choosing what to show you'
-          : playPhase === 'transcribing'
+          : tabloidPhase === 'transcribing'
             ? 'Fetching transcript'
-            : playPhase === 'analysing'
+            : tabloidPhase === 'analysing'
               ? 'Checking claims'
               : 'Building your feed'
-  const playCounts =
-    playState?.progress && playState.progress.total > 0
-      ? `${Math.min(playState.progress.completed + 1, playState.progress.total)}/${playState.progress.total}`
+  const tabloidCounts =
+    tabloidState?.progress && tabloidState.progress.total > 0
+      ? `${Math.min(tabloidState.progress.completed + 1, tabloidState.progress.total)}/${tabloidState.progress.total}`
       : null
-  const playFraction =
-    playState?.progress && playState.progress.total > 0
-      ? Math.min(1, playState.progress.completed / playState.progress.total)
+  const tabloidFraction =
+    tabloidState?.progress && tabloidState.progress.total > 0
+      ? Math.min(1, tabloidState.progress.completed / tabloidState.progress.total)
       : null
-  const playDetail = playState?.progress?.detail ?? ''
-  const playAriaLabel = `${playHeadline}${playCounts ? ` ${playCounts}` : ''}`
+  const tabloidDetail = tabloidState?.progress?.detail ?? ''
+  const tabloidAriaLabel = `${tabloidHeadline}${tabloidCounts ? ` ${tabloidCounts}` : ''}`
 
   const libraryRunning = libraryState?.status === 'scanning' || libraryState?.status === 'generating'
   const libraryProgress = libraryRunning ? libraryState?.progress ?? null : null
@@ -389,6 +403,74 @@ export const Sidebar: FC<SidebarProps> = ({
     : peopleProgress?.message ?? 'Preparing…'
   const peopleIcon = peoplePaused ? faPause : peopleStopping ? faStop : faRefresh
   const peopleAriaLabel = `${peopleHeadline}${peopleCounts ? ` — ${peopleCounts}` : ''}. ${peopleDetail} Open the Dashboard.`
+
+  // The update strip. Unlike every other strip here this one is not a job the
+  // user started — the check runs on a timer — so it is the whole notification
+  // as well as the progress display, and it stays put until it is acted on.
+  const updateStatus = updateState?.status ?? 'idle'
+  const updateVisible =
+    updateStatus === 'available' ||
+    updateStatus === 'downloading' ||
+    updateStatus === 'installing' ||
+    updateStatus === 'ready' ||
+    updateStatus === 'failed'
+  const updateVersion = updateState?.version ?? ''
+  const updateHeadline =
+    updateStatus === 'available'
+      ? `Holmes ${updateVersion} available`
+      : updateStatus === 'downloading'
+        ? `Downloading ${updateVersion}`
+        : updateStatus === 'installing'
+          ? `Installing ${updateVersion}`
+          : updateStatus === 'ready'
+            ? 'Restart to finish update'
+            : 'Update failed'
+  const updateDetail =
+    updateStatus === 'available'
+      ? updateState?.canInstallInPlace
+        ? `You have ${updateState.currentVersion} — click to download`
+        : 'Click to open the releases page'
+      : updateStatus === 'downloading'
+        ? formatUpdateBytes(updateState)
+        : updateStatus === 'installing'
+          ? updateState?.message ?? 'Working…'
+          : updateStatus === 'ready'
+            ? `Holmes ${updateVersion} is installed`
+            : updateState?.message ?? 'Click to try again'
+  const updateFraction = updateStatus === 'downloading' ? updateState?.fraction ?? null : null
+  const updateIcon = updateStatus === 'failed' ? faXmark : updateStatus === 'ready' ? faRefresh : faDownload
+  const updateTone =
+    updateStatus === 'failed'
+      ? 'text-red-400/70'
+      : updateStatus === 'ready'
+        ? 'text-emerald-300/70'
+        : updateStatus === 'installing'
+          ? 'text-emerald-300/70 animate-spin'
+          : updateStatus === 'downloading'
+            ? 'text-emerald-300/70 animate-pulse'
+            : 'text-emerald-300/70'
+  // Release notes make a long tooltip, but it is the only place they are shown.
+  const updateTitle = updateState?.notes
+    ? `${updateHeadline}\n\n${updateState.notes}`
+    : `${updateHeadline}. ${updateDetail}`
+
+  const handleUpdateClick = () => {
+    if (!updateState) return
+    if (updateStatus === 'available') {
+      if (updateState.canInstallInPlace) void window.electronAPI.updater.download()
+      else void window.electronAPI.updater.openReleases()
+      return
+    }
+    if (updateStatus === 'ready') {
+      if (window.confirm(`Restart Holmes to finish updating to ${updateVersion}?`)) {
+        void window.electronAPI.updater.restart()
+      }
+      return
+    }
+    if (updateStatus === 'failed') void window.electronAPI.updater.check()
+    // A download or install in progress is not clickable through — the strip is
+    // just a display until it settles.
+  }
 
   // The enclosure is a closed rounded rectangle inset 6px from the window on
   // every side. Its radius has to nest inside the macOS window's own corner —
@@ -521,15 +603,15 @@ export const Sidebar: FC<SidebarProps> = ({
         {mode === 'leisure' ? (
           <>
           <button
-            onClick={onPlay}
+            onClick={onTabloid}
             className={`${toolButtonClass} ${
-              activeSection === 'play'
+              activeSection === 'tabloid'
                 ? 'bg-holmes-primary/10 text-holmes-primary-light'
                 : 'hover:bg-white/[0.04] hover:text-[#c7c0bb]'
             } cursor-pointer`}
           >
-            <FontAwesomeIcon icon={faPlay} className="w-4 shrink-0" />
-            Play
+            <FontAwesomeIcon icon={faNewspaper} className="w-4 shrink-0" />
+            Tabloid
           </button>
           <button
             onClick={onLibrary}
@@ -903,39 +985,39 @@ export const Sidebar: FC<SidebarProps> = ({
         </div>
       )}
 
-      {playVisible && (
+      {tabloidVisible && (
         <div className={`shrink-0 bg-holmes-surface px-2 py-2 ${indexVisible || timelineRunning ? 'border-t border-white/[0.06]' : 'border-t border-white/10'}`}>
-          {playBuilding && (
+          {tabloidBuilding && (
             <button
-              onClick={onPlay}
-              title={playAriaLabel}
-              aria-label={playAriaLabel}
+              onClick={onTabloid}
+              title={tabloidAriaLabel}
+              aria-label={tabloidAriaLabel}
               className="flex w-full flex-col gap-1 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-white/[0.04] cursor-pointer"
             >
               <div className="flex w-full items-center gap-2">
                 <FontAwesomeIcon icon={faRefresh} className="w-3 shrink-0 animate-spin text-[10px] text-pink-300/70" />
-                <span className="min-w-0 flex-1 truncate text-[11px] text-white/55">{playHeadline}</span>
-                {playCounts && (
-                  <span className="shrink-0 text-[10px] tabular-nums text-white/40">{playCounts}</span>
+                <span className="min-w-0 flex-1 truncate text-[11px] text-white/55">{tabloidHeadline}</span>
+                {tabloidCounts && (
+                  <span className="shrink-0 text-[10px] tabular-nums text-white/40">{tabloidCounts}</span>
                 )}
               </div>
-              {playFraction !== null && (
+              {tabloidFraction !== null && (
                 <div className="h-[2px] w-full overflow-hidden rounded-full bg-white/10">
                   <div
                     className="h-full rounded-full bg-pink-300/60 transition-all"
-                    style={{ width: `${Math.round(playFraction * 100)}%` }}
+                    style={{ width: `${Math.round(tabloidFraction * 100)}%` }}
                   />
                 </div>
               )}
-              <span className="w-full truncate text-[10px] text-white/30" title={playDetail}>
-                {playDetail}
+              <span className="w-full truncate text-[10px] text-white/30" title={tabloidDetail}>
+                {tabloidDetail}
               </span>
             </button>
           )}
-          {playArchives.map((archive) => (
+          {tabloidArchives.map((archive) => (
             <button
               key={archive.itemId}
-              onClick={onPlay}
+              onClick={onTabloid}
               title={archive.error ?? `Archiving ${archive.title}`}
               className="flex w-full flex-col gap-1 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-white/[0.04] cursor-pointer"
             >
@@ -1026,6 +1108,45 @@ export const Sidebar: FC<SidebarProps> = ({
             )}
             <span className="w-full truncate text-[10px] text-white/30" title={peopleDetail}>
               {peopleDetail}
+            </span>
+          </button>
+        </div>
+      )}
+
+      {/* Last, so it sits hard against the bottom of the window: it outlives
+          every job above it and should not shuffle as those come and go. */}
+      {updateVisible && (
+        <div className="shrink-0 border-t border-white/10 bg-holmes-surface px-2 py-2">
+          <button
+            onClick={handleUpdateClick}
+            disabled={updateStatus === 'downloading' || updateStatus === 'installing'}
+            title={updateTitle}
+            aria-label={`${updateHeadline}. ${updateDetail}`}
+            className={`flex w-full flex-col gap-1 rounded-md px-2 py-1.5 text-left transition-colors ${
+              updateStatus === 'downloading' || updateStatus === 'installing'
+                ? 'cursor-default'
+                : 'hover:bg-white/[0.04] cursor-pointer'
+            }`}
+          >
+            <div className="flex w-full items-center gap-2">
+              <FontAwesomeIcon icon={updateIcon} className={`w-3 shrink-0 text-[10px] ${updateTone}`} />
+              <span className="min-w-0 flex-1 truncate text-[11px] text-white/55">{updateHeadline}</span>
+              {updateFraction !== null && (
+                <span className="shrink-0 text-[10px] tabular-nums text-white/40">
+                  {Math.round(updateFraction * 100)}%
+                </span>
+              )}
+            </div>
+            {updateFraction !== null && (
+              <div className="h-[2px] w-full overflow-hidden rounded-full bg-white/10">
+                <div
+                  className="h-full rounded-full bg-emerald-300/60 transition-all"
+                  style={{ width: `${Math.round(updateFraction * 100)}%` }}
+                />
+              </div>
+            )}
+            <span className="w-full truncate text-[10px] text-white/30" title={updateDetail}>
+              {updateDetail}
             </span>
           </button>
         </div>

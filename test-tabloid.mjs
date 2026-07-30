@@ -12,11 +12,11 @@ import {
   decodeHtmlEntities,
   parseCuratorResponse,
   parsePlannerResponse,
-  playItemKey,
+  tabloidItemKey,
   quotaDayPacific,
   salvageJsonObject,
   youtubeDurationToSeconds,
-} from './src/shared/playFeed.ts'
+} from './src/shared/tabloidFeed.ts'
 
 // --- ISO-8601 durations ------------------------------------------------------
 
@@ -59,7 +59,7 @@ assert.equal(decodeHtmlEntities('100 &notreal; 200'), '100 &notreal; 200')
 
 // --- identity ----------------------------------------------------------------
 
-assert.equal(playItemKey('video', 'youtube', 'abc123'), 'video|youtube|abc123')
+assert.equal(tabloidItemKey('video', 'youtube', 'abc123'), 'video|youtube|abc123')
 
 // --- JSON salvage ------------------------------------------------------------
 
@@ -409,19 +409,19 @@ assert.equal(manyFlags.flags.length, MAX_FLAGS_PER_VIDEO)
 // --- renderer subscription discipline ---------------------------------------
 
 // Same rule, and the same reason, as the documents/library run states: one IPC
-// listener app-wide, fanned out. The Play page, the sidebar strip and every card
+// listener app-wide, fanned out. The Tabloid page, the sidebar strip and every card
 // want this state, and a listener each crosses Node's 10-listener threshold.
 const componentsDir = new URL('./src/renderer/components/', import.meta.url)
 const offenders = fs
   .readdirSync(componentsDir)
   .filter((name) => name.endsWith('.tsx'))
-  .filter((name) => /play\.onState\(/.test(fs.readFileSync(new URL(name, componentsDir), 'utf8')))
-assert.deepEqual(offenders, [], 'components must subscribe via the usePlayRun hook, not directly')
+  .filter((name) => /tabloid\.onState\(/.test(fs.readFileSync(new URL(name, componentsDir), 'utf8')))
+assert.deepEqual(offenders, [], 'components must subscribe via the useTabloidRun hook, not directly')
 
-const playHook = fs.readFileSync(new URL('./src/renderer/hooks/usePlayRun.ts', import.meta.url), 'utf8')
-assert.equal((playHook.match(/play\.onState\(/g) ?? []).length, 1, 'exactly one onState subscription app-wide')
-assert.ok(/listeners\.size === 0 && unsubscribe/.test(playHook), 'torn down when the last consumer unmounts')
-assert.ok(/if \(!initialFetch\)/.test(playHook), 'the initial getState is deduped across consumers')
+const tabloidHook = fs.readFileSync(new URL('./src/renderer/hooks/useTabloidRun.ts', import.meta.url), 'utf8')
+assert.equal((tabloidHook.match(/tabloid\.onState\(/g) ?? []).length, 1, 'exactly one onState subscription app-wide')
+assert.ok(/listeners\.size === 0 && unsubscribe/.test(tabloidHook), 'torn down when the last consumer unmounts')
+assert.ok(/if \(!initialFetch\)/.test(tabloidHook), 'the initial getState is deduped across consumers')
 
 // --- the embed contract ------------------------------------------------------
 
@@ -461,8 +461,48 @@ assert.match(
 // The origin parameter is the postMessage TARGET, not a declaration. Setting it
 // to anything but this page's real origin silently breaks the time sync, and
 // this page's real origin is exactly what YouTube will not accept.
-const playerSource = fs.readFileSync(new URL('./src/renderer/components/PlayPlayer.tsx', import.meta.url), 'utf8')
+const playerSource = fs.readFileSync(new URL('./src/renderer/components/TabloidPlayer.tsx', import.meta.url), 'utf8')
 const embedParams = /new URLSearchParams\(\{[\s\S]*?\}\)/.exec(playerSource)?.[0] ?? ''
 assert.ok(!/\borigin\b/.test(embedParams), 'the embed URL carries no origin parameter')
 
-console.log('test-play.mjs: all assertions passed')
+// --- the feed stacks, it does not replace ------------------------------------
+
+// A refresh adds a batch above the last one. These live in SQL, so they are
+// pinned by shape here rather than executed — the DB-backed suites cover the
+// rest, and each of these is a silent regression if it drifts.
+const dbSource = fs.readFileSync(new URL('./src/main/database.ts', import.meta.url), 'utf8')
+
+// The batch number is derived, so pruning whole batches cannot desynchronise it
+// from a stored counter.
+assert.match(dbSource, /COALESCE\(MAX\(feed_batch\), 0\) AS max FROM tabloid_items/, 'batch is MAX+1')
+
+// replaceTabloidFeedItems must hand back ONLY what it just wrote: the analysis pass
+// iterates its return value, and returning the whole page would re-review every
+// batch on screen on every refresh.
+assert.match(
+  dbSource,
+  /export function replaceTabloidFeedItems[\s\S]*?return listTabloidItems\(\{ maxBatches: 1 \}\)/,
+  'replaceTabloidFeedItems returns only the new batch'
+)
+
+// Reacted items are never pruned, wherever they sit. They are the taste record
+// the next plan reads, not display history — a dislike from months ago still
+// has to keep that video out of the feed.
+const pruneBody = /export function pruneTabloidItems[\s\S]*?\n}/.exec(dbSource)?.[0] ?? ''
+assert.ok(pruneBody.includes('reaction IS NULL'), 'pruning only ever removes unreacted items')
+assert.ok(pruneBody.includes('feed_batch <='), 'pruning only reaches below the visible window')
+
+// The visible window is a batch count, not a row count: pruning a partial batch
+// would punch holes in a page the user is looking at.
+assert.match(
+  dbSource,
+  /feed_batch > COALESCE\(\(SELECT MAX\(feed_batch\) FROM tabloid_items\), 0\) - \?/,
+  'the visible window is expressed in batches'
+)
+
+// The page renders one section per batch, newest first.
+const pageSource = fs.readFileSync(new URL('./src/renderer/components/TabloidPage.tsx', import.meta.url), 'utf8')
+assert.match(pageSource, /batches\.map\(/, 'the page groups by batch')
+assert.match(pageSource, /current\.batch === item\.batch/, 'grouping relies on the feed order, not a re-sort')
+
+console.log('test-tabloid.mjs: all assertions passed')

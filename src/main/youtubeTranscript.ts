@@ -19,7 +19,7 @@ import os from 'os'
 import path from 'path'
 import { promisify } from 'util'
 import { createHash } from 'node:crypto'
-import { parseVtt, type TranscriptCue } from '../shared/playFeed'
+import { parseVtt, type TranscriptCue } from '../shared/tabloidFeed'
 
 const execFileAsync = promisify(execFile)
 
