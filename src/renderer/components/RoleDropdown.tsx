@@ -29,8 +29,12 @@ export const RoleDropdown: FC<RoleDropdownProps> = ({ value, onChange, disabled 
     <FontAwesomeIcon icon={faUserTie} className="w-4 h-4" />
   )
 
+  // The panel sets its own width: the shared pill minimum (14rem) left a role
+  // name sharing one line with a specialty hint and a wrapping description, and
+  // the name is the part that lost — "3D Modeler" and "Data Analyst" both came
+  // back as ellipses. The name now gets the line to itself.
   const renderPanel = (close: () => void) => (
-    <div className="flex flex-col overflow-hidden">
+    <div className="flex flex-col overflow-hidden min-w-[19rem]">
       <div className="overflow-y-auto flex-1 scrollbar-thin py-1 max-h-80">
         <button
           onClick={() => {
@@ -43,8 +47,7 @@ export const RoleDropdown: FC<RoleDropdownProps> = ({ value, onChange, disabled 
               : 'text-white/70 hover:bg-white/5 hover:text-white'
           }`}
         >
-          <span className="flex-1 truncate">None</span>
-          <span className="text-[10px] text-white/30 shrink-0">no role</span>
+          <span className="flex-1">None</span>
         </button>
         {roles.length === 0 && (
           <div className="px-3 py-2 text-sm text-white/40">No roles available.</div>
@@ -66,8 +69,7 @@ export const RoleDropdown: FC<RoleDropdownProps> = ({ value, onChange, disabled 
               <span className="flex items-center justify-center w-4 h-4 shrink-0">
                 <ProjectIcon icon={role.icon} className="text-[0.875rem]" style={{ color: role.color }} />
               </span>
-              <span className="flex-1 truncate">{role.name}</span>
-              <span className="text-[10px] text-white/30 shrink-0">{role.specialty}</span>
+              <span className="flex-1">{role.name}</span>
             </span>
             <span className="pl-[26px] pr-1 text-[11px] leading-snug text-white/35">{role.description}</span>
           </button>

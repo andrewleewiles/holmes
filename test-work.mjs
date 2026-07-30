@@ -8,7 +8,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { strToU8, zipSync } from 'fflate'
+import { strToU8, strFromU8, zipSync, unzipSync } from 'fflate'
 import { extractPptxText } from './src/main/documentText.ts'
 import { DOCUMENT_EXTENSIONS } from './src/main/projectContext.ts'
 import { execFileSync } from 'node:child_process'
@@ -26,6 +26,7 @@ import {
 } from './src/shared/workRoles.ts'
 import { WORK_TOOL_ICON_KEYS, workToolIcon } from './src/renderer/components/workToolIcons.ts'
 import { resolveOfficeAssetPath } from './src/main/officeProtocol.ts'
+import { applyPaperChoice, PAPER_FONT, PLAIN_FONT, PAPER_PAGE } from './src/main/workPaper.ts'
 
 let passed = 0
 function check(name, fn) {
@@ -165,16 +166,31 @@ console.log('\nwork tab')
 
 const read = (relative) => fs.readFileSync(new URL(relative, import.meta.url), 'utf8')
 
-check('the three document kinds are defined once and shared', () => {
-  assert.deepEqual(WORK_DOCUMENT_TYPES.map((type) => type.kind), ['document', 'spreadsheet', 'presentation'])
-  assert.deepEqual(WORK_DOCUMENT_TYPES.map((type) => type.extension), ['.docx', '.xlsx', '.pptx'])
+check('the five document kinds are defined once and shared', () => {
+  assert.deepEqual(
+    WORK_DOCUMENT_TYPES.map((type) => type.kind),
+    ['document', 'spreadsheet', 'presentation', 'image', 'vector'],
+  )
+  assert.deepEqual(
+    WORK_DOCUMENT_TYPES.map((type) => type.extension),
+    ['.docx', '.xlsx', '.pptx', '.png', '.svg'],
+  )
   // The sidebar entries are what the user asked for by name.
   assert.deepEqual(
     WORK_DOCUMENT_TYPES.map((type) => type.newLabel),
-    ['New Document', 'New Spreadsheet', 'New Presentation'],
+    ['New Document', 'New Spreadsheet', 'New Presentation', 'New Image', 'New Vector'],
   )
-  // Every kind the indexer can extract is a kind the editor can make.
-  for (const type of WORK_DOCUMENT_TYPES) assert.ok(DOCUMENT_EXTENSIONS.has(type.extension))
+  assert.deepEqual(
+    WORK_DOCUMENT_TYPES.map((type) => type.editor),
+    ['office', 'office', 'office', 'graphite', 'graphite'],
+  )
+  // Every kind the text indexer can extract is a kind the office editor makes.
+  // Design kinds are images: they reach the profile through the photo/VLM
+  // paths, not through document text extraction.
+  for (const type of WORK_DOCUMENT_TYPES) {
+    if (type.editor === 'office') assert.ok(DOCUMENT_EXTENSIONS.has(type.extension))
+    else assert.ok(!DOCUMENT_EXTENSIONS.has(type.extension))
+  }
 })
 
 check('kind lookup is total, and unknown kinds fail loudly', () => {
@@ -197,8 +213,9 @@ check('the Work pill is live and mode === work is a real branch', () => {
   assert.match(sidebar, /mode === 'work'/)
   assert.match(sidebar, /setMode\('work'\)/)
   assert.match(sidebar, /onWork/)
-  // The nav entries come from the shared list rather than being retyped.
-  assert.match(sidebar, /WORK_DOCUMENT_TYPES\.map/)
+  // The nav entries come from the shared list rather than being retyped — and
+  // only the office kinds: the design kinds are reached through the Work page.
+  assert.match(sidebar, /WORK_DOCUMENT_TYPES\.filter\(\(type\) => type\.editor === 'office'\)\.map/)
 })
 
 check('the work-flavoured placeholders moved out of the life branch', () => {
@@ -215,7 +232,10 @@ check('every page handler clears the Work flag', () => {
   // A page left uncleared renders underneath another page's nav.
   const work = (app.match(/setShowWork\(false\)/g) ?? []).length
   const library = (app.match(/setShowLibrary\(false\)/g) ?? []).length
-  assert.equal(work, library, 'Work must be cleared everywhere Library is')
+  // Every page handler that clears Library must clear Work too. Work has one
+  // extra caller — the workspace's own Close button — so this is >=, not ==.
+  assert.ok(work >= library, `Work cleared ${work}x, Library ${library}x — a handler is missing one`)
+  assert.match(app, /onClose=\{\(\) => setShowWork\(false\)\}/, 'the extra clear should be Close')
   assert.match(app, /showWork \? \(/, 'Work is in the render cascade')
   assert.match(app, /showWork\s*\n?\s*\? 'work'/, 'Work is in the activeSection ternary')
 })
@@ -423,7 +443,11 @@ check('the editor frame is pinned to the bundle', () => {
   const main = read('./src/main/main.ts')
   // will-navigate is main-frame only, so the frame needs its own guard.
   assert.match(main, /will-frame-navigate/)
-  assert.match(main, /registerOfficeScheme\(\)/)
+  // One registerSchemesAsPrivileged call for all schemes: a second call strips
+  // privileges granted by the first (Electron 39), so per-scheme register
+  // functions must never come back.
+  assert.strictEqual(main.match(/registerSchemesAsPrivileged\(/g)?.length, 1)
+  assert.match(main, /OFFICE_SCHEME_PRIVILEGES,/)
   assert.match(main, /installOfficeProtocol\(\)/)
 })
 
@@ -490,6 +514,466 @@ check('vendored source is tracked but its build output is not', () => {
   const pkg = JSON.parse(read('./package.json'))
   assert.ok(pkg.scripts['build:office-shell'], 'the build step must be a script')
   assert.ok(pkg.devDependencies.esbuild, 'esbuild is used directly, so it is a direct dependency')
+})
+
+check('the editor is skinned to the Holmes palette', () => {
+  const shell = read('./src/office-shell/shell.ts')
+  const css = read('./src/renderer/styles/index.css')
+  // Every colour in the skin must be one the app actually uses, so the two
+  // cannot drift into "nearly the same dark grey".
+  const palette = Object.fromEntries(
+    [...css.matchAll(/--color-(holmes-[a-z-]+):\s*(#[0-9a-f]{6})/gi)].map((m) => [m[1], m[2].toLowerCase()]),
+  )
+  assert.equal(palette['holmes-bg'], '#20201e')
+  assert.equal(palette['holmes-primary'], '#47a08f')
+
+  const skin = /const HOLMES_SKIN: Record<string, string> = \{([\s\S]*?)\n\}/.exec(shell)
+  assert.ok(skin, 'HOLMES_SKIN moved — re-check this assertion')
+  assert.match(skin[1], /'--background-pane': '#20201e'/)
+  assert.match(skin[1], /'--background-accent-button': '#47a08f'/)
+  // The active-tab underline is per-editor; missing one leaves a blue ribbon.
+  for (const editor of ['document', 'spreadsheet', 'presentation', 'pdf', 'visio']) {
+    assert.match(skin[1], new RegExp(`'--highlight-toolbar-tab-underline-${editor}': '#47a08f'`))
+  }
+  // No ONLYOFFICE blue should survive anywhere in the skin.
+  assert.ok(!/#4[aA]7[bB][eE]0|#446995/.test(skin[1]), 'an ONLYOFFICE blue is still in the skin')
+})
+
+check('the skin is applied inline, not as a stylesheet', () => {
+  const shell = read('./src/office-shell/shell.ts')
+  // The editor loads its theme CSS lazily, so an injected <style> lands EARLIER
+  // in the cascade than the rules it must beat and silently does nothing. This
+  // was observed: the tag was present and every value was still the default.
+  assert.match(shell, /setProperty\(name, value, 'important'\)/)
+  assert.ok(!/createElement\('style'\)/.test(shell), 'a <style> tag loses the cascade here')
+  // Re-applied because the wrapper remounts the frame on document/theme change.
+  assert.match(shell, /setInterval/)
+  assert.match(shell, /OFFICE_THEME\.NIGHT/)
+})
+
+check('the editor loads no remote assets', () => {
+  // Upstream sets customization.logo to a Microsoft Office icon on jsdelivr.
+  // The editor CSP has no https: in img-src, so it drew as a broken image —
+  // and allowing it would mean a CDN fetch every time a document opens.
+  const constants = read('./src/office-shell/vendor/const/index.ts')
+  const manager = read('./src/office-shell/vendor/core/editor-manager.ts')
+  assert.match(constants, /OFFICE_EDITOR_LOGO = \{ visible: false \}/)
+  assert.ok(!/cdn\.jsdelivr|simple-icons/.test(constants), 'no CDN URL may remain')
+  assert.ok(!/OFFICE_EDITOR_LOGO\.image/.test(manager), 'the logo image must not be passed through')
+  // Nothing anywhere in the shell or its vendor tree should reach the network.
+  const shell = read('./src/office-shell/shell.ts')
+  assert.ok(!/https?:\/\//.test(shell.replace(/^\s*\/\/.*$/gm, '')), 'the shell must not name a remote URL')
+})
+
+console.log('\nsaving')
+
+check('the save target comes from the sidebar project filter', () => {
+  // The filter was Sidebar-local; it now lives in App because it decides more
+  // than the conversation list.
+  const sidebar = read('./src/renderer/components/Sidebar.tsx')
+  const app = read('./src/renderer/App.tsx')
+  assert.ok(!/useState<string \| null>\(null\)\s*\n\s*const \[filterOpen/.test(sidebar), 'the filter must not own its own state')
+  assert.match(sidebar, /filterProjectId,\n\s*onFilterProjectChange,/)
+  assert.match(app, /const \[filterProjectId, setFilterProjectId\]/)
+  // The same value reaches the sidebar, and is what the save request carries.
+  assert.match(app, /filterProjectId=\{filterProjectId\}/)
+  assert.match(app, /saveDocument\(\{\s*\n?\s*projectId: filterProjectId,/)
+})
+
+check('the save handler resolves a folder, or asks', () => {
+  const ipc = read('./src/main/ipc.ts')
+  assert.match(ipc, /IPC\.WORK\.SAVE_DOCUMENT/)
+  // A project folder first; General has none, so that is the case that asks.
+  assert.match(ipc, /function workSaveDirectory/)
+  assert.match(ipc, /dialog\.showSaveDialog/)
+  // Only the basename is used — a name carrying separators must not be able to
+  // walk out of the project folder before the scope check sees it.
+  assert.match(ipc, /const fileName = path\.basename\(request\.fileName\.trim\(\)\)/)
+  assert.match(ipc, /assertPathAllowed\(target\)/)
+  // Write-then-rename, so a crash cannot truncate an existing document.
+  assert.match(ipc, /holmes-tmp/)
+  assert.match(ipc, /await rename\(temporary, target\)/)
+  // Only real office documents.
+  assert.match(ipc, /WORK_SAVE_EXTENSIONS = new Set\(\['\.docx', '\.xlsx', '\.pptx', '\.png', '\.svg'\]\)/)
+})
+
+check('a first save uniquifies, a re-save overwrites', () => {
+  const ipc = read('./src/main/ipc.ts')
+  const app = read('./src/renderer/App.tsx')
+  // Without uniquifying, a second New Document silently replaces the first.
+  assert.match(ipc, /function uniqueFilePath/)
+  assert.match(ipc, /existingPath/)
+  // App remembers where it saved, so Save twice does not leave a trail.
+  assert.match(app, /workSavedPath \? \{ existingPath: workSavedPath \} : \{\}/)
+  // ...but a torn-down workspace must not carry its path into the next one.
+  assert.match(app, /setWorkSavedPath\(null\)/)
+})
+
+check('the four-file IPC contract is kept in step', () => {
+  // channel -> handler -> preload -> renderer types, all naming the same thing.
+  assert.match(read('./src/main/ipcChannels.ts'), /SAVE_DOCUMENT: 'work:save-document'/)
+  assert.match(read('./src/main/ipc.ts'), /handle\(IPC\.WORK\.SAVE_DOCUMENT/)
+  assert.match(read('./src/preload/preload.ts'), /saveDocument: \(request: WorkSaveRequest\)/)
+  assert.match(read('./src/shared/types.ts'), /saveDocument: \(request: WorkSaveRequest\) => Promise<WorkSaveResult>/)
+})
+
+console.log('\nAI bridge')
+
+check('model output is data, never code', () => {
+  // callCommand stringifies the function you give it and evaluates it in the
+  // editor frame, but JSON-serialises Asc.scope separately. So every command
+  // must be a LITERAL and everything variable must travel through the scope.
+  // Concatenating model output into a command body would hand code execution to
+  // whatever the model last read — including a .docx from an untrusted source.
+  const shell = read('./src/office-shell/shell.ts')
+  assert.ok(!/callCommand\(\s*[`'"]/.test(shell), 'a string command is evaluated verbatim — never')
+  assert.ok(!/callCommand\([^)]*\+/.test(shell), 'no concatenation into a command')
+  assert.ok(!/new Function/.test(shell), 'no dynamic function construction')
+  assert.match(shell, /Asc\.scope/, 'payloads must cross through Asc.scope')
+  // Every command function passed to runCommand is written inline here.
+  const commands = shell.match(/runCommand\(/g) ?? []
+  assert.ok(commands.length >= 4, `expected the literal commands, found ${commands.length}`)
+})
+
+check('the tools are gated on a document actually being open', () => {
+  const tools = read('./src/main/tools.ts')
+  const ipc = read('./src/main/ipc.ts')
+  const frame = read('./src/renderer/components/OfficeEditorFrame.tsx')
+  assert.match(tools, /WORK_TOOL_NAMES/)
+  assert.match(tools, /workEditorOpen/)
+  // What is open decides which editor tool set exists — office or design.
+  assert.match(ipc, /workEditorOpen: openEditor === 'office'/)
+  assert.match(ipc, /designEditorKind: openEditor === 'image' \|\| openEditor === 'vector' \? openEditor : null/)
+  // The frame is what reports it, and must clear it on unmount or the tools
+  // stay offered for a document that has gone.
+  assert.match(frame, /setEditorOpen\(true\)/)
+  assert.match(frame, /setEditorOpen\(false\)/)
+})
+
+check('the bridge fails closed rather than hanging', () => {
+  const bridge = read('./src/main/officeBridge.ts')
+  // No editor, no request — rather than a 30s wait for nothing.
+  assert.match(bridge, /if \(!editorOpen\) return Promise\.reject/)
+  assert.match(bridge, /EDITOR_REQUEST_TIMEOUT_MS/)
+  // Closing the document must strand nothing.
+  assert.match(bridge, /The document was closed before the edit could be applied/)
+  // A late answer to a timed-out request is not an error.
+  assert.match(bridge, /if \(!entry\) return/)
+})
+
+check('only the editor frames subscribe to the editor channel', () => {
+  // The lesson useDocumentIndex and usePeopleRun already learned: one
+  // subscriber, or every mounted copy answers the same request. The two frame
+  // components are the whole allow-list — and only one of them is ever
+  // mounted, because workKind is single-valued.
+  const dir = new URL('./src/renderer/components/', import.meta.url)
+  const subscribers = []
+  for (const file of fs.readdirSync(dir)) {
+    if (!file.endsWith('.tsx')) continue
+    if (/work\.onEditorRequest\(/.test(fs.readFileSync(new URL(file, dir), 'utf8'))) subscribers.push(file)
+  }
+  assert.deepEqual(subscribers.sort(), ['DesignEditorFrame.tsx', 'OfficeEditorFrame.tsx'])
+})
+
+check('every work tool the model can call has a shell action', () => {
+  const tools = read('./src/main/tools.ts')
+  const shell = read('./src/office-shell/shell.ts')
+  const names = [...tools.matchAll(/name: '(work_[a-z_]+)'/g)].map((m) => m[1])
+  assert.ok(names.length >= 7, `expected the work tools, found ${names.length}`)
+  for (const name of names) {
+    assert.ok(tools.includes(`case '${name}':`), `${name} has no dispatch in tools.ts`)
+    // work_create_document is the one that does not reach the editor: there is
+    // no editor yet when it runs. App handles it and opens one.
+    if (name === 'work_create_document') {
+      assert.match(tools, /openWorkDocument\(/)
+      continue
+    }
+    assert.ok(shell.includes(`case '${name}':`), `${name} has no action in the shell`)
+  }
+})
+
+check('the open effect cannot be retriggered by its own callback', () => {
+  // Regression: WorkPage passes onStateChange as an inline arrow, so it has a
+  // new identity every render. When `move` depended on it, `move` changed every
+  // render too — and the open effect depends on `move`, so the document
+  // reopened in a loop: render -> new callback -> effect -> setState -> render.
+  const frame = read('./src/renderer/components/OfficeEditorFrame.tsx')
+  assert.match(frame, /onStateChangeRef/, 'the callback must be held in a ref')
+  const move = /const move = useCallback\(\(next: ShellState\) => \{[\s\S]*?\}, \[([^\]]*)\]\)/.exec(frame)
+  assert.ok(move, 'move moved — re-check this assertion')
+  assert.equal(move[1].trim(), '', 'move must have no dependencies, or the open effect loops')
+  // And the effect that opens must not depend on anything render-scoped.
+  const open = /window\.setTimeout\(tick, step\)\s*\n\s*return \(\) => \{ cancelled = true \}\s*\n\s*\}, \[([^\]]*)\]\)/.exec(frame)
+  assert.ok(open, 'the open effect moved — re-check this assertion')
+  for (const dep of open[1].split(',').map((d) => d.trim()).filter(Boolean)) {
+    assert.ok(['kind', 'openToken', 'call', 'move'].includes(dep), `unexpected dep in the open effect: ${dep}`)
+  }
+})
+
+check('Holmes can open a document from anywhere, then fill it', () => {
+  const tools = read('./src/main/tools.ts')
+  const bridge = read('./src/main/officeBridge.ts')
+  const app = read('./src/renderer/App.tsx')
+  // The tool that MAKES a document open must not be gated on one being open.
+  assert.match(tools, /name: 'work_create_document'/)
+  assert.ok(!/'work_create_document'/.test(/WORK_TOOL_NAMES = new Set\(\[([\s\S]*?)\]\)/.exec(tools)[1]),
+    'work_create_document must stay ungated or the model can never start')
+  // Opening is handled by App — the editor frame does not exist yet.
+  assert.match(bridge, /openWorkDocument/)
+  assert.match(app, /onOpenDocument/)
+  // It must resolve only once the editor is editable, or the model's next call
+  // races a cold start.
+  assert.match(app, /pendingWorkOpen/)
+  assert.match(app, /respondToEditor\(\{ requestId, ok: true/)
+  assert.match(bridge, /EDITOR_OPEN_TIMEOUT_MS/)
+})
+
+check('a booting editor is not reported as a closed one', () => {
+  // Regression, found in the conversation record: the frame reported
+  // setEditorOpen(false) while state was still 'loading', which told main the
+  // document had CLOSED — rejecting the very open request that was waiting for
+  // it. work_create_document returned "The document was closed before the edit
+  // could be applied" seven times and burned the whole tool budget.
+  const frame = read('./src/renderer/components/OfficeEditorFrame.tsx')
+  assert.ok(!/setEditorOpen\(state === 'ready'\)/.test(frame), 'must not report false while booting')
+  assert.match(frame, /if \(state !== 'ready'\) return/)
+  // Closing is still reported — but only on unmount.
+  assert.match(frame, /useEffect\(\(\) => \(\) => \{ void window\.electronAPI\.work\.setEditorOpen\(false\) \}, \[\]\)/)
+})
+
+check('an open request is never cancelled by "not open"', () => {
+  // It is waiting for the editor to appear; that is its whole purpose.
+  const bridge = read('./src/main/officeBridge.ts')
+  assert.match(bridge, /cancelWhenClosed/)
+  assert.match(bridge, /if \(!entry\.cancelWhenClosed\) continue/)
+  assert.match(bridge, /IPC\.WORK\.OPEN_DOCUMENT, 'open', \{ kind, name \}, EDITOR_OPEN_TIMEOUT_MS, false\)/)
+  assert.match(bridge, /IPC\.WORK\.EDITOR_REQUEST, action, payload, EDITOR_REQUEST_TIMEOUT_MS, true\)/)
+})
+
+check('main knows the editor is live before the tool call is answered', () => {
+  // getToolDefinitions is recomputed each round on isEditorOpen(). Answering
+  // before main is told would start the next round with no editing tools.
+  const app = read('./src/renderer/App.tsx')
+  const ready = /const handleWorkEditorReady[\s\S]*?\n  \}/.exec(app)
+  assert.ok(ready, 'handleWorkEditorReady moved — re-check this assertion')
+  assert.ok(
+    ready[0].indexOf('setEditorOpen(true)') < ready[0].indexOf('respondToEditor'),
+    'setEditorOpen must be awaited before the tool call is answered',
+  )
+})
+
+console.log('\nworkspace lifecycle')
+
+check('the workspace outlives navigation only while a task is in flight', () => {
+  const app = read('./src/renderer/App.tsx')
+  // Unmounting destroys the iframe and kills a run Holmes is midway through —
+  // but keeping a 63 MB wasm heap alive for an idle document is waste.
+  assert.match(app, /const workBusy = isStreaming \|\| workSaving/)
+  assert.match(app, /\{workKind && \(showWork \|\| workBusy\) && \(/)
+  // It must be mounted OUTSIDE the page cascade, or navigation unmounts it
+  // regardless of what the condition says.
+  const cascade = app.indexOf('showWork ? (')
+  const host = app.indexOf('{workKind && (showWork || workBusy) && (')
+  assert.ok(host > cascade, 'the host must sit outside the cascade it is meant to survive')
+})
+
+check('unsaved changes count as work in flight', () => {
+  const app = read('./src/renderer/App.tsx')
+  const shell = read('./src/office-shell/shell.ts')
+  const frame = read('./src/renderer/components/OfficeEditorFrame.tsx')
+  // Navigating away from a document with unsaved edits must not discard them.
+  assert.match(app, /const workBusy = isStreaming \|\| workSaving \|\| workDirty/)
+  // The editor's own document-state tracking is the source of truth; the shell
+  // only forwards the transitions.
+  assert.match(shell, /editorManagerFactory\.get\(CONTAINER_ID\)\.isDirty\(\)/)
+  assert.match(shell, /post\(\{ type: 'dirty', dirty \}\)/)
+  assert.match(frame, /data\.type === 'dirty'/)
+  // A successful save means it IS on disk. Without clearing here the workspace
+  // would count as busy forever and never tear down.
+  assert.match(app, /setWorkSavedPath\(result\.path\)\s*\n\s*setWorkDirty\(false\)/)
+})
+
+check('a hidden workspace is hidden without being collapsed', () => {
+  const app = read('./src/renderer/App.tsx')
+  // display:none collapses the editor to zero and it returns blank until
+  // something resizes it; visibility keeps its box.
+  assert.match(app, /pointer-events-none invisible absolute inset-0/)
+  assert.ok(!/showWork \? '[^']*' : 'hidden'/.test(app), 'must not use display:none to hide it')
+})
+
+check('a torn-down workspace does not come back as a blank impostor', () => {
+  const app = read('./src/renderer/App.tsx')
+  // Without this, returning to Work remounts and opens a NEW empty document
+  // that looks exactly like the one that was there.
+  assert.match(app, /if \(showWork \|\| workBusy \|\| !workKind\) return/)
+  assert.match(app, /setWorkKind\(null\)/)
+})
+
+check('the picker does not render underneath an open document', () => {
+  const app = read('./src/renderer/App.tsx')
+  // It did, and its header intercepted clicks meant for the workspace above it.
+  assert.match(app, /workKind \? null : \(/)
+  const page = read('./src/renderer/components/WorkPage.tsx')
+  // The picker is now only a picker: no editor, no save, no document state.
+  assert.ok(!/OfficeEditorFrame|saveDocument|useState/.test(page), 'WorkPage must be the picker alone')
+})
+
+check('the routed conversation travels with the document', () => {
+  const app = read('./src/renderer/App.tsx')
+  const workspace = read('./src/renderer/components/WorkspaceView.tsx')
+  // Whatever the user was talking in when Holmes opened the document.
+  assert.match(app, /setWorkConversationId\(useChatStore\.getState\(\)\.currentConversationId\)/)
+  assert.match(app, /conversation=\{workConversationId \? workConversationPanel : undefined\}/)
+  // Rendered as the ordinary conversation view, not a bespoke transcript.
+  assert.match(app, /const workConversationPanel = \(\n\s*<ChatView/)
+  assert.match(workspace, /conversation\?: ReactNode/)
+})
+
+
+console.log('\npaper mode')
+
+/** A .docx shaped the way x2t writes one, in Holmes Minion. */
+function paperDocx(overrides = {}) {
+  return zipSync({
+    '[Content_Types].xml': strToU8('<?xml version="1.0"?><Types/>'),
+    'word/document.xml': strToU8(
+      '<?xml version="1.0"?><w:document xmlns:w="w"><w:body><w:p><w:r><w:rPr>' +
+        `<w:rFonts w:ascii="${PAPER_FONT}" w:hAnsi="${PAPER_FONT}"/></w:rPr>` +
+        '<w:t>Hello</w:t></w:r></w:p></w:body></w:document>',
+    ),
+    'word/styles.xml': strToU8(
+      '<?xml version="1.0"?><w:styles xmlns:w="w"><w:docDefaults><w:rPrDefault><w:rPr>' +
+        `<w:rFonts w:ascii="${PAPER_FONT}" w:hAnsi="${PAPER_FONT}"/>` +
+        '</w:rPr></w:rPrDefault></w:docDefaults></w:styles>',
+    ),
+    'word/settings.xml': strToU8('<?xml version="1.0"?><w:settings xmlns:w="w"><w:zoom/></w:settings>'),
+    ...overrides,
+  })
+}
+
+const partOf = (bytes, name) => strFromU8(unzipSync(bytes)[name])
+
+check('the committed template is a .docx that names the paper font', () => {
+  const parts = unzipSync(new Uint8Array(fs.readFileSync('./src/office-shell/templates/paper.docx')))
+  const styles = strFromU8(parts['word/styles.xml'])
+  // Both, because docDefaults alone loses to the Normal style and the toolbar
+  // ends up naming a font the page is not set in.
+  assert.match(styles, /<w:rPrDefault>[\s\S]*?Holmes Minion/)
+  assert.match(styles, /w:styleId="Normal"[\s\S]*?Holmes Minion/)
+  // w:eastAsia left to the theme is what put new documents in DengXian.
+  assert.match(styles, /w:eastAsia="Holmes Minion"/)
+  assert.ok(parts['word/document.xml'], 'the template needs a document part')
+})
+
+check('saving plain leaves no trace of the paper font', () => {
+  const out = applyPaperChoice(paperDocx(), 'plain')
+  for (const [name, part] of Object.entries(unzipSync(out))) {
+    if (!name.endsWith('.xml')) continue
+    // Not just styles.xml: x2t writes the font onto the runs too, and a half
+    // converted document is worse than either whole answer.
+    assert.ok(!strFromU8(part).includes(PAPER_FONT), `${name} still names the paper font`)
+  }
+  assert.match(partOf(out, 'word/styles.xml'), new RegExp(PLAIN_FONT))
+})
+
+check('keeping the look writes a page colour Word will actually draw', () => {
+  const out = applyPaperChoice(paperDocx(), 'keep')
+  const document = partOf(out, 'word/document.xml')
+  // w:background is only valid before w:body; anywhere else Word rejects the part.
+  assert.match(document, new RegExp(`<w:background w:color="${PAPER_PAGE}"/><w:body`))
+  // Without this Word parses the background and declines to draw it — which
+  // would leave exactly the white-on-white document the option exists to avoid.
+  assert.match(partOf(out, 'word/settings.xml'), /<w:settings[^>]*><w:displayBackgroundShape\/>/)
+  // White for real: automatic resolves to black against a page Word thinks is
+  // white, so the text would be invisible in the reader that honours one and
+  // not the other.
+  assert.match(partOf(out, 'word/styles.xml'), /<w:rPrDefault><w:rPr><w:color w:val="FFFFFF"\/>/)
+  // The font stays — keeping the look means keeping it.
+  assert.ok(partOf(out, 'word/styles.xml').includes(PAPER_FONT))
+})
+
+check('a second save does not stack a second background', () => {
+  const once = applyPaperChoice(paperDocx(), 'keep')
+  const twice = applyPaperChoice(once, 'keep')
+  assert.equal(partOf(twice, 'word/document.xml').match(/<w:background/g).length, 1)
+  assert.equal(partOf(twice, 'word/styles.xml').match(/<w:color w:val="FFFFFF"/g).length, 1)
+})
+
+check('a save is never lost to a document the rewrite cannot read', () => {
+  // A .xlsx, a design export, or anything else that is not a Word document
+  // comes back untouched rather than throwing the save away.
+  const notAZip = new Uint8Array([1, 2, 3, 4])
+  assert.equal(applyPaperChoice(notAZip, 'plain'), notAZip)
+  const notWord = zipSync({ 'xl/workbook.xml': strToU8('<x/>') })
+  assert.equal(applyPaperChoice(notWord, 'keep'), notWord)
+})
+
+check('the shell and main agree on what paper mode is', () => {
+  const shell = read('./src/office-shell/shell.ts')
+  const paper = read('./src/main/workPaper.ts')
+  // Three copies of the same two constants — the font name and the page colour
+  // — in the template, the shell and the rewrite. A drift here shows up as a
+  // document that saves in a font nothing else in Holmes has heard of.
+  assert.ok(shell.includes(`const PAPER_FONT = '${PAPER_FONT}'`))
+  assert.ok(paper.includes(`export const PAPER_FONT = '${PAPER_FONT}'`))
+  assert.ok(shell.includes(`const PAPER_PAGE_HEX = '#${PAPER_PAGE.toLowerCase()}'`))
+})
+
+check('only new text documents are shown as Holmes', () => {
+  const shell = read('./src/office-shell/shell.ts')
+  // A spreadsheet's cells and a slide's shapes carry their own fills, so the
+  // treatment would leave black text on a dark grid.
+  assert.match(shell, /const template = kind === 'document' \? await paperTemplate\(\) : null/)
+  // A document off disk is someone else's formatting, and darkening the page
+  // under their black text makes it unreadable.
+  assert.match(shell, /async function openFile[\s\S]*?startPaperMode\(false\)/)
+})
+
+check('a page colour the user picks turns the treatment off', () => {
+  const shell = read('./src/office-shell/shell.ts')
+  // Layout > Page Color is the user saying what the page should look like.
+  assert.match(shell, /if \(paperMode && pageColorIsSet\(api\)\) \{\s*\n\s*paperMode = false/)
+})
+
+check('saving asks before it writes, not after', () => {
+  const app = read('./src/renderer/App.tsx')
+  // exportDocument runs the in-memory document through x2t, so the answer has
+  // to be known before the export, not applied to it afterwards.
+  assert.match(app, /const paper = await workEditorRef\.current\.paperState\?\.\(\)/)
+  assert.match(app, /if \(paper\?\.paper && !paper\.settled\) \{\s*\n\s*setWorkPaperPrompt\(paper\)\s*\n\s*return/)
+  // And every later save of the same document carries the same answer.
+  assert.match(app, /\.\.\.\(paper \? \{ paper \} : \{\}\)/)
+})
+
+check('a shell that cannot answer does not block the save', () => {
+  const frame = read('./src/renderer/components/OfficeEditorFrame.tsx')
+  // Failing closed here means writing the document, not hanging behind a dialog
+  // whose question nobody can answer.
+  assert.match(frame, /catch \{\s*\n\s*return \{ paper: false, settled: true, font: '' \}/)
+})
+
+check('a lost reply cannot wedge the editor connector', () => {
+  const shell = read('./src/office-shell/shell.ts')
+  // DocsAPI only SENDS a command when it is the sole outstanding callback, so
+  // one unanswered reply parks every later command in `tasks` forever. Both
+  // queues have to be cleared, and the connector proven, before it is used.
+  assert.match(shell, /function drainQueues[\s\S]*?target\.callbacks\.length = 0[\s\S]*?target\.tasks\.length = 0/)
+  assert.match(shell, /function probe\(target: ConnectorLike\)/)
+  // Re-registering directly rather than through connect(): connect() guards on
+  // isConnected and would add a second message listener, and two listeners
+  // shift two callbacks off the queue for every one reply.
+  assert.match(shell, /candidate\.sendMessage\?\.\(\{ type: 'register' \}\)/)
+  assert.ok(!/\.connect\(\)/.test(shell), 'the shell must not call connect() itself')
+  // And a command that times out throws the connector away rather than letting
+  // the next one queue up behind it.
+  assert.match(shell, /dropConnector\(\)\s*\n\s*drainQueues\(target\)/)
+})
+
+check('a new document starts from a connector nobody has proven yet', () => {
+  const shell = read('./src/office-shell/shell.ts')
+  // A remount builds a fresh editor and a fresh connector; whatever answered
+  // for the last document says nothing about this one.
+  assert.match(shell, /async function loadFile[\s\S]*?dropConnector\(\)/)
 })
 
 fs.rmSync(workDir, { recursive: true, force: true })

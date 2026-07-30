@@ -13,6 +13,9 @@
  * and a class-name scan would quietly miss two of them. Reading the colour that
  * actually got used catches all three, and keeps working if a fourth appears.
  *
+ * An svg carrying `data-boil-always` is taken regardless of its colour, for the
+ * few icons that are white on a turquoise chip rather than turquoise on the page.
+ *
  * The whole thing is one module started once from App: nothing is threaded
  * through the 200-odd call sites that render an icon.
  */
@@ -147,8 +150,13 @@ export function startIconBoil(): IconBoilHandle {
     for (const svg of document.querySelectorAll('svg')) {
       const height = svg.viewBox?.baseVal?.height
       if (!height) continue
-      const rgb = rgbOf(getComputedStyle(svg).color)
-      if (!rgb || !colours.has(rgb)) continue
+      // Turquoise is how an icon normally asks to boil, but an icon drawn in
+      // white *on* turquoise — the composer's Send arrow — wants the same
+      // treatment and can never pass a colour test. Those opt in by attribute.
+      if (!svg.hasAttribute('data-boil-always')) {
+        const rgb = rgbOf(getComputedStyle(svg).color)
+        if (!rgb || !colours.has(rgb)) continue
+      }
       for (const path of svg.querySelectorAll('path')) {
         if (seen.has(path)) continue
         // The live `d` is whatever frame is showing, so the source has to be

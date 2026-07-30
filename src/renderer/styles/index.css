@@ -134,6 +134,33 @@ h6.font-serif-display {
 /* Escape hatch: set data-boil="off" on <html> to freeze the face app-wide. */
 :root[data-boil='off'] .font-serif-display { animation: none; }
 
+/*
+ * Until every face has loaded, the animation is worse than no animation: a
+ * keyframe whose face has not arrived paints in the fallback stack, which does
+ * not carry Minion's advance widths, so the line re-sets on the frames that are
+ * still missing. Holding frame 0 means at most one swap instead of ten.
+ *
+ * boil/boilFonts.ts sets the attribute once document.fonts has them all; it is
+ * kicked off in main.tsx, and always resolves, so this can never stick.
+ */
+:root:not([data-boil-fonts='ready']) .font-serif-display { animation: none; }
+
+/*
+ * For the places where even that one swap is too visible — the home-screen
+ * wordmark, which is on screen from the first frame — hide the text instead and
+ * fade it in once the face is really there.
+ */
+.boil-reveal {
+  opacity: 0;
+  transition: opacity 220ms ease-out;
+}
+
+:root[data-boil-fonts='ready'] .boil-reveal { opacity: 1; }
+
+@media (prefers-reduced-motion: reduce) {
+  .boil-reveal { transition: none; }
+}
+
 .scrollbar-thin::-webkit-scrollbar {
   width: 6px;
   height: 6px;

@@ -271,6 +271,13 @@ export const BooksSourcePanel: FC<BooksSourcePanelProps> = ({
           </div>
         )}
 
+        {lastScan && (lastScan.booksFiled ?? 0) > 0 && (
+          <div className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-[11px] text-white/50">
+            <FontAwesomeIcon icon={faFolderTree} className="mr-1.5 text-violet-300/60" />
+            Filed {lastScan.booksFiled} book{lastScan.booksFiled === 1 ? '' : 's'} into author folders.
+          </div>
+        )}
+
         {/* A scan that stopped short must never read as a complete one. */}
         {lastScan && !lastScan.scanComplete && (
           <div className="flex items-start gap-2 rounded-lg border border-amber-400/20 bg-amber-400/[0.07] px-3 py-2 text-[11px] text-amber-200/80">

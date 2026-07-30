@@ -1,15 +1,30 @@
 import Database from 'better-sqlite3'
 import { app } from 'electron'
+import { createHash } from 'crypto'
 import path from 'path'
 import { v4 as uuidv4 } from 'uuid'
 import { deriveContextShort, isFailedContext } from '../shared/contextVersions'
 import { getAssistantName } from '../shared/assistantIdentity'
+import type { TranscriptCue } from '../shared/playFeed'
 import type {
   ChatAttachment,
   Conversation,
   Message,
   SearchResult,
   ReasoningEffort,
+  PlayAnalysis,
+  PlayAnalysisStatus,
+  PlayArchive,
+  PlayArchiveStatus,
+  PlayFeedStatus,
+  PlayFlag,
+  PlayIntent,
+  PlayItem,
+  PlayItemKind,
+  PlayReaction,
+  PlayRetrieverId,
+  PlaySourceRef,
+  PlayWatchState,
   Project,
   PsychologyAnalysis,
   HealthAnalysis,
@@ -316,6 +331,148 @@ export function initDatabase(): void {
       input_hash TEXT NOT NULL DEFAULT '',
       updated_at INTEGER NOT NULL DEFAULT 0
     );
+
+    -- The Play feed. One row, for the same reason as home_ideas above: the whole
+    -- feed is planned, retrieved and curated together. Unlike home_ideas this one
+    -- carries provenance -- a pick has to be able to say why it was picked.
+    CREATE TABLE IF NOT EXISTS play_feed (
+      id INTEGER PRIMARY KEY CHECK(id = 1),
+      generated_at INTEGER NOT NULL DEFAULT 0,
+      input_hash TEXT NOT NULL DEFAULT '',
+      intents_json TEXT NOT NULL DEFAULT '[]',
+      provenance_json TEXT,
+      planner_model TEXT NOT NULL DEFAULT '',
+      curator_model TEXT NOT NULL DEFAULT '',
+      prompt_version TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'ok',
+      last_error TEXT,
+      quota_day TEXT NOT NULL DEFAULT '',
+      search_units_used INTEGER NOT NULL DEFAULT 0
+    );
+
+    -- kind and provider carry no CHECK, for the reason spelled out on
+    -- activity_records.source_type below: the valid set lives in PLAY_ITEM_KINDS
+    -- in shared/types.ts, and a CHECK here would mean a full table rebuild every
+    -- time a kind is added.
+    --
+    -- Rows are NEVER deleted by a refresh. The seen-set and the reactions are the
+    -- memory the next plan is built from, so a refresh flips in_current_feed off
+    -- and back on rather than clearing the table.
+    CREATE TABLE IF NOT EXISTS play_items (
+      id TEXT PRIMARY KEY,
+      kind TEXT NOT NULL DEFAULT 'video',
+      provider TEXT NOT NULL,
+      external_id TEXT NOT NULL,
+      url TEXT NOT NULL,
+      title TEXT NOT NULL,
+      creator TEXT,
+      description TEXT,
+      published_at TEXT,
+      duration_seconds INTEGER,
+      thumbnail_url TEXT,
+      thumbnail_media_id TEXT,
+      embeddable INTEGER NOT NULL DEFAULT 1 CHECK(embeddable IN (0,1)),
+      rationale TEXT NOT NULL DEFAULT '',
+      intent_ids_json TEXT NOT NULL DEFAULT '[]',
+      source_refs_json TEXT NOT NULL DEFAULT '[]',
+      -- The memory_fields key a thumbs-up on this item should land in, chosen by
+      -- the curator at pick time. Stored rather than re-derived: the choice was
+      -- made by something that had read the title, channel and description.
+      memory_field_key TEXT,
+      rank INTEGER NOT NULL DEFAULT 0,
+      first_seen_at INTEGER NOT NULL,
+      shown_at INTEGER NOT NULL,
+      in_current_feed INTEGER NOT NULL DEFAULT 1 CHECK(in_current_feed IN (0,1)),
+      reaction TEXT CHECK(reaction IS NULL OR reaction IN ('up','down')),
+      reacted_at INTEGER,
+      reaction_written_to_memory INTEGER NOT NULL DEFAULT 0 CHECK(reaction_written_to_memory IN (0,1))
+    );
+
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_play_items_identity
+      ON play_items(kind, provider, external_id);
+    CREATE INDEX IF NOT EXISTS idx_play_items_current
+      ON play_items(in_current_feed, rank);
+    CREATE INDEX IF NOT EXISTS idx_play_items_reaction
+      ON play_items(reaction, reacted_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_play_items_shown
+      ON play_items(shown_at DESC);
+
+    -- Cached artwork, addressed by an OPAQUE id resolved through this table. The
+    -- holmes-media:// URL never carries a path, so traversal is impossible by
+    -- construction rather than by sanitizing.
+    CREATE TABLE IF NOT EXISTS play_media (
+      id TEXT PRIMARY KEY,
+      source_url TEXT NOT NULL UNIQUE,
+      file_path TEXT NOT NULL,
+      content_type TEXT NOT NULL DEFAULT 'image/jpeg',
+      byte_size INTEGER NOT NULL DEFAULT 0,
+      fetched_at INTEGER NOT NULL,
+      last_used_at INTEGER NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_play_media_used
+      ON play_media(last_used_at);
+
+    -- Auto-generated captions, keyed by the video rather than the feed row so a
+    -- video suggested again months later is not re-downloaded. Kept separate
+    -- from play_items for the same reason: a transcript outlives a suggestion.
+    CREATE TABLE IF NOT EXISTS play_transcripts (
+      external_id TEXT PRIMARY KEY,
+      provider TEXT NOT NULL DEFAULT 'youtube',
+      language TEXT NOT NULL DEFAULT 'en',
+      cues_json TEXT NOT NULL DEFAULT '[]',
+      text_hash TEXT NOT NULL DEFAULT '',
+      cue_count INTEGER NOT NULL DEFAULT 0,
+      fetched_at INTEGER NOT NULL
+    );
+
+    -- The fact/bias pass. Keyed on the transcript hash AND the prompt version, so
+    -- re-analysing is free until the words or the prompt actually change.
+    CREATE TABLE IF NOT EXISTS play_analyses (
+      external_id TEXT PRIMARY KEY,
+      provider TEXT NOT NULL DEFAULT 'youtube',
+      text_hash TEXT NOT NULL DEFAULT '',
+      prompt_version TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'pending',
+      summary TEXT NOT NULL DEFAULT '',
+      flags_json TEXT NOT NULL DEFAULT '[]',
+      language TEXT,
+      model TEXT NOT NULL DEFAULT '',
+      analyzed_at INTEGER NOT NULL DEFAULT 0,
+      error TEXT
+    );
+
+    -- Where you got to. Keyed by the video, not the feed row, so closing a video
+    -- and coming back to it weeks later resumes even if the feed has moved on.
+    CREATE TABLE IF NOT EXISTS play_watch_state (
+      external_id TEXT NOT NULL,
+      provider TEXT NOT NULL DEFAULT 'youtube',
+      position_seconds REAL NOT NULL DEFAULT 0,
+      -- Monotonic, exactly as book_reading_state does it: scrubbing back to
+      -- rewatch something must not undo the progress bar.
+      furthest_seconds REAL NOT NULL DEFAULT 0,
+      duration_seconds REAL,
+      completed_at INTEGER,
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY (provider, external_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS play_archives (
+      external_id TEXT NOT NULL,
+      provider TEXT NOT NULL DEFAULT 'youtube',
+      status TEXT NOT NULL DEFAULT 'queued',
+      file_path TEXT,
+      transcript_path TEXT,
+      byte_size INTEGER NOT NULL DEFAULT 0,
+      title TEXT NOT NULL DEFAULT '',
+      creator TEXT,
+      archived_at INTEGER,
+      error TEXT,
+      PRIMARY KEY (provider, external_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_play_archives_status
+      ON play_archives(status, archived_at DESC);
 
     CREATE TABLE IF NOT EXISTS health_records (
       id TEXT PRIMARY KEY,
@@ -1218,6 +1375,12 @@ export function initDatabase(): void {
   try {
     db.exec("ALTER TABLE audiobook_segments ADD COLUMN mime_type TEXT NOT NULL DEFAULT 'audio/mpeg'")
   } catch { /* column already exists */ }
+
+  // The organize prompt version this book was last named under. NULL means the
+  // auto-filing pass after a scan has never considered it; see bookOrganize.ts.
+  try {
+    db.exec('ALTER TABLE books ADD COLUMN organize_checked_version TEXT')
+  } catch { /* column already exists */ }
   try {
     db.exec('ALTER TABLE conversations ADD COLUMN reasoning_effort TEXT DEFAULT \'medium\'')
   } catch { /* column already exists */ }
@@ -1593,6 +1756,8 @@ export function initDatabase(): void {
   } catch {
     // FTS table may already exist
   }
+
+  ensureContextSearchIndex()
 
   // After the migrations, not with seedDefaultProjects: this inserts a `kind`,
   // and on an existing database that column only exists once the ALTER above
@@ -2313,7 +2478,7 @@ export function restoreDefaultProjects(): void {
   for (const p of defaults) {
     if (!existingNames.has(p.name)) {
       position += 1
-      insert.run(uuidv4(), p.name, p.icon, p.color, projectKindForCategory(p.category), null, position, now, now)
+      insert.run(uuidv4(), p.name, p.icon, p.color, projectKindForCategory(p.category, p.name), null, position, now, now)
     }
   }
 }
@@ -2327,7 +2492,7 @@ function seedDefaultProjects(): void {
   const insert = db.prepare(INSERT_DEFAULT_PROJECT_SQL)
   // Seeded in declaration order, which is the order the Data page shows first.
   defaults.forEach((p, index) => {
-    insert.run(uuidv4(), p.name, p.icon, p.color, projectKindForCategory(p.category), null, index, now, now)
+    insert.run(uuidv4(), p.name, p.icon, p.color, projectKindForCategory(p.category, p.name), null, index, now, now)
   })
 }
 
@@ -2354,7 +2519,7 @@ function ensureMediaProjects(): void {
   const insert = db.prepare(INSERT_DEFAULT_PROJECT_SQL)
   for (const p of missing) {
     position += 1
-    insert.run(uuidv4(), p.name, p.icon, p.color, projectKindForCategory(p.category), null, position, now, now)
+    insert.run(uuidv4(), p.name, p.icon, p.color, projectKindForCategory(p.category, p.name), null, position, now, now)
   }
 }
 
@@ -2826,6 +2991,815 @@ export function setHomeIdeas(ideas: string[], inputHash: string): void {
   ).run(JSON.stringify(ideas), inputHash, Date.now())
 }
 
+export interface PlayFeedRow {
+  generatedAt: number
+  inputHash: string
+  intents: PlayIntent[]
+  provenance: ContextProvenance | null
+  plannerModel: string
+  curatorModel: string
+  promptVersion: string
+  status: PlayFeedStatus
+  lastError: string | null
+  quotaDay: string
+  searchUnitsUsed: number
+}
+
+const EMPTY_PLAY_FEED_ROW: PlayFeedRow = {
+  generatedAt: 0,
+  inputHash: '',
+  intents: [],
+  provenance: null,
+  plannerModel: '',
+  curatorModel: '',
+  promptVersion: '',
+  status: 'ok',
+  lastError: null,
+  quotaDay: '',
+  searchUnitsUsed: 0,
+}
+
+function parseJsonOr<T>(raw: string | null | undefined, fallback: T): T {
+  if (!raw) return fallback
+  try {
+    const parsed = JSON.parse(raw)
+    return (parsed ?? fallback) as T
+  } catch {
+    // A corrupt row reads as "nothing stored yet"; the next refresh overwrites it.
+    return fallback
+  }
+}
+
+export function getPlayFeedRow(): PlayFeedRow {
+  const row = db
+    .prepare(
+      `SELECT generated_at, input_hash, intents_json, provenance_json, planner_model, curator_model,
+              prompt_version, status, last_error, quota_day, search_units_used
+       FROM play_feed WHERE id = 1`
+    )
+    .get() as
+    | {
+        generated_at: number
+        input_hash: string
+        intents_json: string
+        provenance_json: string | null
+        planner_model: string
+        curator_model: string
+        prompt_version: string
+        status: string
+        last_error: string | null
+        quota_day: string
+        search_units_used: number
+      }
+    | undefined
+  if (!row) return { ...EMPTY_PLAY_FEED_ROW }
+  return {
+    generatedAt: row.generated_at,
+    inputHash: row.input_hash,
+    intents: parseJsonOr<PlayIntent[]>(row.intents_json, []),
+    provenance: parseJsonOr<ContextProvenance | null>(row.provenance_json, null),
+    plannerModel: row.planner_model,
+    curatorModel: row.curator_model,
+    promptVersion: row.prompt_version,
+    status: row.status as PlayFeedStatus,
+    lastError: row.last_error,
+    quotaDay: row.quota_day,
+    searchUnitsUsed: row.search_units_used,
+  }
+}
+
+export interface PlayFeedSaveInput {
+  inputHash: string
+  intents: PlayIntent[]
+  provenance: ContextProvenance | null
+  plannerModel: string
+  curatorModel: string
+  promptVersion: string
+  status: PlayFeedStatus
+  lastError: string | null
+}
+
+export function savePlayFeed(input: PlayFeedSaveInput): void {
+  db.prepare(
+    `INSERT INTO play_feed (
+       id, generated_at, input_hash, intents_json, provenance_json, planner_model,
+       curator_model, prompt_version, status, last_error
+     ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET
+       generated_at = excluded.generated_at,
+       input_hash = excluded.input_hash,
+       intents_json = excluded.intents_json,
+       provenance_json = excluded.provenance_json,
+       planner_model = excluded.planner_model,
+       curator_model = excluded.curator_model,
+       prompt_version = excluded.prompt_version,
+       status = excluded.status,
+       last_error = excluded.last_error`
+  ).run(
+    Date.now(),
+    input.inputHash,
+    JSON.stringify(input.intents),
+    input.provenance ? JSON.stringify(input.provenance) : null,
+    input.plannerModel,
+    input.curatorModel,
+    input.promptVersion,
+    input.status,
+    input.lastError
+  )
+}
+
+/**
+ * Records a failed refresh without touching the stored feed. A user-pressed
+ * Refresh that silently returns the same cards reads as broken, so the status
+ * outlives the call that produced it.
+ */
+export function setPlayFeedStatus(status: PlayFeedStatus, lastError: string | null): void {
+  db.prepare(
+    `INSERT INTO play_feed (id, status, last_error) VALUES (1, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET status = excluded.status, last_error = excluded.last_error`
+  ).run(status, lastError)
+}
+
+/**
+ * The YouTube quota ledger. Keyed on the Pacific date because that is when
+ * YouTube resets, not when the user's own midnight arrives.
+ */
+export function getPlaySearchUnits(quotaDay: string): number {
+  const row = db.prepare('SELECT quota_day, search_units_used FROM play_feed WHERE id = 1').get() as
+    | { quota_day: string; search_units_used: number }
+    | undefined
+  if (!row || row.quota_day !== quotaDay) return 0
+  return row.search_units_used
+}
+
+export function addPlaySearchUnits(quotaDay: string, units: number): void {
+  db.prepare(
+    `INSERT INTO play_feed (id, quota_day, search_units_used) VALUES (1, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET
+       quota_day = excluded.quota_day,
+       search_units_used = CASE
+         WHEN play_feed.quota_day = excluded.quota_day THEN play_feed.search_units_used + excluded.search_units_used
+         ELSE excluded.search_units_used
+       END`
+  ).run(quotaDay, units)
+}
+
+interface PlayItemRow {
+  id: string
+  kind: string
+  provider: string
+  external_id: string
+  url: string
+  title: string
+  creator: string | null
+  description: string | null
+  published_at: string | null
+  duration_seconds: number | null
+  thumbnail_url: string | null
+  thumbnail_media_id: string | null
+  embeddable: number
+  rationale: string
+  intent_ids_json: string
+  source_refs_json: string
+  rank: number
+  shown_at: number
+  reaction: string | null
+  reacted_at: number | null
+}
+
+function mapPlayItem(row: PlayItemRow): PlayItem {
+  return {
+    id: row.id,
+    kind: row.kind as PlayItemKind,
+    provider: row.provider as PlayRetrieverId,
+    externalId: row.external_id,
+    url: row.url,
+    title: row.title,
+    creator: row.creator,
+    description: row.description,
+    publishedAt: row.published_at,
+    durationSeconds: row.duration_seconds,
+    thumbnailUrl: row.thumbnail_url,
+    thumbnailMediaId: row.thumbnail_media_id,
+    embeddable: row.embeddable === 1,
+    rationale: row.rationale,
+    intentIds: parseJsonOr<string[]>(row.intent_ids_json, []),
+    sourceRefs: parseJsonOr<PlaySourceRef[]>(row.source_refs_json, []),
+    rank: row.rank,
+    reaction: (row.reaction as PlayReaction | null) ?? null,
+    reactedAt: row.reacted_at,
+    shownAt: row.shown_at,
+    // Joined on the video's own identity rather than stored on the row: all
+    // three outlive the suggestion that introduced them.
+    analysis: getPlayAnalysis(row.external_id),
+    watch: getPlayWatchState(row.external_id),
+    archive: getPlayArchive(row.external_id),
+  }
+}
+
+const PLAY_ITEM_COLUMNS = `id, kind, provider, external_id, url, title, creator, description,
+  published_at, duration_seconds, thumbnail_url, thumbnail_media_id, embeddable, rationale,
+  intent_ids_json, source_refs_json, rank, shown_at, reaction, reacted_at`
+
+export function listPlayItems(options: { currentOnly?: boolean } = {}): PlayItem[] {
+  const where = options.currentOnly === false ? '' : 'WHERE in_current_feed = 1'
+  const rows = db
+    .prepare(`SELECT ${PLAY_ITEM_COLUMNS} FROM play_items ${where} ORDER BY rank ASC`)
+    .all() as PlayItemRow[]
+  return rows.map(mapPlayItem)
+}
+
+export function getPlayItemById(id: string): PlayItem | null {
+  const row = db.prepare(`SELECT ${PLAY_ITEM_COLUMNS} FROM play_items WHERE id = ?`).get(id) as
+    | PlayItemRow
+    | undefined
+  return row ? mapPlayItem(row) : null
+}
+
+export interface PlayItemInput {
+  kind: PlayItemKind
+  provider: PlayRetrieverId
+  externalId: string
+  url: string
+  title: string
+  creator: string | null
+  description: string | null
+  publishedAt: string | null
+  durationSeconds: number | null
+  thumbnailUrl: string | null
+  embeddable: boolean
+  rationale: string
+  intentIds: string[]
+  sourceRefs: PlaySourceRef[]
+  memoryFieldKey: string | null
+  rank: number
+}
+
+/** The curator's chosen target field for a thumbs-up on this item. */
+export function getPlayItemMemoryFieldKey(id: string): string | null {
+  const row = db.prepare('SELECT memory_field_key FROM play_items WHERE id = ?').get(id) as
+    | { memory_field_key: string | null }
+    | undefined
+  return row?.memory_field_key ?? null
+}
+
+/**
+ * Replaces the visible feed in one transaction.
+ *
+ * An item already in the table keeps its `first_seen_at`, its reaction and the
+ * flag saying that reaction was written to memory — a refresh re-ranks and
+ * re-explains, it does not forget. `thumbnail_media_id` is preserved too, so a
+ * cached thumbnail is not re-fetched.
+ */
+export function replacePlayFeedItems(items: PlayItemInput[]): PlayItem[] {
+  const now = Date.now()
+  const clear = db.prepare('UPDATE play_items SET in_current_feed = 0 WHERE in_current_feed = 1')
+  const upsert = db.prepare(
+    `INSERT INTO play_items (
+       id, kind, provider, external_id, url, title, creator, description, published_at,
+       duration_seconds, thumbnail_url, thumbnail_media_id, embeddable, rationale,
+       intent_ids_json, source_refs_json, memory_field_key, rank, first_seen_at, shown_at, in_current_feed
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+     ON CONFLICT(kind, provider, external_id) DO UPDATE SET
+       url = excluded.url,
+       title = excluded.title,
+       creator = excluded.creator,
+       description = excluded.description,
+       published_at = excluded.published_at,
+       duration_seconds = excluded.duration_seconds,
+       thumbnail_url = excluded.thumbnail_url,
+       embeddable = excluded.embeddable,
+       rationale = excluded.rationale,
+       intent_ids_json = excluded.intent_ids_json,
+       source_refs_json = excluded.source_refs_json,
+       memory_field_key = excluded.memory_field_key,
+       rank = excluded.rank,
+       shown_at = excluded.shown_at,
+       in_current_feed = 1`
+  )
+
+  db.transaction(() => {
+    clear.run()
+    for (const item of items) {
+      upsert.run(
+        uuidv4(),
+        item.kind,
+        item.provider,
+        item.externalId,
+        item.url,
+        item.title,
+        item.creator,
+        item.description,
+        item.publishedAt,
+        item.durationSeconds,
+        item.thumbnailUrl,
+        item.embeddable ? 1 : 0,
+        item.rationale,
+        JSON.stringify(item.intentIds),
+        JSON.stringify(item.sourceRefs),
+        item.memoryFieldKey,
+        item.rank,
+        now,
+        now
+      )
+    }
+  })()
+
+  return listPlayItems()
+}
+
+export function setPlayItemThumbnail(id: string, mediaId: string | null): void {
+  db.prepare('UPDATE play_items SET thumbnail_media_id = ? WHERE id = ?').run(mediaId, id)
+}
+
+export function setPlayItemReaction(id: string, reaction: PlayReaction | null): PlayItem | null {
+  db.prepare('UPDATE play_items SET reaction = ?, reacted_at = ? WHERE id = ?').run(
+    reaction,
+    reaction ? Date.now() : null,
+    id
+  )
+  return getPlayItemById(id)
+}
+
+export function markPlayReactionWritten(id: string): void {
+  db.prepare('UPDATE play_items SET reaction_written_to_memory = 1 WHERE id = ?').run(id)
+}
+
+export function hasPlayReactionBeenWritten(id: string): boolean {
+  const row = db.prepare('SELECT reaction_written_to_memory FROM play_items WHERE id = ?').get(id) as
+    | { reaction_written_to_memory: number }
+    | undefined
+  return row?.reaction_written_to_memory === 1
+}
+
+/** The most recent reactions, newest first — what the next plan is told about. */
+export function listPlayReactions(limit: number): PlayItem[] {
+  const rows = db
+    .prepare(
+      `SELECT ${PLAY_ITEM_COLUMNS} FROM play_items
+       WHERE reaction IS NOT NULL ORDER BY reacted_at DESC LIMIT ?`
+    )
+    .all(limit) as PlayItemRow[]
+  return rows.map(mapPlayItem)
+}
+
+/**
+ * Items the next retrieval must not surface again: everything the user turned
+ * down, forever, plus everything already shown inside the recency window.
+ *
+ * Keys are `kind|provider|externalId`, matching `playItemKey` in the shared leaf.
+ */
+export function listPlaySuppressedKeys(shownSinceMs: number): Set<string> {
+  const rows = db
+    .prepare(
+      `SELECT kind, provider, external_id FROM play_items
+       WHERE reaction = 'down' OR (reaction IS NULL AND shown_at >= ?)`
+    )
+    .all(shownSinceMs) as Array<{ kind: string; provider: string; external_id: string }>
+  return new Set(rows.map((row) => `${row.kind}|${row.provider}|${row.external_id}`))
+}
+
+/**
+ * Cheap staleness signal for the reaction set. A count plus the newest timestamp
+ * moves whenever a reaction is added or changed, which is all the input hash
+ * needs — hashing the rows themselves would buy nothing.
+ */
+export function getPlayReactionSignature(): { count: number; newestAt: number } {
+  const row = db
+    .prepare('SELECT COUNT(*) AS count, COALESCE(MAX(reacted_at), 0) AS newest FROM play_items WHERE reaction IS NOT NULL')
+    .get() as { count: number; newest: number }
+  return { count: row.count, newestAt: row.newest }
+}
+
+/**
+ * Bounds the seen-set. Reacted items are kept whatever their age: they are the
+ * taste record, not the display history.
+ */
+export function prunePlayItems(maxUnreacted: number): void {
+  db.prepare(
+    `DELETE FROM play_items
+     WHERE reaction IS NULL AND in_current_feed = 0 AND id NOT IN (
+       SELECT id FROM play_items WHERE reaction IS NULL AND in_current_feed = 0
+       ORDER BY shown_at DESC LIMIT ?
+     )`
+  ).run(maxUnreacted)
+}
+
+/**
+ * The same signature trick for watch history. `youtube_events` can hold six
+ * figures, so the input hash reads a count and a max rather than the rows.
+ */
+export function getYoutubeEventsSignature(): { count: number; newestOccurredAt: string | null } {
+  const row = db
+    .prepare('SELECT COUNT(*) AS count, MAX(occurred_at) AS newest FROM youtube_events')
+    .get() as { count: number; newest: string | null }
+  return { count: row.count, newestOccurredAt: row.newest }
+}
+
+export function getPlayTranscript(
+  externalId: string
+): { language: string; cues: TranscriptCue[]; textHash: string } | null {
+  const row = db
+    .prepare('SELECT language, cues_json, text_hash FROM play_transcripts WHERE external_id = ?')
+    .get(externalId) as { language: string; cues_json: string; text_hash: string } | undefined
+  if (!row) return null
+  return {
+    language: row.language,
+    cues: parseJsonOr<TranscriptCue[]>(row.cues_json, []),
+    textHash: row.text_hash,
+  }
+}
+
+export function savePlayTranscript(input: {
+  externalId: string
+  language: string
+  cues: TranscriptCue[]
+  textHash: string
+}): void {
+  db.prepare(
+    `INSERT INTO play_transcripts (external_id, provider, language, cues_json, text_hash, cue_count, fetched_at)
+     VALUES (?, 'youtube', ?, ?, ?, ?, ?)
+     ON CONFLICT(external_id) DO UPDATE SET
+       language = excluded.language,
+       cues_json = excluded.cues_json,
+       text_hash = excluded.text_hash,
+       cue_count = excluded.cue_count,
+       fetched_at = excluded.fetched_at`
+  ).run(
+    input.externalId,
+    input.language,
+    JSON.stringify(input.cues),
+    input.textHash,
+    input.cues.length,
+    Date.now()
+  )
+}
+
+export function getPlayAnalysis(externalId: string): (PlayAnalysis & { textHash: string; promptVersion: string }) | null {
+  const row = db
+    .prepare(
+      `SELECT text_hash, prompt_version, status, summary, flags_json, language, analyzed_at, error
+       FROM play_analyses WHERE external_id = ?`
+    )
+    .get(externalId) as
+    | {
+        text_hash: string
+        prompt_version: string
+        status: string
+        summary: string
+        flags_json: string
+        language: string | null
+        analyzed_at: number
+        error: string | null
+      }
+    | undefined
+  if (!row) return null
+  return {
+    status: row.status as PlayAnalysisStatus,
+    summary: row.summary,
+    flags: parseJsonOr<PlayFlag[]>(row.flags_json, []),
+    language: row.language,
+    analyzedAt: row.analyzed_at,
+    error: row.error,
+    textHash: row.text_hash,
+    promptVersion: row.prompt_version,
+  }
+}
+
+export function savePlayAnalysis(input: {
+  externalId: string
+  textHash: string
+  promptVersion: string
+  status: PlayAnalysisStatus
+  summary: string
+  flags: PlayFlag[]
+  language: string | null
+  model: string
+  error: string | null
+}): void {
+  db.prepare(
+    `INSERT INTO play_analyses (
+       external_id, provider, text_hash, prompt_version, status, summary, flags_json,
+       language, model, analyzed_at, error
+     ) VALUES (?, 'youtube', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(external_id) DO UPDATE SET
+       text_hash = excluded.text_hash,
+       prompt_version = excluded.prompt_version,
+       status = excluded.status,
+       summary = excluded.summary,
+       flags_json = excluded.flags_json,
+       language = excluded.language,
+       model = excluded.model,
+       analyzed_at = excluded.analyzed_at,
+       error = excluded.error`
+  ).run(
+    input.externalId,
+    input.textHash,
+    input.promptVersion,
+    input.status,
+    input.summary,
+    JSON.stringify(input.flags),
+    input.language,
+    input.model,
+    Date.now(),
+    input.error
+  )
+}
+
+export function getPlayWatchState(externalId: string): PlayWatchState | null {
+  const row = db
+    .prepare(
+      `SELECT position_seconds, furthest_seconds, duration_seconds, completed_at, updated_at
+       FROM play_watch_state WHERE provider = 'youtube' AND external_id = ?`
+    )
+    .get(externalId) as
+    | {
+        position_seconds: number
+        furthest_seconds: number
+        duration_seconds: number | null
+        completed_at: number | null
+        updated_at: number
+      }
+    | undefined
+  if (!row) return null
+  return {
+    positionSeconds: row.position_seconds,
+    furthestSeconds: row.furthest_seconds,
+    durationSeconds: row.duration_seconds,
+    completedAt: row.completed_at,
+    updatedAt: row.updated_at,
+  }
+}
+
+/**
+ * `furthest_seconds` only ever climbs — scrubbing back to rewatch a section must
+ * not undo the progress bar, the same rule `book_reading_state` follows.
+ */
+export function savePlayWatchState(input: {
+  externalId: string
+  positionSeconds: number
+  durationSeconds: number | null
+  completed: boolean
+}): PlayWatchState {
+  const now = Date.now()
+  db.prepare(
+    `INSERT INTO play_watch_state (
+       external_id, provider, position_seconds, furthest_seconds, duration_seconds, completed_at, updated_at
+     ) VALUES (?, 'youtube', ?, ?, ?, ?, ?)
+     ON CONFLICT(provider, external_id) DO UPDATE SET
+       position_seconds = excluded.position_seconds,
+       furthest_seconds = MAX(play_watch_state.furthest_seconds, excluded.furthest_seconds),
+       duration_seconds = COALESCE(excluded.duration_seconds, play_watch_state.duration_seconds),
+       completed_at = COALESCE(play_watch_state.completed_at, excluded.completed_at),
+       updated_at = excluded.updated_at`
+  ).run(
+    input.externalId,
+    input.positionSeconds,
+    input.positionSeconds,
+    input.durationSeconds,
+    input.completed ? now : null,
+    now
+  )
+  return getPlayWatchState(input.externalId)!
+}
+
+export function getPlayArchive(externalId: string): PlayArchive | null {
+  const row = db
+    .prepare(
+      `SELECT status, file_path, byte_size, archived_at, error
+       FROM play_archives WHERE provider = 'youtube' AND external_id = ?`
+    )
+    .get(externalId) as
+    | { status: string; file_path: string | null; byte_size: number; archived_at: number | null; error: string | null }
+    | undefined
+  if (!row) return null
+  return {
+    status: row.status as PlayArchiveStatus,
+    filePath: row.file_path,
+    byteSize: row.byte_size,
+    archivedAt: row.archived_at,
+    error: row.error,
+  }
+}
+
+export function savePlayArchive(input: {
+  externalId: string
+  status: PlayArchiveStatus
+  filePath: string | null
+  transcriptPath: string | null
+  byteSize: number
+  title: string
+  creator: string | null
+  error: string | null
+}): void {
+  db.prepare(
+    `INSERT INTO play_archives (
+       external_id, provider, status, file_path, transcript_path, byte_size, title, creator, archived_at, error
+     ) VALUES (?, 'youtube', ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(provider, external_id) DO UPDATE SET
+       status = excluded.status,
+       file_path = excluded.file_path,
+       transcript_path = excluded.transcript_path,
+       byte_size = excluded.byte_size,
+       title = excluded.title,
+       creator = excluded.creator,
+       archived_at = excluded.archived_at,
+       error = excluded.error`
+  ).run(
+    input.externalId,
+    input.status,
+    input.filePath,
+    input.transcriptPath,
+    input.byteSize,
+    input.title,
+    input.creator,
+    input.status === 'done' ? Date.now() : null,
+    input.error
+  )
+}
+
+/**
+ * The archive record for the life picture.
+ *
+ * What was archived, when, and how much of it was watched — never the transcript
+ * text. Exactly the line `booksContext.ts` draws: the reading record reaches the
+ * profile, the book's words do not.
+ */
+export function listPlayArchiveRecord(limit: number): Array<{
+  title: string
+  creator: string | null
+  archivedAt: number | null
+  furthestSeconds: number
+  durationSeconds: number | null
+  completedAt: number | null
+}> {
+  return db
+    .prepare(
+      `SELECT a.title, a.creator, a.archived_at AS archivedAt,
+              COALESCE(w.furthest_seconds, 0) AS furthestSeconds,
+              w.duration_seconds AS durationSeconds, w.completed_at AS completedAt
+       FROM play_archives a
+       LEFT JOIN play_watch_state w
+         ON w.provider = a.provider AND w.external_id = a.external_id
+       WHERE a.status = 'done'
+       ORDER BY a.archived_at DESC
+       LIMIT ?`
+    )
+    .all(limit) as Array<{
+    title: string
+    creator: string | null
+    archivedAt: number | null
+    furthestSeconds: number
+    durationSeconds: number | null
+    completedAt: number | null
+  }>
+}
+
+export interface PlayWatchHistory {
+  channels: Array<{ channel: string; count: number; lastWatched: string | null }>
+  recentTitles: Array<{ title: string; channel: string | null; occurredAt: string }>
+  total: number
+}
+
+/**
+ * What the user actually watches, compressed for a prompt.
+ *
+ * Top channels by count is the durable signal; recent titles carry what they are
+ * on right now. The raw table is Google Takeout history and can run to six
+ * figures, so it is aggregated in SQL rather than read into the process.
+ */
+export function summarizeYoutubeWatchHistory(topChannels: number, recentTitles: number): PlayWatchHistory {
+  const channels = db
+    .prepare(
+      `SELECT channel, COUNT(*) AS count, MAX(occurred_at) AS last_watched
+       FROM youtube_events
+       WHERE channel IS NOT NULL AND TRIM(channel) <> ''
+       GROUP BY channel
+       ORDER BY count DESC, last_watched DESC
+       LIMIT ?`
+    )
+    .all(topChannels) as Array<{ channel: string; count: number; last_watched: string | null }>
+
+  const recent = db
+    .prepare(
+      `SELECT title, channel, occurred_at
+       FROM youtube_events
+       WHERE title IS NOT NULL AND TRIM(title) <> ''
+       ORDER BY occurred_at DESC
+       LIMIT ?`
+    )
+    .all(recentTitles) as Array<{ title: string; channel: string | null; occurred_at: string }>
+
+  const totalRow = db.prepare('SELECT COUNT(*) AS count FROM youtube_events').get() as { count: number }
+
+  return {
+    channels: channels.map((row) => ({
+      channel: row.channel,
+      count: row.count,
+      lastWatched: row.last_watched,
+    })),
+    recentTitles: recent.map((row) => ({
+      title: row.title,
+      channel: row.channel,
+      occurredAt: row.occurred_at,
+    })),
+    total: totalRow.count,
+  }
+}
+
+export interface PlayMediaRow {
+  id: string
+  sourceUrl: string
+  filePath: string
+  contentType: string
+  byteSize: number
+  fetchedAt: number
+  lastUsedAt: number
+}
+
+export function getPlayMediaById(id: string): PlayMediaRow | null {
+  const row = db
+    .prepare('SELECT id, source_url, file_path, content_type, byte_size, fetched_at, last_used_at FROM play_media WHERE id = ?')
+    .get(id) as
+    | {
+        id: string
+        source_url: string
+        file_path: string
+        content_type: string
+        byte_size: number
+        fetched_at: number
+        last_used_at: number
+      }
+    | undefined
+  if (!row) return null
+  return {
+    id: row.id,
+    sourceUrl: row.source_url,
+    filePath: row.file_path,
+    contentType: row.content_type,
+    byteSize: row.byte_size,
+    fetchedAt: row.fetched_at,
+    lastUsedAt: row.last_used_at,
+  }
+}
+
+export function upsertPlayMedia(row: Omit<PlayMediaRow, 'lastUsedAt'>): void {
+  const now = Date.now()
+  db.prepare(
+    `INSERT INTO play_media (id, source_url, file_path, content_type, byte_size, fetched_at, last_used_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET
+       source_url = excluded.source_url,
+       file_path = excluded.file_path,
+       content_type = excluded.content_type,
+       byte_size = excluded.byte_size,
+       fetched_at = excluded.fetched_at,
+       last_used_at = excluded.last_used_at`
+  ).run(row.id, row.sourceUrl, row.filePath, row.contentType, row.byteSize, row.fetchedAt, now)
+}
+
+export function touchPlayMedia(id: string): void {
+  db.prepare('UPDATE play_media SET last_used_at = ? WHERE id = ?').run(Date.now(), id)
+}
+
+/** LRU eviction candidates: too old, or past the cache ceiling. */
+export function listPlayMediaForEviction(keep: number, olderThanMs: number): PlayMediaRow[] {
+  const rows = db
+    .prepare(
+      `SELECT id, source_url, file_path, content_type, byte_size, fetched_at, last_used_at
+       FROM play_media
+       WHERE last_used_at < ? OR id NOT IN (
+         SELECT id FROM play_media ORDER BY last_used_at DESC LIMIT ?
+       )`
+    )
+    .all(olderThanMs, keep) as Array<{
+    id: string
+    source_url: string
+    file_path: string
+    content_type: string
+    byte_size: number
+    fetched_at: number
+    last_used_at: number
+  }>
+  return rows.map((row) => ({
+    id: row.id,
+    sourceUrl: row.source_url,
+    filePath: row.file_path,
+    contentType: row.content_type,
+    byteSize: row.byte_size,
+    fetchedAt: row.fetched_at,
+    lastUsedAt: row.last_used_at,
+  }))
+}
+
+export function deletePlayMedia(ids: string[]): void {
+  if (ids.length === 0) return
+  const remove = db.prepare('DELETE FROM play_media WHERE id = ?')
+  db.transaction(() => {
+    for (const id of ids) remove.run(id)
+  })()
+}
+
 export function computeMemoryFieldHash(): string {
   const fields = listMemoryFields().filter((f) => f.value !== null && f.value !== undefined)
   const parts = fields.map((f) => `${f.fieldKey}:${JSON.stringify(f.value)}`)
@@ -3133,7 +4107,7 @@ function mapProject(row: {
     icon: row.icon,
     color: row.color,
     path: row.path,
-    kind: row.kind === 'library' ? 'library' : 'standard',
+    kind: row.kind === 'library' ? 'library' : row.kind === 'video' ? 'video' : 'standard',
     visible: row.visible === undefined ? true : row.visible === 1,
     sortOrder: row.sort_order ?? 0,
     contextScope: row.context_scope === 'separate' ? 'separate' : 'life',
@@ -4877,7 +5851,10 @@ export function upsertDocumentFolderContext(input: {
         ? `${getProjectName(input.projectId) ?? 'Project'} index`
         : labelWithProject(input.projectId, `${input.relativePath}/`),
       projectId: input.projectId,
-      contentHash: input.childHash,
+      // Versions are keyed on the text as well as the child hash: a targeted
+      // re-synthesis reads the same children (same childHash) but produces new
+      // prose, and that must archive as a new version, not dedupe away.
+      contentHash: createHash('sha256').update(`${input.childHash}\n${input.context}`).digest('hex').slice(0, 32),
       contextShort: deriveContextShort(input.context, input.contextShort),
       context: input.context,
       provenance: input.provenance ?? null,
@@ -4932,6 +5909,270 @@ export function pruneDocumentFolderContexts(projectId: string, keepPaths: string
   runInTransaction(() => {
     for (const id of stale) stmt.run(id)
   })
+}
+
+// --- Searching the generated contexts ---------------------------------------
+
+/**
+ * Full-text indexes over the generated contexts themselves.
+ *
+ * External-content FTS5, the same shape as messages_fts: the index stores no
+ * copy of the text. That matters here more than it does for messages — a
+ * photo-heavy project holds tens of megabytes of contexts, and duplicating them
+ * would double the database for a search feature.
+ *
+ * The path column is indexed alongside the prose so that "Training" finds the
+ * folder by name and not only the folders whose summaries happen to say the
+ * word. Both triggers fire on any UPDATE rather than `UPDATE OF context`,
+ * because a re-index can move a row's relative_path as well as rewrite it.
+ */
+function ensureContextSearchIndex(): void {
+  const definitions = [
+    {
+      table: 'document_file_contexts',
+      columns: ['relative_path', 'context'],
+    },
+    {
+      table: 'document_folder_contexts',
+      columns: ['relative_path', 'context_short', 'context'],
+    },
+  ]
+
+  for (const { table, columns } of definitions) {
+    const fts = `${table}_fts`
+    try {
+      const existingTriggerCount = (db.prepare(
+        `SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'trigger'
+           AND name IN ('${fts}_insert', '${fts}_delete', '${fts}_update')`
+      ).get() as { count: number }).count
+      const columnList = columns.join(', ')
+      const newValues = columns.map((column) => `new.${column}`).join(', ')
+      const oldValues = columns.map((column) => `old.${column}`).join(', ')
+      db.exec(`
+        CREATE VIRTUAL TABLE IF NOT EXISTS ${fts}
+        USING fts5(${columnList}, content=${table}, content_rowid=rowid);
+
+        CREATE TRIGGER IF NOT EXISTS ${fts}_insert AFTER INSERT ON ${table} BEGIN
+          INSERT INTO ${fts}(rowid, ${columnList}) VALUES (new.rowid, ${newValues});
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS ${fts}_delete AFTER DELETE ON ${table} BEGIN
+          INSERT INTO ${fts}(${fts}, rowid, ${columnList}) VALUES ('delete', old.rowid, ${oldValues});
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS ${fts}_update AFTER UPDATE ON ${table} BEGIN
+          INSERT INTO ${fts}(${fts}, rowid, ${columnList}) VALUES ('delete', old.rowid, ${oldValues});
+          INSERT INTO ${fts}(rowid, ${columnList}) VALUES (new.rowid, ${newValues});
+        END;
+      `)
+      // Contexts generated before this index existed are the whole corpus on an
+      // upgrade, so the first run has to backfill.
+      if (existingTriggerCount < 3) {
+        db.exec(`INSERT INTO ${fts}(${fts}) VALUES ('rebuild')`)
+      }
+    } catch {
+      // Index already present, or FTS5 unavailable — searchers report that.
+    }
+  }
+}
+
+export function hasContextSearchIndex(): boolean {
+  const count = (db.prepare(
+    `SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table'
+       AND name IN ('document_file_contexts_fts', 'document_folder_contexts_fts')`
+  ).get() as { count: number }).count
+  return count === 2
+}
+
+/** One generated context matched by a search, before any cross-level ranking. */
+export interface DocumentContextMatch {
+  level: 'file' | 'folder'
+  projectId: string
+  path: string
+  relativePath: string
+  kind: DocumentFileKind | null
+  contextShort: string
+  context: string
+  fileCount: number
+  /** FTS5 bm25 score: negative, and more negative is a better match. */
+  bm25: number
+  updatedAt: string
+}
+
+export function searchDocumentFileContexts(match: string, limit: number): DocumentContextMatch[] {
+  const rows = db
+    .prepare(
+      `SELECT c.project_id, c.file_path, c.relative_path, c.kind, c.context, c.updated_at,
+              bm25(document_file_contexts_fts, 2.0, 1.0) AS rank
+       FROM document_file_contexts_fts
+       JOIN document_file_contexts AS c ON c.rowid = document_file_contexts_fts.rowid
+       WHERE document_file_contexts_fts MATCH ?
+       ORDER BY rank
+       LIMIT ?`
+    )
+    .all(match, limit) as Array<{
+      project_id: string
+      file_path: string
+      relative_path: string
+      kind: string
+      context: string
+      updated_at: string
+      rank: number
+    }>
+  return rows.map((row) => ({
+    level: 'file' as const,
+    projectId: row.project_id,
+    path: row.file_path,
+    relativePath: row.relative_path,
+    kind: row.kind === 'image' ? ('image' as const) : ('text' as const),
+    contextShort: '',
+    context: row.context,
+    fileCount: 1,
+    bm25: row.rank,
+    updatedAt: row.updated_at,
+  }))
+}
+
+export function searchDocumentFolderContexts(match: string, limit: number): DocumentContextMatch[] {
+  const rows = db
+    .prepare(
+      `SELECT c.project_id, c.folder_path, c.relative_path, c.context_short, c.context, c.file_count, c.updated_at,
+              bm25(document_folder_contexts_fts, 2.0, 1.0, 1.0) AS rank
+       FROM document_folder_contexts_fts
+       JOIN document_folder_contexts AS c ON c.rowid = document_folder_contexts_fts.rowid
+       WHERE document_folder_contexts_fts MATCH ?
+       ORDER BY rank
+       LIMIT ?`
+    )
+    .all(match, limit) as Array<{
+      project_id: string
+      folder_path: string
+      relative_path: string
+      context_short: string
+      context: string
+      file_count: number
+      updated_at: string
+      rank: number
+    }>
+  return rows.map((row) => ({
+    level: 'folder' as const,
+    projectId: row.project_id,
+    path: row.folder_path,
+    relativePath: row.relative_path,
+    kind: null,
+    contextShort: row.context_short,
+    context: row.context,
+    fileCount: row.file_count,
+    bm25: row.rank,
+    updatedAt: row.updated_at,
+  }))
+}
+
+/**
+ * Path lookup for "what do you know about THIS file/folder".
+ *
+ * A trailing-fragment match rather than an equality test, so the model can ask
+ * with the name it saw ("Training/Running.xlsx") instead of having to know the
+ * absolute path. SQLite's LIKE is case-insensitive over ASCII, which is the
+ * right behaviour for a name the user typed.
+ */
+export function findDocumentContextsByPath(fragment: string, limit: number): DocumentContextMatch[] {
+  const pattern = `%${fragment.replace(/[\\%_]/g, (character) => `\\${character}`)}`
+  const files = db
+    .prepare(
+      `SELECT project_id, file_path, relative_path, kind, context, updated_at
+       FROM document_file_contexts
+       WHERE file_path LIKE ? ESCAPE '\\'
+       ORDER BY LENGTH(file_path)
+       LIMIT ?`
+    )
+    .all(pattern, limit) as Array<{
+      project_id: string
+      file_path: string
+      relative_path: string
+      kind: string
+      context: string
+      updated_at: string
+    }>
+  const folders = db
+    .prepare(
+      `SELECT project_id, folder_path, relative_path, context_short, context, file_count, updated_at
+       FROM document_folder_contexts
+       WHERE folder_path LIKE ? ESCAPE '\\'
+       ORDER BY LENGTH(folder_path)
+       LIMIT ?`
+    )
+    .all(pattern, limit) as Array<{
+      project_id: string
+      folder_path: string
+      relative_path: string
+      context_short: string
+      context: string
+      file_count: number
+      updated_at: string
+    }>
+
+  return [
+    ...files.map((row) => ({
+      level: 'file' as const,
+      projectId: row.project_id,
+      path: row.file_path,
+      relativePath: row.relative_path,
+      kind: row.kind === 'image' ? ('image' as const) : ('text' as const),
+      contextShort: '',
+      context: row.context,
+      fileCount: 1,
+      bm25: 0,
+      updatedAt: row.updated_at,
+    })),
+    ...folders.map((row) => ({
+      level: 'folder' as const,
+      projectId: row.project_id,
+      path: row.folder_path,
+      relativePath: row.relative_path,
+      kind: null,
+      contextShort: row.context_short,
+      context: row.context,
+      fileCount: row.file_count,
+      bm25: 0,
+      updatedAt: row.updated_at,
+    })),
+  ]
+}
+
+/** Every project-level synthesis that has been written, for the search corpus. */
+export function listProjectSuperContexts(): Array<{
+  projectId: string
+  contextShort: string
+  context: string
+  fileCount: number
+  updatedAt: string
+}> {
+  const rows = db
+    .prepare(
+      `SELECT project_id, context_short, context, file_count, updated_at
+       FROM document_summary
+       WHERE TRIM(context) <> ''`
+    )
+    .all() as Array<{ project_id: string; context_short: string; context: string; file_count: number; updated_at: string }>
+  return rows.map((row) => ({
+    projectId: row.project_id,
+    contextShort: row.context_short,
+    context: row.context,
+    fileCount: row.file_count,
+    updatedAt: row.updated_at,
+  }))
+}
+
+/** How much there is to search, for deciding whether to offer the tools at all. */
+export function countGeneratedContexts(): { files: number; folders: number; projects: number; conversations: number } {
+  const one = (sql: string): number => (db.prepare(sql).get() as { count: number }).count
+  return {
+    files: one('SELECT COUNT(*) AS count FROM document_file_contexts'),
+    folders: one('SELECT COUNT(*) AS count FROM document_folder_contexts'),
+    projects: one("SELECT COUNT(*) AS count FROM document_summary WHERE TRIM(context) <> ''"),
+    conversations: one('SELECT COUNT(*) AS count FROM conversation_contexts'),
+  }
 }
 
 export interface StoredConversationContext {
@@ -4989,6 +6230,25 @@ export function listProjectConversationContexts(projectId: string): StoredConver
        ORDER BY c.updated_at DESC`
     )
     .all(projectId) as Array<Parameters<typeof mapConversationContext>[0]>
+  return rows.map(mapConversationContext)
+}
+
+/**
+ * Every conversation context there is, newest first.
+ *
+ * There is one row per conversation and they are short, so the context search
+ * scores these in memory rather than carrying a third FTS index for them.
+ */
+export function listAllConversationContexts(limit: number = 500): StoredConversationContext[] {
+  const rows = db
+    .prepare(
+      `SELECT cc.conversation_id, c.title, cc.message_hash, cc.context_short, cc.context, cc.provenance_json, cc.updated_at
+       FROM conversation_contexts AS cc
+       JOIN conversations AS c ON c.id = cc.conversation_id
+       ORDER BY cc.updated_at DESC
+       LIMIT ?`
+    )
+    .all(limit) as Array<Parameters<typeof mapConversationContext>[0]>
   return rows.map(mapConversationContext)
 }
 
@@ -8144,6 +9404,22 @@ export function updateBookLocation(
   db.prepare(
     'UPDATE books SET file_path = ?, relative_path = ?, identity_hash = ?, updated_at = ? WHERE id = ?'
   ).run(input.filePath, input.relativePath, input.identityHash, Date.now(), id)
+}
+
+/**
+ * Books already asked about at this organize prompt version. Auto-filing runs
+ * after every scan, and this stamp is what keeps that from re-spending model
+ * calls on a shelf whose books were all named — or judged unnameable — before.
+ */
+export function listOrganizeCheckedBookIds(projectId: string, version: string): Set<string> {
+  const rows = db
+    .prepare('SELECT id FROM books WHERE project_id = ? AND organize_checked_version = ?')
+    .all(projectId, version) as Array<{ id: string }>
+  return new Set(rows.map((row) => row.id))
+}
+
+export function markBookOrganizeChecked(bookId: string, version: string): void {
+  db.prepare('UPDATE books SET organize_checked_version = ? WHERE id = ?').run(version, bookId)
 }
 
 function mapRemoteDevice(row: {

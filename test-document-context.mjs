@@ -2435,6 +2435,128 @@ check('an index style is stored per project and drives the prompt version', () =
   assert.equal(normalizeIndexStyle('nonsense'), 'behavioral')
 })
 
+// --- targeted regeneration ----------------------------------------------------
+// One stored node re-synthesized in place, from the child contexts already in
+// the database: no file is re-read, no descendant is touched, ancestors keep
+// their text, and the recomputed childHash means the next full run cache-hits
+// instead of overwriting the regenerated synthesis.
+console.log('targeted regeneration')
+
+const { regenerateContextNode } = await import('./src/main/documentContext.ts')
+
+const regenProject = createProject({ name: 'RegenTest', icon: 'folder-open', color: '#3b82f6', path: null, files: [] })
+const regenBase = path.resolve(path.join(os.tmpdir(), 'holmes-regen-source-that-does-not-exist'))
+const regenSub = path.join(regenBase, 'sub')
+addSource(regenProject.id, regenBase)
+
+upsertDocumentFileContext({ projectId: regenProject.id, filePath: path.join(regenBase, 'a.txt'), relativePath: 'a.txt', contentHash: 'ha', context: 'summary of a' })
+upsertDocumentFileContext({ projectId: regenProject.id, filePath: path.join(regenSub, 'b.txt'), relativePath: 'sub/b.txt', contentHash: 'hb', context: 'summary of b' })
+upsertDocumentFileContext({ projectId: regenProject.id, filePath: path.join(regenSub, 'c.txt'), relativePath: 'sub/c.txt', contentHash: 'hc', context: 'summary of c' })
+upsertDocumentFolderContext({ projectId: regenProject.id, folderPath: regenSub, relativePath: 'sub', childHash: 'seed-sub', contextShort: 'old sub gist', context: 'old sub synthesis', fileCount: 2 })
+upsertDocumentFolderContext({ projectId: regenProject.id, folderPath: regenBase, relativePath: '.', childHash: 'seed-root', contextShort: 'old root gist', context: 'old root synthesis', fileCount: 3 })
+
+const regenConfig = { type: 'custom', openrouterApiKey: '', customBaseUrl: 'http://stubbed.invalid', customApiKey: 'k', customModel: 'm' }
+const realFetch = globalThis.fetch
+const llmRequests = []
+let llmReply = 'SHORT: fresh sub gist\n---\nA fresh, richer synthesis of the sub folder.'
+globalThis.fetch = async (_url, init) => {
+  llmRequests.push(JSON.parse(init.body))
+  return new Response(
+    JSON.stringify({ choices: [{ message: { content: llmReply } }], usage: { prompt_tokens: 10, completion_tokens: 5 } }),
+    { status: 200, headers: { 'content-type': 'application/json' } }
+  )
+}
+
+try {
+  const subResult = await regenerateContextNode(regenProject.id, { kind: 'folder', folderPath: regenSub }, regenConfig, 'regen-model')
+
+  check('a folder regen re-synthesizes from the stored child contexts alone', () => {
+    assert.equal(subResult.kind, 'folder')
+    assert.equal(subResult.ref, regenSub)
+    assert.equal(llmRequests.length, 1, 'one synthesis call, nothing else')
+    const prompt = llmRequests[0].messages.map((m) => m.content).join('\n')
+    assert.ok(prompt.includes('summary of b'))
+    assert.ok(prompt.includes('summary of c'))
+    assert.ok(!prompt.includes('summary of a'), "only the folder's own children reach the prompt")
+    const stored = getDocumentFolderContext(regenProject.id, regenSub)
+    assert.equal(stored.context, 'A fresh, richer synthesis of the sub folder.')
+    assert.equal(stored.contextShort, 'fresh sub gist')
+    assert.equal(stored.provenance.model, 'regen-model')
+  })
+
+  check('a folder regen leaves its ancestors untouched', () => {
+    const root = getDocumentFolderContext(regenProject.id, regenBase)
+    assert.equal(root.context, 'old root synthesis')
+    assert.equal(root.childHash, 'seed-root')
+  })
+
+  const firstHash = getDocumentFolderContext(regenProject.id, regenSub).childHash
+  llmReply = 'SHORT: second gist\n---\nA second, different synthesis.'
+  await regenerateContextNode(regenProject.id, { kind: 'folder', folderPath: regenSub }, regenConfig, 'regen-model')
+
+  check('the recomputed childHash is stable across regens, so a future full run cache-hits', () => {
+    const stored = getDocumentFolderContext(regenProject.id, regenSub)
+    assert.equal(stored.childHash, firstHash)
+    assert.notEqual(stored.childHash, 'seed-sub', 'the seeded junk hash was replaced by the real formula')
+    assert.equal(stored.context, 'A second, different synthesis.')
+  })
+
+  check('each regenerated synthesis archives as its own version despite the unchanged childHash', () => {
+    const versions = listContextVersions().filter((v) => v.sourceRef === `project:${regenProject.id}:folder:sub`)
+    assert.ok(versions.length >= 3, `seed + two regens, got ${versions.length}`)
+    const texts = versions.map((v) => getContextVersion(v.id).context)
+    assert.ok(texts.includes('old sub synthesis'))
+    assert.ok(texts.includes('A fresh, richer synthesis of the sub folder.'))
+    assert.ok(texts.includes('A second, different synthesis.'))
+  })
+
+  llmReply = 'SHORT: fresh root gist\n---\nA fresh root synthesis.'
+  llmRequests.length = 0
+  const rootResult = await regenerateContextNode(regenProject.id, { kind: 'project' }, regenConfig, 'regen-model')
+
+  check('a single-source project regen redoes the source root itself', () => {
+    assert.equal(rootResult.kind, 'folder')
+    assert.equal(rootResult.ref, regenBase)
+    assert.equal(llmRequests.length, 1, 'the lone root passes through, so no combined roll-up call')
+    assert.equal(getDocumentFolderContext(regenProject.id, regenBase).context, 'A fresh root synthesis.')
+    const prompt = llmRequests[0].messages.map((m) => m.content).join('\n')
+    assert.ok(prompt.includes('summary of a'))
+    assert.ok(prompt.includes('A second, different synthesis.'), "the sub folder's regenerated text feeds the root")
+  })
+
+  const regenBase2 = path.resolve(path.join(os.tmpdir(), 'holmes-regen-source-2'))
+  addSource(regenProject.id, regenBase2)
+  upsertDocumentFolderContext({ projectId: regenProject.id, folderPath: regenBase2, relativePath: '.', childHash: 'seed-root-2', contextShort: 'second source gist', context: 'second source synthesis', fileCount: 1 })
+  llmReply = 'SHORT: combined gist\n---\nA combined project synthesis.'
+  llmRequests.length = 0
+  const combinedResult = await regenerateContextNode(regenProject.id, { kind: 'project' }, regenConfig, 'regen-model')
+
+  check('a multi-source project regen forces the combined synthesis', () => {
+    assert.equal(combinedResult.kind, 'project')
+    assert.equal(combinedResult.ref, `project:${regenProject.id}`)
+    assert.equal(llmRequests.length, 1)
+    assert.equal(getProjectSuperContext(regenProject.id).context, 'A combined project synthesis.')
+    const prompt = llmRequests[0].messages.map((m) => m.content).join('\n')
+    assert.ok(prompt.includes('A fresh root synthesis.'))
+    assert.ok(prompt.includes('second source synthesis'))
+  })
+
+  await checkAsync('regenerating an unindexed folder refuses instead of inventing one', async () => {
+    await assert.rejects(
+      () => regenerateContextNode(regenProject.id, { kind: 'folder', folderPath: path.join(regenBase, 'nope') }, regenConfig, 'regen-model'),
+      /run the index first/
+    )
+  })
+
+  globalThis.fetch = async () => new Response('boom', { status: 400 })
+  await checkAsync('a failed regen throws and never overwrites the stored text', async () => {
+    await assert.rejects(() => regenerateContextNode(regenProject.id, { kind: 'folder', folderPath: regenSub }, regenConfig, 'regen-model'))
+    assert.equal(getDocumentFolderContext(regenProject.id, regenSub).context, 'A second, different synthesis.')
+  })
+} finally {
+  globalThis.fetch = realFetch
+}
+
 closeDatabase()
 fs.rmSync(provDir, { recursive: true, force: true })
 fs.rmSync(sigDir, { recursive: true, force: true })

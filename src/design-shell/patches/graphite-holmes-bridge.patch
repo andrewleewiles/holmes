@@ -1,0 +1,72 @@
+diff --git a/frontend/src/App.svelte b/frontend/src/App.svelte
+index 49f4b20..c4f34c8 100644
+--- a/frontend/src/App.svelte
++++ b/frontend/src/App.svelte
+@@ -25,8 +25,14 @@
+ 		const randomSeed = BigInt(Math.floor(Math.random() * Number.MAX_SAFE_INTEGER));
+ 		subscriptions = createSubscriptionsRouter();
+ 		editor = await EditorWrapper.create(operatingSystem(), randomSeed, (messageType: MessageName, messageData: FrontendMessage) => {
++			// Holmes: offer every message to the design-shell bridge first. A
++			// truthy return means the bridge consumed it — an export or save it
++			// requested, which must become bytes for Holmes, not a download.
++			if ((window as any).holmesTap?.(messageType, messageData)) return;
+ 			subscriptions?.handleFrontendMessage(messageType, messageData);
+ 		});
++		// Holmes: the design shell (same origin) drives the editor through this.
++		(window as any).holmesEditor = editor;
+ 
+ 		await loadDemoArtwork(editor);
+ 	});
+diff --git a/frontend/wrapper/src/editor_commands.rs b/frontend/wrapper/src/editor_commands.rs
+index ad923e7..d0025c5 100644
+--- a/frontend/wrapper/src/editor_commands.rs
++++ b/frontend/wrapper/src/editor_commands.rs
+@@ -658,6 +658,48 @@ mod editor_commands {
+ 		}
+ 		.into()
+ 	}
++
++	/// Holmes: render the active document and hand it to the frontend as a
++	/// TriggerExportImage message (SVG string; the Holmes design shell
++	/// rasterizes when PNG bytes are wanted). Dispatched by the shell rather
++	/// than the export dialog so the AI bridge can read the canvas.
++	fn holmes_export_document(file_type: String, scale_factor: f64) -> Message {
++		use editor::messages::frontend::utility_types::{ExportBounds, FileType};
++		let file_type = match file_type.as_str() {
++			"png" => FileType::Png,
++			"jpg" => FileType::Jpg,
++			_ => FileType::Svg,
++		};
++		PortfolioMessage::SubmitDocumentExport {
++			name: String::from("holmes-export"),
++			file_type,
++			scale_factor,
++			bounds: ExportBounds::AllArtwork,
++			artboard_name: None,
++			artboard_count: 0,
++		}
++		.into()
++	}
++
++	/// Holmes: serialize the active document; the bytes arrive as a
++	/// TriggerSaveDocument message the shell consumes instead of a download.
++	fn holmes_save_document() -> Message {
++		DocumentMessage::SaveDocument.into()
++	}
++
++	/// Holmes: clear the document's unsaved flag once Holmes has the exported
++	/// bytes on disk. Web documents have no path, so the editor's own save
++	/// flow never reaches MarkAsSaved for them.
++	fn holmes_mark_saved() -> Message {
++		DocumentMessage::MarkAsSaved.into()
++	}
++
++	/// Holmes: create a named blank document without the new-document dialog.
++	/// A fresh Work-tab canvas must open onto a document, not the Welcome
++	/// panel the frontend shows while the document list is empty.
++	fn holmes_new_document(name: String) -> Message {
++		PortfolioMessage::NewDocumentWithName { name }.into()
++	}
+ }
+ 
+ #[derive(Debug, Clone, Serialize, Deserialize, Tsify)]

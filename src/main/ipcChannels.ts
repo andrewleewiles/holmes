@@ -141,6 +141,7 @@ export const IPC = {
   DOCUMENTS: {
     GENERATE: 'documents:generate',
     GENERATE_ALL: 'documents:generate-all',
+    REGENERATE_NODE: 'documents:regenerate-node',
     ABORT: 'documents:abort',
     PAUSE: 'documents:pause',
     GET_STATE: 'documents:get-state',
@@ -185,6 +186,17 @@ export const IPC = {
     GET: 'ideas:get',
     REFRESH: 'ideas:refresh',
   },
+  PLAY: {
+    GET: 'play:get',
+    REFRESH: 'play:refresh',
+    REACT: 'play:react',
+    STOP: 'play:stop',
+    GET_STATE: 'play:get-state',
+    /** Broadcast to every window: a build is long enough to outlive the tab. */
+    STATE: 'play:state',
+    SET_PROGRESS: 'play:set-progress',
+    ARCHIVE: 'play:archive',
+  },
   CONTEXT_VERSIONS: {
     LIST: 'context-versions:list',
     GET: 'context-versions:get',
@@ -201,11 +213,23 @@ export const IPC = {
   },
   APP: {
     OPEN_EXTERNAL: 'app:open-external',
+    OPEN_SOURCE_PATH: 'app:open-source-path',
     GET_USER_INFO: 'app:get-user-info',
     SELECT_DIRECTORY: 'app:select-directory',
     SELECT_FILES: 'app:select-files',
     SELECT_IMAGE: 'app:select-image',
     SELECT_ATTACHMENTS: 'app:select-attachments',
+  },
+  WORK: {
+    SAVE_DOCUMENT: 'work:save-document',
+    // The AI bridge. REQUEST is a broadcast main -> renderer; RESPONSE is the
+    // renderer answering it, keyed by requestId.
+    EDITOR_REQUEST: 'work:editor-request',
+    EDITOR_RESPONSE: 'work:editor-response',
+    SET_EDITOR_OPEN: 'work:set-editor-open',
+    // Asking the app to open the Work tab on a new document. Handled by App,
+    // not by the editor frame — the frame does not exist yet at that point.
+    OPEN_DOCUMENT: 'work:open-document',
   },
   FS: {
     READ_FILE: 'fs:read-file',

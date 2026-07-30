@@ -14,11 +14,13 @@ import type {
   ProjectIndexSummary,
   IndexGranularity,
   IndexStyle,
+  RegenerateContextResult,
+  RegenerateContextTarget,
   SourceExcerpt,
   UserSuperContext,
 } from '../shared/types'
 import { extractDocxText, extractPptxText, extractXlsxText } from './documentText'
-import { isLibraryProject } from '../shared/defaultProjects'
+import { isLibraryProject, isVideoProject } from '../shared/defaultProjects'
 import { peoplePromptSection } from '../shared/people'
 import { timelinePromptSection } from '../shared/timeline'
 import * as database from './database'
@@ -1384,6 +1386,12 @@ export async function generateDocumentContexts(
     throw new Error('Books are read into the Library, not indexed as documents.')
   }
 
+  // Same bargain, same refusal: archived video is gigabytes of container format,
+  // and the transcripts are deliberately kept out of the profile.
+  if (project && isVideoProject(project)) {
+    throw new Error('Archived video is read by the Play feed, not indexed as documents.')
+  }
+
   if (!hasProviderCredentials(config)) throw missingCredentialsError(config)
   if (!model.trim()) throw new Error('No text model configured for this tier')
 
@@ -1486,6 +1494,161 @@ export async function generateDocumentContexts(
       ? { inputTokens: options.spend.inputTokens, outputTokens: options.spend.outputTokens, costUsd: options.spend.costUsd, callsMade: options.spend.callsMade }
       : undefined,
   }
+}
+
+function spendSummary(spend?: SpendTracker): { inputTokens: number; outputTokens: number; costUsd: number; callsMade: number } | undefined {
+  return spend
+    ? { inputTokens: spend.inputTokens, outputTokens: spend.outputTokens, costUsd: spend.costUsd, callsMade: spend.callsMade }
+    : undefined
+}
+
+/**
+ * Re-synthesizes ONE stored context node — a folder super-context or the
+ * project-level combined synthesis — from the child contexts already in the
+ * database, at whatever model the caller picked. No file is re-read and no
+ * descendant is regenerated, which is what makes redoing one node at a
+ * different tier cost a single call instead of a re-index.
+ *
+ * The stored childHash is recomputed from the same children, so it comes out
+ * unchanged and the next full run cache-hits on it — the regenerated text
+ * survives instead of being overwritten back to the old model's output.
+ *
+ * Two things are deliberately NOT refreshed here. Ancestor folders key their
+ * cache on child identity (childHash), not child text, so they keep their
+ * existing synthesis until regenerated themselves — that is what "individually"
+ * means. And Memory extraction is skipped even for a source root: a regen is an
+ * experiment the user may run several times in a row, and each pass re-mining
+ * the same underlying evidence into Memory would compound, not refine. The
+ * project-level roll-up IS refreshed after a source-root regen because it
+ * hashes the text of its inputs — the refresh only spends a call when the
+ * regen actually changed what it reads.
+ *
+ * Unlike the batch run, a failed call throws instead of storing the failure
+ * message: a targeted regen must never replace good stored text with an error.
+ */
+export async function regenerateContextNode(
+  projectId: string,
+  target: RegenerateContextTarget,
+  config: ProviderConfig,
+  model: string,
+  signal?: AbortSignal,
+  options: { spend?: SpendTracker; limiter?: RateLimiter } = {}
+): Promise<RegenerateContextResult> {
+  if (!hasProviderCredentials(config)) throw missingCredentialsError(config)
+  if (!model.trim()) throw new Error('No text model configured for this tier')
+  const project = database.getProjectById(projectId)
+  if (!project) throw new Error('Project not found')
+  const spend = options.spend
+  const limiter = options.limiter ?? createRateLimiter(getRequestsPerMinute())
+
+  let resolved: RegenerateContextTarget = target
+  if (resolved.kind === 'project') {
+    const roots = effectiveSources(projectId, project.path)
+      .map((source) => database.getDocumentFolderContext(projectId, resolveBase(source.path)))
+      .filter((root): root is NonNullable<typeof root> => Boolean(root && root.context.trim() && !isFailedContext(root.context)))
+    if (roots.length === 0) {
+      throw new Error('Nothing indexed yet — build the index first; after that, individual contexts can be regenerated.')
+    }
+    const conversations = database
+      .listProjectConversationContexts(projectId)
+      .filter((entry) => entry.context.trim() && !isFailedContext(entry.context))
+    if (roots.length === 1 && conversations.length === 0) {
+      // The project context is a passthrough of the lone source root (no
+      // combined synthesis exists), so the root folder is the node to redo.
+      resolved = { kind: 'folder', folderPath: roots[0].folderPath }
+    } else {
+      const combined = await buildProjectSuperContext(projectId, project.name, config, model, signal, { force: true, spend, limiter })
+      return { kind: 'project', ref: `project:${projectId}`, contextShort: combined.contextShort, context: combined.context, spent: spendSummary(spend) }
+    }
+  }
+
+  // Folder contexts are stored under the realpath'd base; a caller holding the
+  // raw configured source path (the UI's source rows) still lands on the row.
+  let folderPath = resolved.folderPath
+  let existing = database.getDocumentFolderContext(projectId, folderPath)
+  if (!existing) {
+    folderPath = resolveBase(folderPath)
+    existing = database.getDocumentFolderContext(projectId, folderPath)
+  }
+  if (!existing) throw new Error('No stored context for this folder — run the index first.')
+
+  const folderPrompt = folderPromptFor(normalizeIndexStyle(project.indexStyle))
+
+  // Children come from the database exactly as the last run left them — the
+  // whole point is to re-synthesize what is already known. A file deleted from
+  // disk but not yet pruned still counts as a child here; the next full run is
+  // the authority on which children exist.
+  const childFiles = database
+    .listDocumentFileContexts(projectId)
+    .filter((file) => path.dirname(file.filePath) === folderPath)
+    .map((file) => ({ filePath: file.filePath, label: path.basename(file.filePath), context: file.context, hash: file.contentHash }))
+    .sort((a, b) => a.label.localeCompare(b.label))
+  const childFolders = database
+    .listDocumentFolderContexts(projectId)
+    .filter((folder) => folder.folderPath !== folderPath && path.dirname(folder.folderPath) === folderPath)
+    .map((folder) => {
+      const ctx = database.getDocumentFolderContext(projectId, folder.folderPath)
+      return ctx ? { folderPath: folder.folderPath, label: path.basename(folder.folderPath), ctx } : null
+    })
+    .filter((child): child is NonNullable<typeof child> => child !== null)
+    .sort((a, b) => a.label.localeCompare(b.label))
+  if (childFiles.length === 0 && childFolders.length === 0) {
+    throw new Error('This folder has no stored child contexts to synthesize from — run the index first.')
+  }
+
+  // Identical formula to the index run, over the same children — so the stored
+  // hash is what the next run recomputes, and it cache-hits.
+  const childHash = hashString(
+    [
+      `V:${folderPrompt.version}`,
+      ...childFiles.map((child) => `F:${child.label}:${child.hash}`),
+      ...childFolders.map((child) => `D:${child.label}:${child.ctx.childHash}`),
+    ]
+      .sort()
+      .join('\n')
+  )
+
+  const { sections, edges, inputChars, markerToRef } = packFolderChildren(
+    childFolders.map((child) => ({
+      kind: 'folder' as const,
+      ref: child.folderPath,
+      label: `${child.label}/`,
+      hash: child.ctx.childHash,
+      body: child.ctx.context,
+    })),
+    childFiles.map((child) => ({
+      kind: 'file' as const,
+      ref: child.filePath,
+      label: child.label,
+      hash: child.hash,
+      body: child.context,
+    }))
+  )
+
+  const relativePath = existing.relativePath
+  const folderLabel = relativePath === '.' ? `the "${project.name}" data source root` : `the folder "${relativePath}"`
+  const userPrompt = `Synthesize a super-context for ${folderLabel}. Its direct contents were summarized as follows:\n\n${sections.join('\n')}`
+
+  const raw = await callLLMRetrying(config, model, folderPrompt.prompt, userPrompt, signal, 3, { spend, limiter })
+  const finished = finishSynthesis(raw, markerToRef, MAX_FOLDER_CONTEXT_CHARS)
+  const context = finished.long || `No synthesis produced for ${relativePath}.`
+  const contextShort = finished.short || context.slice(0, MAX_FOLDER_SHORT_CHARS)
+  const provenance = synthesisProvenance({
+    edges, model, promptVersion: folderPrompt.version, leafCount: existing.fileCount, inputChars,
+    claims: finished.long ? finished.claims : [],
+  })
+  database.upsertDocumentFolderContext({
+    projectId, folderPath, relativePath, childHash, contextShort, context,
+    fileCount: existing.fileCount, provenance,
+  })
+
+  if (relativePath === '.' && !signal?.aborted) {
+    try {
+      await buildProjectSuperContext(projectId, project.name, config, model, signal, { spend, limiter })
+    } catch { /* Roll-up refresh is best-effort; the regenerated node is already stored. */ }
+  }
+
+  return { kind: 'folder', ref: folderPath, contextShort, context, spent: spendSummary(spend) }
 }
 
 // One row per project for the Data list. Counts come from GROUP BY rather than

@@ -1,7 +1,8 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { IPC } from '../main/ipcChannels'
-import type { ChatAttachment, ElectronAPI, StreamChunk, AppSettings, ProviderConfig, Conversation, Message, ModelInfo, SearchResult, ReasoningEffort, Project, PsychologyAnalysis, HealthAnalysis, HealthRecord, HealthObservation, HealthSummary, HealthIngestProgress, HealthLiveStatus, HealthLiveSyncProgress, HealthSyncResult, DirectoryScanResult, PsychologicalTestId, PsychologicalTestResult, ProductSearchRequest, ProductSearchResult, WebSearchRequest, WebSearchResult, RecallSearchRequest, RecallSearchResponse, RecallHistoryEntry, MemoryField, MemoryValue, MemoryUpdateRequest, MemoryCreateFieldRequest, MemorySuggestion, MemoryExtractionRequest, MemoryExtractionResult, MemorySuggestionReviewRequest, ClaudeImportOptions, ClaudeImportResult, ClaudeImportProgress, MemoryMode, ContextSelection, FsReadResult, FsWriteRequest, FsWriteResult, FsListItem, SystemPromptEntry, ActivityRecord, ActivitySourceType, ActivityIngestProgress, ActivityEventsBySource, ActivitySummary, ActivityLiveStatus, ActivitySyncResult, ActivityAccount, ActivityAccountUpdate, ActivityAccountSyncResult, ActivityAnalysisEstimate, ActivityRunState, DocumentContextResult, DocumentContextTree, DocumentContextProgress, DocumentIndexAllResult, DocumentIndexState, ProvenanceChain, SourceExcerpt, UserSuperContext, ModelTier, IndexGranularity, IndexEstimate, ProjectSource, ProjectInput, ProjectIndexSummary, TimelineEvent, TimelineEventInput, TimelineFilter, TimelineSummary, TimelineYearContext, TimelineYearsView, TimelineRunState, TimelineRebuildResult, TimelineRebuildProgress, ContextVersion, ContextVersionSummary, ContextVersionFilter, RoleSummary, RoleSessionNote, RoleSessionNoteFilter, RoleSessionNoteResult, CreditBreakerState, HomeIdeasResult, ProviderCall, ProviderCallFilter, ProviderCallStats, ProviderCallSummary, Person, PersonMention, PersonRelation, PeopleFilter, PeopleRebuildProgress, PeopleRebuildResult, PeopleRunState, Book, BookChapter, BookChapterContent, BookReadingSession, BookReadingState, BookReadingStatus, BookResource, LibraryBook, LibraryRunState, LibraryScanProgress, LibraryScanResult, LibrarySnapshotResult, BookAnnotation, BookAnnotationRun, AnnotationRunSummary, BookLesson, BookLessonAttempt, BookConversationLink, BookDiscussionScope, LessonRunSummary, Audiobook, AudiobookChapter, AudiobookEstimate, AudiobookProgress, SpeechProviderId, SpeechProviderInfo, SpeechModel, SpeechVoice, SpeechKeyResult, OrganizePlan, OrganizeResult } from '../shared/types'
+import type { ChatAttachment, ElectronAPI, StreamChunk, AppSettings, ProviderConfig, Conversation, Message, ModelInfo, SearchResult, ReasoningEffort, Project, PsychologyAnalysis, HealthAnalysis, HealthRecord, HealthObservation, HealthSummary, HealthIngestProgress, HealthLiveStatus, HealthLiveSyncProgress, HealthSyncResult, DirectoryScanResult, PsychologicalTestId, PsychologicalTestResult, ProductSearchRequest, ProductSearchResult, WebSearchRequest, WebSearchResult, RecallSearchRequest, RecallSearchResponse, RecallHistoryEntry, MemoryField, MemoryValue, MemoryUpdateRequest, MemoryCreateFieldRequest, MemorySuggestion, MemoryExtractionRequest, MemoryExtractionResult, MemorySuggestionReviewRequest, ClaudeImportOptions, ClaudeImportResult, ClaudeImportProgress, MemoryMode, ContextSelection, FsReadResult, FsWriteRequest, FsWriteResult, FsListItem, SystemPromptEntry, ActivityRecord, ActivitySourceType, ActivityIngestProgress, ActivityEventsBySource, ActivitySummary, ActivityLiveStatus, ActivitySyncResult, ActivityAccount, ActivityAccountUpdate, ActivityAccountSyncResult, ActivityAnalysisEstimate, ActivityRunState, DocumentContextResult, DocumentContextTree, DocumentContextProgress, DocumentIndexAllResult, DocumentIndexState, RegenerateContextTarget, RegenerateContextResult, ProvenanceChain, SourceExcerpt, UserSuperContext, ModelTier, IndexGranularity, IndexEstimate, ProjectSource, ProjectInput, ProjectIndexSummary, TimelineEvent, TimelineEventInput, TimelineFilter, TimelineSummary, TimelineYearContext, TimelineYearsView, TimelineRunState, TimelineRebuildResult, TimelineRebuildProgress, ContextVersion, ContextVersionSummary, ContextVersionFilter, RoleSummary, RoleSessionNote, RoleSessionNoteFilter, RoleSessionNoteResult, CreditBreakerState, HomeIdeasResult, PlayFeed, PlayReaction, PlayRunState, PlayWatchState, ProviderCall, ProviderCallFilter, ProviderCallStats, ProviderCallSummary, Person, PersonMention, PersonRelation, PeopleFilter, PeopleRebuildProgress, PeopleRebuildResult, PeopleRunState, Book, BookChapter, BookChapterContent, BookReadingSession, BookReadingState, BookReadingStatus, BookResource, LibraryBook, LibraryRunState, LibraryScanProgress, LibraryScanResult, LibrarySnapshotResult, BookAnnotation, BookAnnotationRun, AnnotationRunSummary, BookLesson, BookLessonAttempt, BookConversationLink, BookDiscussionScope, LessonRunSummary, Audiobook, AudiobookChapter, AudiobookEstimate, AudiobookProgress, SpeechProviderId, SpeechProviderInfo, SpeechModel, SpeechVoice, SpeechKeyResult, OrganizePlan, OrganizeResult, WorkSaveRequest, WorkSaveResult, WorkEditorRequest, WorkEditorResponse } from '../shared/types'
 import type { RemoteDevice, RemotePairingOffer, RemoteScope, RemoteServerStatus } from '../shared/remote'
+import type { WorkDocumentKind } from '../shared/workDocuments'
 import type { RemoteMediaKind, RemoteMediaTicket } from '../shared/remoteMedia'
 
 const api: ElectronAPI = {
@@ -251,6 +252,8 @@ const api: ElectronAPI = {
       ipcRenderer.invoke(IPC.DOCUMENTS.GENERATE, projectId, tier, options) as Promise<DocumentContextResult>,
     generateAll: (options?: { resume?: boolean; tier?: ModelTier; projectIds?: string[]; force?: boolean; granularity?: IndexGranularity }) =>
       ipcRenderer.invoke(IPC.DOCUMENTS.GENERATE_ALL, options) as Promise<DocumentIndexAllResult>,
+    regenerateNode: (projectId: string, target: RegenerateContextTarget, tier?: ModelTier) =>
+      ipcRenderer.invoke(IPC.DOCUMENTS.REGENERATE_NODE, projectId, target, tier) as Promise<RegenerateContextResult>,
     estimate: (projectId: string, tier?: ModelTier, options?: { sourcePath?: string; force?: boolean; granularity?: IndexGranularity }) =>
       ipcRenderer.invoke(IPC.DOCUMENTS.ESTIMATE, projectId, tier, options) as Promise<IndexEstimate>,
     estimateAll: (tier?: ModelTier, options?: { projectIds?: string[]; force?: boolean; granularity?: IndexGranularity }) =>
@@ -471,6 +474,22 @@ const api: ElectronAPI = {
     get: () => ipcRenderer.invoke(IPC.IDEAS.GET) as Promise<HomeIdeasResult>,
     refresh: (force?: boolean) => ipcRenderer.invoke(IPC.IDEAS.REFRESH, force) as Promise<HomeIdeasResult>,
   },
+  play: {
+    get: () => ipcRenderer.invoke(IPC.PLAY.GET) as Promise<PlayFeed>,
+    refresh: (force?: boolean) => ipcRenderer.invoke(IPC.PLAY.REFRESH, force) as Promise<PlayFeed>,
+    react: (id: string, reaction: PlayReaction | null) =>
+      ipcRenderer.invoke(IPC.PLAY.REACT, id, reaction) as Promise<PlayFeed>,
+    stop: () => ipcRenderer.invoke(IPC.PLAY.STOP) as Promise<PlayRunState>,
+    getState: () => ipcRenderer.invoke(IPC.PLAY.GET_STATE) as Promise<PlayRunState>,
+    setProgress: (id: string, positionSeconds: number, durationSeconds: number | null) =>
+      ipcRenderer.invoke(IPC.PLAY.SET_PROGRESS, id, positionSeconds, durationSeconds) as Promise<PlayWatchState | null>,
+    archive: (id: string) => ipcRenderer.invoke(IPC.PLAY.ARCHIVE, id) as Promise<PlayFeed>,
+    onState: (callback: (state: PlayRunState) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, state: PlayRunState) => callback(state)
+      ipcRenderer.on(IPC.PLAY.STATE, handler)
+      return () => ipcRenderer.removeListener(IPC.PLAY.STATE, handler)
+    },
+  },
   providerCredit: {
     get: () => ipcRenderer.invoke(IPC.PROVIDER_CREDIT.GET) as Promise<CreditBreakerState>,
     clear: () => ipcRenderer.invoke(IPC.PROVIDER_CREDIT.CLEAR) as Promise<void>,
@@ -503,6 +522,24 @@ const api: ElectronAPI = {
       const handler = (_event: Electron.IpcRendererEvent, status: RemoteServerStatus) => callback(status)
       ipcRenderer.on(IPC.REMOTE.STATUS, handler)
       return () => ipcRenderer.removeListener(IPC.REMOTE.STATUS, handler)
+    },
+  },
+  work: {
+    saveDocument: (request: WorkSaveRequest) =>
+      ipcRenderer.invoke(IPC.WORK.SAVE_DOCUMENT, request) as Promise<WorkSaveResult>,
+    setEditorOpen: (open: boolean, kind?: WorkDocumentKind) =>
+      ipcRenderer.invoke(IPC.WORK.SET_EDITOR_OPEN, open, kind) as Promise<{ open: boolean }>,
+    respondToEditor: (response: WorkEditorResponse) =>
+      ipcRenderer.invoke(IPC.WORK.EDITOR_RESPONSE, response) as Promise<{ settled: boolean }>,
+    onOpenDocument: (callback: (request: WorkEditorRequest) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, request: WorkEditorRequest) => callback(request)
+      ipcRenderer.on(IPC.WORK.OPEN_DOCUMENT, handler)
+      return () => ipcRenderer.removeListener(IPC.WORK.OPEN_DOCUMENT, handler)
+    },
+    onEditorRequest: (callback: (request: WorkEditorRequest) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, request: WorkEditorRequest) => callback(request)
+      ipcRenderer.on(IPC.WORK.EDITOR_REQUEST, handler)
+      return () => ipcRenderer.removeListener(IPC.WORK.EDITOR_REQUEST, handler)
     },
   },
   fs: {

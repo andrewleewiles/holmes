@@ -72,6 +72,10 @@ export const DocumentContextPanel: FC<DocumentContextPanelProps> = ({ projectId,
   const [estimateError, setEstimateError] = useState<string | null>(null)
   const [forceReindex, setForceReindex] = useState(false)
   const [activeSource, setActiveSource] = useState<string | null>(null)
+  // The node currently being re-synthesized in place ('project' or a folder
+  // path) — a single-call operation, tracked locally rather than through the
+  // global index-run state.
+  const [regenerating, setRegenerating] = useState<string | null>(null)
   const [historyOpen, setHistoryOpen] = useState(false)
   const [historyReloadKey, setHistoryReloadKey] = useState(0)
   const previousStatusRef = useRef<DocumentIndexState['status']>('idle')
@@ -185,6 +189,35 @@ export const DocumentContextPanel: FC<DocumentContextPanelProps> = ({ projectId,
       setActiveSource(null)
     }
   }
+
+  // Re-synthesizes one stored context node at the currently selected tier —
+  // from the child contexts already in the database, without re-reading any
+  // file. Ancestor folder contexts keep their text until regenerated
+  // themselves; the project and profile roll-ups refresh on their own when the
+  // regenerated node feeds them.
+  const handleRegenerate = async (target: { kind: 'project' } | { kind: 'folder'; folderPath: string }) => {
+    const refKey = target.kind === 'project' ? 'project' : target.folderPath
+    if (!enabled || runActive || invoking || regenerating) return
+    setRegenerating(refKey)
+    setError(null)
+    setResultStatus(null)
+    try {
+      const result = await window.electronAPI.documents.regenerateNode(projectId, target, tier)
+      await loadTree()
+      setHistoryReloadKey((k) => k + 1)
+      const spent = result.spent && result.spent.callsMade > 0
+        ? ` Spent ${formatEstimateCost(result.spent.costUsd)} across ${result.spent.callsMade.toLocaleString()} call${result.spent.callsMade === 1 ? '' : 's'}.`
+        : ''
+      setResultStatus(`Regenerated ${target.kind === 'project' ? 'the root super-context' : 'this folder’s super-context'} with the ${tier} model.${spent}`)
+      onIndexed?.()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Regeneration failed')
+    } finally {
+      setRegenerating(null)
+    }
+  }
+
+  const REGENERATE_TITLE = 'Re-synthesize this summary from its children’s stored contexts using the selected model tier. No files are re-read, and no other context is rewritten.'
 
   // The result is discarded: the main process broadcasts every state change on
   // the shared documents:state channel, which is what drives indexState here.
@@ -349,6 +382,17 @@ export const DocumentContextPanel: FC<DocumentContextPanelProps> = ({ projectId,
                     >
                       Estimate
                     </button>
+                    {source.rootContext && (
+                      <button
+                        onClick={() => void handleRegenerate({ kind: 'folder', folderPath: source.path })}
+                        disabled={runActive || invoking || Boolean(regenerating)}
+                        title={`${REGENERATE_TITLE} This redoes the source root synthesis only.`}
+                        className={CONTROL_BUTTON}
+                      >
+                        <FontAwesomeIcon icon={faRefresh} className={`text-[10px] ${regenerating === source.path ? 'animate-spin' : ''}`} />
+                        Regenerate
+                      </button>
+                    )}
                     <button
                       onClick={() => void handleGenerate(source.path)}
                       disabled={runActive || invoking}
@@ -368,6 +412,11 @@ export const DocumentContextPanel: FC<DocumentContextPanelProps> = ({ projectId,
           </>
         )}
         {error && <p className="text-[11px] text-red-300/80">{error}</p>}
+        {regenerating && (
+          <p className="text-[11px] text-cyan-200/70">
+            Regenerating {regenerating === 'project' ? 'the root super-context' : 'a folder super-context'} with the {tier} model…
+          </p>
+        )}
         {busyHere && liveProgress && (
           <div className="text-[11px] text-cyan-200/70">
             {liveProgress.message}
@@ -388,7 +437,18 @@ export const DocumentContextPanel: FC<DocumentContextPanelProps> = ({ projectId,
 
         {tree?.rootContextShort ? (
           <div className="rounded-lg border border-cyan-400/15 bg-cyan-400/[0.04] p-3">
-            <div className="text-[10px] uppercase tracking-wider text-cyan-200/50 mb-1.5">Root super-context</div>
+            <div className="mb-1.5 flex items-center gap-2">
+              <span className="flex-1 text-[10px] uppercase tracking-wider text-cyan-200/50">Root super-context</span>
+              <button
+                onClick={() => void handleRegenerate({ kind: 'project' })}
+                disabled={!enabled || runActive || invoking || Boolean(regenerating)}
+                title={REGENERATE_TITLE}
+                className={CONTROL_BUTTON}
+              >
+                <FontAwesomeIcon icon={faRefresh} className={`text-[10px] ${regenerating === 'project' ? 'animate-spin' : ''}`} />
+                Regenerate
+              </button>
+            </div>
             <ReadMore
               short={tree.rootContextShort}
               long={tree.rootContext ?? tree.rootContextShort}
@@ -416,6 +476,15 @@ export const DocumentContextPanel: FC<DocumentContextPanelProps> = ({ projectId,
                   <div className="flex items-center gap-2 mb-1">
                     <span className="text-[11px] text-white/60 truncate flex-1" title={folder.folderPath}>{folder.relativePath}/</span>
                     <span className="text-[9px] text-white/25 shrink-0">{folder.fileCount} file{folder.fileCount === 1 ? '' : 's'}</span>
+                    <button
+                      onClick={() => void handleRegenerate({ kind: 'folder', folderPath: folder.folderPath })}
+                      disabled={!enabled || runActive || invoking || Boolean(regenerating)}
+                      title={REGENERATE_TITLE}
+                      className="shrink-0 flex items-center gap-1 text-[9px] text-white/35 hover:text-cyan-200/80 disabled:opacity-40 disabled:hover:text-white/35 cursor-pointer transition-colors"
+                    >
+                      <FontAwesomeIcon icon={faRefresh} className={`text-[9px] ${regenerating === folder.folderPath ? 'animate-spin' : ''}`} />
+                      Regenerate
+                    </button>
                   </div>
                   <ReadMore short={folder.contextShort || folder.context} long={folder.context} provenance={folder.provenance} />
                   <div className="mt-2 pt-2 border-t border-white/[0.05]">

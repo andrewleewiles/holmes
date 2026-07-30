@@ -72,9 +72,9 @@ const { buildWordTimings, wordIndexAt, sentenceSpanAt, splitForSynthesis } =
 const { ELEVENLABS_MODELS, findModel } = await import('./src/main/speech/elevenlabs.ts')
 const { buildWordTimingsFromSpeechMarks, escapeForSsml } = await import('./src/shared/audiobookTiming.ts')
 const { SPEECH_PROVIDERS, getSpeechProvider, isSpeechProviderId } = await import('./src/main/speech/index.ts')
-const { sanitizeFolderName, fallbackFolderName, planOrganize, applyOrganizePlan } =
+const { sanitizeFolderName, fallbackFolderName, planOrganize, applyOrganizePlan, autoOrganizeNewBooks, ORGANIZE_PROMPT_VERSION } =
   await import('./src/main/bookOrganize.ts')
-const { insertBookAnnotation, listBookAnnotations } = await import('./src/main/database.ts')
+const { insertBookAnnotation, listBookAnnotations, markBookOrganizeChecked } = await import('./src/main/database.ts')
 
 let passed = 0
 function check(name, fn) {
@@ -331,7 +331,11 @@ check('the same input always produces the same canonical text', () => {
 console.log('scanning')
 
 const shelfDir = fs.mkdtempSync(path.join(os.tmpdir(), 'holmes-shelf-'))
-process.env.HOLMES_FILE_SCOPE_MODE = 'everywhere'
+// Under node the settings store is a shared file in ~/Library/Preferences that
+// other suites also write, so the scope must be SET, not assumed: a leftover
+// custom scope from another run makes every scan here throw.
+const { setFileAccessScope } = await import('./src/main/settings.ts')
+setFileAccessScope({ mode: 'everywhere', roots: [] })
 const booksProject = listProjects().find((project) => project.name === BOOKS_PROJECT_NAME)
 addProjectSource(booksProject.id, shelfDir)
 
@@ -1253,6 +1257,38 @@ await checkAsync('a plan entry pointing outside the source is refused at apply t
   assert.equal(result.moved, 0, 'a doctored destination must move nothing')
   assert.equal(result.failed.length, 1)
   assert.match(result.failed[0].error, /outside this source/)
+})
+
+await checkAsync('auto-filing moves only unambiguous new books, and each is considered once', async () => {
+  const project = listProjects().find((p) => p.name === BOOKS_PROJECT_NAME)
+  // Fence: stamp everything earlier tests shelved so this test watches only its
+  // own two books — the same mechanism that keeps a rescan free in production.
+  for (const shelved of listBooks(project.id)) markBookOrganizeChecked(shelved.id, ORGANIZE_PROMPT_VERSION)
+
+  const autoDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'holmes-autofile-')))
+  addProjectSource(project.id, autoDir)
+  fs.writeFileSync(path.join(autoDir, 'bnw.epub'), buildEpub({
+    title: 'Brave New World', authors: ['Aldous Huxley'], chapters: [FIXTURE_CHAPTERS[0]],
+  }))
+  fs.writeFileSync(path.join(autoDir, 'pamphlet.epub'), buildEpub({
+    title: 'Mystery Pamphlet', authors: [], chapters: [FIXTURE_CHAPTERS[0]],
+  }))
+  await scanLibrary(project.id)
+
+  // No provider config, so naming falls back to metadata — the move path and
+  // the ambiguity gate are what is under test.
+  const first = await autoOrganizeNewBooks(project.id, {})
+  assert.equal(first.considered, 2)
+  assert.equal(first.moved, 1, 'only the book with an author moves')
+  assert.ok(fs.existsSync(path.join(autoDir, 'Huxley - Brave New World', 'bnw.epub')))
+  assert.ok(fs.existsSync(path.join(autoDir, 'pamphlet.epub')), 'an authorless book stays put for a reviewed Organise')
+
+  // Both were stamped — the moved one and the ambiguous one alike — so a second
+  // pass has nothing to ask about. This is what makes rescans free.
+  assert.equal(await autoOrganizeNewBooks(project.id, {}), null)
+
+  const rescan = await scanLibrary(project.id)
+  assert.equal(rescan.booksAdded, 0, 'a rescan neither re-adds nor re-files')
 })
 
 

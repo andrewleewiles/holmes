@@ -114,9 +114,21 @@ const balanced = selectBalancedResults(
   Array.from({ length: 5 }, (_, index) => syntheticResult(`file-${index}`, 'file', 1)),
   Array.from({ length: 30 }, (_, index) => syntheticResult(`chat-${index}`, 'conversation', 100 - index)),
   [],
+  [],
   10
 )
 assert.equal(balanced.filter((result) => result.source === 'file').length, 3)
+
+// Generated contexts get the same per-source quota as files and conversations,
+// so a page of high-scoring chat matches cannot crowd every analysis out.
+const balancedWithContexts = selectBalancedResults(
+  Array.from({ length: 5 }, (_, index) => syntheticResult(`file-${index}`, 'file', 1)),
+  Array.from({ length: 30 }, (_, index) => syntheticResult(`chat-${index}`, 'conversation', 100 - index)),
+  [],
+  Array.from({ length: 5 }, (_, index) => syntheticResult(`ctx-${index}`, 'context', 2)),
+  12
+)
+assert.equal(balancedWithContexts.filter((result) => result.source === 'context').length, 4)
 
 // --- Spotlight query construction --------------------------------------------
 // mdfind ANDs every word of a plain query, so a question handed over verbatim

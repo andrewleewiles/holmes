@@ -7,7 +7,10 @@
 //    "orwell,george" or inside a publisher string; titles carry subtitles,
 //    series numbers and "(Retail) (v3.1)". So the folder name comes from an LLM
 //    call over the metadata, which is what the user asked for — and it is why
-//    this is an explicit action rather than something the background scan does.
+//    the background scan itself never does this. Auto-filing after a scan runs
+//    through `autoOrganizeNewBooks` below, which only ever considers a book
+//    once and only moves the unambiguous ones; everything else waits for the
+//    Organise button, where a person reviews the plan.
 //
 // 2. **It moves the user's actual files.** Everything here is planned first and
 //    applied second, never leaves the connected source root, never overwrites,
@@ -133,6 +136,12 @@ export interface OrganizeOptions {
   signal?: AbortSignal
   /** Skip the LLM entirely and use metadata-derived names. */
   offline?: boolean
+  /** Restrict the plan to these books. Used by auto-filing, which must not
+   *  re-spend model calls on the whole shelf after every scan. */
+  onlyBookIds?: Set<string>
+  /** Called after each model batch — a large backlog is minutes of calls, and
+   *  a silent caller looks stalled to the scan watchdog. */
+  onProgress?: (current: number, total: number) => void
 }
 
 /**
@@ -145,6 +154,7 @@ export async function planOrganize(projectId: string, options: OrganizeOptions =
   const books = database
     .listBooks(projectId)
     .filter((book) => book.status !== 'failed' && !book.missingSince)
+    .filter((book) => !options.onlyBookIds || options.onlyBookIds.has(book.id))
 
   const entries: OrganizePlanEntry[] = []
   if (books.length === 0) return { projectId, entries, moveCount: 0, skipCount: 0 }
@@ -190,6 +200,7 @@ export async function planOrganize(projectId: string, options: OrganizeOptions =
       batch.forEach((book, index) => {
         names.set(book.id, answered.get(index) || fallbackFolderName(book))
       })
+      options.onProgress?.(Math.min(start + BATCH_SIZE, books.length), books.length)
     }
   } else {
     for (const book of books) names.set(book.id, fallbackFolderName(book))
@@ -240,6 +251,67 @@ export async function planOrganize(projectId: string, options: OrganizeOptions =
     entries,
     moveCount: entries.filter((entry) => entry.targetPath && !entry.skipped).length,
     skipCount: entries.filter((entry) => entry.skipped).length,
+  }
+}
+
+export interface AutoOrganizeResult {
+  /** Books this pass had never asked about before. */
+  considered: number
+  moved: number
+  skipped: number
+  failed: number
+}
+
+/**
+ * The unattended version of plan-then-apply, run when a scan finishes.
+ *
+ * It differs from the Organise button in exactly two ways, both in the
+ * direction of caution: only books never considered at this prompt version are
+ * asked about (a scan of an unchanged shelf costs nothing), and only entries
+ * that resolved to the full `Author - Title` form are moved. A title-only
+ * answer means the model could not name the author, and a move nobody reviews
+ * has no business guessing.
+ */
+export async function autoOrganizeNewBooks(
+  projectId: string,
+  options: Omit<OrganizeOptions, 'offline' | 'onlyBookIds'>
+): Promise<AutoOrganizeResult | null> {
+  const checked = database.listOrganizeCheckedBookIds(projectId, ORGANIZE_PROMPT_VERSION)
+  const candidates = database
+    .listBooks(projectId)
+    .filter((book) => book.status !== 'failed' && !book.missingSince && !checked.has(book.id))
+  if (candidates.length === 0) return null
+
+  const plan = await planOrganize(projectId, {
+    ...options,
+    onlyBookIds: new Set(candidates.map((book) => book.id)),
+  })
+
+  for (const entry of plan.entries) {
+    if (entry.skipped || !entry.targetPath) continue
+    if (!entry.folderName.includes(' - ')) {
+      entry.targetPath = null
+      entry.skipped = 'The author could not be determined, so this waits for a reviewed Organise'
+    }
+  }
+
+  const result = applyOrganizePlan(plan)
+
+  // Stamp every book that was considered and did not fail outright — including
+  // the ones left in place. The same model gives the same answer to the same
+  // metadata, so asking again next scan is pure spend. Failures stay unstamped:
+  // a file that was busy or briefly absent deserves another try.
+  const failedIds = new Set(result.failed.map((failure) => failure.bookId))
+  for (const entry of plan.entries) {
+    if (failedIds.has(entry.bookId)) continue
+    database.markBookOrganizeChecked(entry.bookId, ORGANIZE_PROMPT_VERSION)
+  }
+
+  return {
+    considered: plan.entries.length,
+    moved: result.moved,
+    skipped: result.skipped,
+    failed: result.failed.length,
   }
 }
 

@@ -5,6 +5,7 @@ import type { ActivityCredentialKind, ActivityProviderId } from './activityProvi
 // Same reasoning for the Library: its contract is large enough to own a module,
 // and re-exporting here keeps `@shared/types` the one import consumers need.
 import type { ProjectKind } from './defaultProjects'
+import type { WorkDocumentKind } from './workDocuments'
 import type {
   Book,
   BookChapter,
@@ -278,6 +279,8 @@ export interface AppSettings {
   webSearchEnabled: boolean
   webSearchProvider: WebSearchProvider
   webSearchApiKey: string
+  /** YouTube Data API v3 key. Without it the Play feed has nothing to retrieve. */
+  youtubeApiKey: string
   /** Gates the AI analysis pass over activity events. */
   activityIngestEnabled: boolean
   /**
@@ -298,6 +301,13 @@ export interface AppSettings {
    * reader and reading progress work with no provider configured at all.
    */
   librarySnapshotEnabled: boolean
+  /**
+   * Auto-file newly scanned books into `Author - Title` folders when a scan
+   * finishes. Uses the same model-named plan as the Organise button but only
+   * moves unambiguous entries, and each book is considered exactly once. Does
+   * nothing without provider credentials.
+   */
+  libraryAutoOrganizeEnabled: boolean
   superContextMemoryEnabled: boolean
   timelineEnabled: boolean
   peopleEnabled: boolean
@@ -449,6 +459,8 @@ export type MemorySourceType =
   | 'claude-import'
   | 'activity-events'
   | 'super-context'
+  /** A thumbs-up in the Play feed. Provenance for a taste, not a body of evidence. */
+  | 'play-reaction'
 
 export interface MemorySource {
   type: MemorySourceType
@@ -892,6 +904,48 @@ export type IndexStyle = 'behavioral' | 'work' | 'reference'
 
 export const INDEX_STYLES: readonly IndexStyle[] = ['behavioral', 'work', 'reference'] as const
 
+/**
+ * Saving a Work document. The target folder comes from the project selected in
+ * the sidebar filter — the same selection that scopes the conversation list —
+ * so a document lands with the material it belongs to and gets indexed with it.
+ */
+export interface WorkSaveRequest {
+  /** The sidebar's active project, or null for General. */
+  projectId: string | null
+  fileName: string
+  bytes: Uint8Array
+  /** Set on re-save to overwrite in place instead of picking a new name. */
+  existingPath?: string
+  /**
+   * How the save dialog was answered for a document shown in paper mode: 'keep'
+   * writes the dark page and white text into the file, 'plain' puts the default
+   * font back. Absent when nothing was shown differently from how it saves.
+   */
+  paper?: 'keep' | 'plain'
+}
+
+export interface WorkSaveResult {
+  path: string
+  bytes: number
+  /** The project it was filed under, or null when it went somewhere chosen by hand. */
+  projectId: string | null
+  /** True when the user was asked where to put it (no project folder available). */
+  chosenByUser: boolean
+}
+
+/** One instruction from the model to the open editor. */
+export interface WorkEditorRequest {
+  requestId: string
+  action: string
+  payload: Record<string, unknown>
+}
+
+export interface WorkEditorResponse {
+  requestId: string
+  ok: boolean
+  value: unknown
+}
+
 export interface Project {
   id: string
   name: string
@@ -963,7 +1017,10 @@ export interface SearchResult {
   conversationTitle: string
 }
 
-export type RecallSearchSource = 'all' | 'files' | 'conversations'
+export type RecallSearchSource = 'all' | 'files' | 'conversations' | 'contexts'
+
+/** Which level of the generated-context hierarchy a Recall context result came from. */
+export type RecallContextLevel = 'file' | 'folder' | 'sourceRoot' | 'project' | 'user' | 'conversation'
 
 export interface RecallSearchRequest {
   query: string
@@ -974,7 +1031,7 @@ export interface RecallSearchRequest {
 
 export interface RecallSearchResult {
   id: string
-  source: 'file' | 'conversation' | 'activity'
+  source: 'file' | 'conversation' | 'activity' | 'context'
   title: string
   context: string
   snippet: string
@@ -985,6 +1042,10 @@ export interface RecallSearchResult {
   conversationId?: string
   messageId?: string
   role?: Message['role']
+  /** Set on `context` results: where in the file → folder → project → user hierarchy this sits. */
+  contextLevel?: RecallContextLevel
+  /** The source a `context` result belongs to, where it belongs to one. */
+  projectId?: string
 }
 
 export interface RecallAnswer {
@@ -1001,6 +1062,7 @@ export interface RecallSearchResponse {
     files: number
     conversations: number
     activity: number
+    contexts: number
   }
   expandedQueries: string[]
   semanticApplied: boolean
@@ -1422,6 +1484,25 @@ export interface DocumentContextResult {
   sourceUnavailable?: boolean
 }
 
+/**
+ * One stored context node to re-synthesize in place: a folder super-context
+ * (including a source root), or the project-level combined synthesis. The
+ * regen reads the child contexts already in the database — no file is
+ * re-read, no descendant or ancestor is touched.
+ */
+export type RegenerateContextTarget =
+  | { kind: 'folder'; folderPath: string }
+  | { kind: 'project' }
+
+export interface RegenerateContextResult {
+  kind: 'folder' | 'project'
+  /** The node that was regenerated: its folder path, or `project:<id>` for the combined synthesis. */
+  ref: string
+  contextShort: string | null
+  context: string | null
+  spent?: IndexSpend
+}
+
 // What an index run has actually consumed so far, accumulated from each
 // response's `usage` envelope. Priced with the same table as the estimate so
 // the two are directly comparable.
@@ -1712,6 +1793,247 @@ export interface HomeIdeasResult {
   personalized: boolean
   /** True when a refresh would produce a new set. */
   stale: boolean
+}
+
+// The Play feed — curated media picked against the user's own record.
+//
+// The pipeline is plan -> retrieve -> curate: a model turns the profile into
+// search intents, real retrieval answers them, and a second model ranks what
+// came back and says why each pick suits this person. Retrieval is real so the
+// links work; the ranking is the profile, which is the part a public
+// recommender structurally cannot copy.
+//
+// V1 retrieves `video` only. The rest of the union is here because the schema,
+// the dispatch table and the card layout are all keyed by it, and adding a kind
+// later should be a new retriever rather than a migration.
+export type PlayItemKind = 'video' | 'article' | 'podcast' | 'book' | 'audiobook'
+export const PLAY_ITEM_KINDS: readonly PlayItemKind[] = [
+  'video',
+  'article',
+  'podcast',
+  'book',
+  'audiobook',
+]
+
+/** Which retriever produced a candidate. V1 dispatches only `youtube`. */
+export type PlayRetrieverId = 'youtube' | 'tavily' | 'openrouter-web' | 'library'
+
+export type PlayReaction = 'up' | 'down'
+
+/**
+ * Why a refresh produced what it did. Every non-`ok` value is a state the page
+ * explains rather than an error it swallows: a Refresh the user pressed that
+ * silently returns the same twelve cards reads as broken.
+ */
+export type PlayFeedStatus = 'ok' | 'no-api-key' | 'no-profile' | 'no-credentials' | 'quota' | 'error'
+
+/**
+ * Where a pick came from in the user's own record. `drillable` marks the refs
+ * that `resolveProvenanceChain` understands, so the chip can open the existing
+ * provenance explorer; the rest are terminal and show their `detail` alone.
+ */
+export type PlaySourceRefKind =
+  | 'super-context'
+  | 'memory-field'
+  | 'timeline'
+  | 'person'
+  | 'watch-history'
+  | 'book'
+  | 'project'
+  | 'reaction'
+
+export interface PlaySourceRef {
+  /** Drillable refs use the vocabulary `resolveProvenanceChain` already resolves. */
+  ref: string
+  kind: PlaySourceRefKind
+  label: string
+  /** The exact fact, quoted from the profile. This is what the card shows. */
+  detail: string
+  drillable: boolean
+}
+
+/**
+ * One search intent: the literal string handed to a retriever, plus the facts
+ * that motivated it. The planner emits these rather than recommendations —
+ * it has no way to know what actually exists.
+ */
+export interface PlayIntent {
+  /** `i1`..`iN`, stable within one feed. The curator cites these and nothing else. */
+  id: string
+  kind: PlayItemKind
+  query: string
+  rationale: string
+  sourceRefs: PlaySourceRef[]
+  /** Retriever hints. A retriever that does not understand one ignores it. */
+  filters?: {
+    publishedAfter?: string
+    minMinutes?: number
+    maxMinutes?: number
+    channelHint?: string
+    language?: string
+  }
+}
+
+export interface PlayItem {
+  id: string
+  kind: PlayItemKind
+  provider: PlayRetrieverId
+  externalId: string
+  url: string
+  title: string
+  creator: string | null
+  description: string | null
+  publishedAt: string | null
+  durationSeconds: number | null
+  thumbnailUrl: string | null
+  /** `holmes-media://thumb/<id>` once cached; null while uncached or on failure. */
+  thumbnailMediaId: string | null
+  /** False for an item the platform refuses to embed — the card links out instead. */
+  embeddable: boolean
+  rationale: string
+  intentIds: string[]
+  /**
+   * The deduped union of the cited intents' refs. Computed from `intentIds`,
+   * never authored by a model: a ref the code did not build cannot be verified.
+   */
+  sourceRefs: PlaySourceRef[]
+  rank: number
+  reaction: PlayReaction | null
+  reactedAt: number | null
+  shownAt: number
+  /** Null until the transcript pass has run for this item. */
+  analysis: PlayAnalysis | null
+  /** Resume point and how much has been seen — see PlayWatchState. */
+  watch: PlayWatchState | null
+  archive: PlayArchive | null
+}
+
+/**
+ * Playback position, keyed by the video rather than the feed row so it survives
+ * the item dropping out of the feed and being suggested again months later.
+ *
+ * `furthestSeconds` is monotonic, exactly as `book_reading_state` does it:
+ * scrubbing back to rewatch a section must not undo the progress bar.
+ */
+export interface PlayWatchState {
+  positionSeconds: number
+  furthestSeconds: number
+  durationSeconds: number | null
+  completedAt: number | null
+  updatedAt: number
+}
+
+export interface PlayArchive {
+  status: PlayArchiveStatus
+  filePath: string | null
+  byteSize: number
+  archivedAt: number | null
+  error: string | null
+}
+
+/**
+ * What kind of problem a flag is. Kept narrow and concrete: a taxonomy with
+ * twenty entries produces twenty flags per video, and a feed that flags
+ * everything says nothing.
+ */
+export type PlayFlagKind =
+  | 'unsupported'
+  | 'false'
+  | 'misleading'
+  | 'bias'
+  | 'omission'
+  | 'outdated'
+  | 'speculation'
+
+export type PlayFlagSeverity = 'low' | 'medium' | 'high'
+
+/** One timestamped problem found in a video's transcript. */
+export interface PlayFlag {
+  id: string
+  kind: PlayFlagKind
+  severity: PlayFlagSeverity
+  /** Seconds into the video, snapped to the transcript cue that carries it. */
+  startSeconds: number
+  /** The claim as made, quoted from the transcript so it can be checked. */
+  quote: string
+  /** What is wrong with it, in one or two sentences. */
+  note: string
+}
+
+export type PlayAnalysisStatus =
+  | 'pending'
+  | 'ok'
+  | 'no-transcript'
+  | 'unavailable'
+  | 'failed'
+
+export interface PlayAnalysis {
+  status: PlayAnalysisStatus
+  /** A one-line characterisation of how the video handles its subject. */
+  summary: string
+  flags: PlayFlag[]
+  /** Transcript language actually used, so a translated track is never silent. */
+  language: string | null
+  analyzedAt: number
+  error: string | null
+}
+
+/**
+ * Where a build has got to. The refresh is a multi-minute job — two model calls
+ * around real retrieval, then a transcript download and an analysis call for
+ * every pick — so it reports like the indexing passes do rather than spinning a
+ * button for four minutes.
+ */
+export type PlayRunPhase = 'planning' | 'retrieving' | 'curating' | 'transcribing' | 'analysing'
+
+export interface PlayRunProgress {
+  phase: PlayRunPhase
+  /** Position within a per-item phase; both 0 for the whole-step phases. */
+  completed: number
+  total: number
+  /** What is being worked on right now — a query, or a video title. */
+  detail: string
+}
+
+export type PlayArchiveStatus = 'queued' | 'downloading' | 'done' | 'failed'
+
+export interface PlayArchiveProgress {
+  itemId: string
+  title: string
+  status: PlayArchiveStatus
+  /** 0-1, or null while yt-dlp has not reported a percentage yet. */
+  fraction: number | null
+  detail: string
+  error: string | null
+}
+
+export interface PlayRunState {
+  status: 'idle' | 'building'
+  origin: 'user' | null
+  progress: PlayRunProgress | null
+  message: string | null
+  /**
+   * Downloads run alongside a build rather than queueing behind it: archiving is
+   * the user's own decision about one video and must not wait on a feed refresh.
+   */
+  archives: PlayArchiveProgress[]
+  updatedAt: string
+}
+
+export interface PlayFeed {
+  items: PlayItem[]
+  intents: PlayIntent[]
+  generatedAt: number
+  /** False before anything has been generated against a real profile. */
+  personalized: boolean
+  /** True when a refresh would produce a different set. */
+  stale: boolean
+  status: PlayFeedStatus
+  lastError: string | null
+  provenance: ContextProvenance | null
+  /** The YouTube quota ledger, so a bounded daily spend is visible rather than mysterious. */
+  searchUnitsUsedToday: number
+  searchUnitBudget: number
 }
 
 export interface TimelineSummary {
@@ -2612,6 +2934,7 @@ export interface ElectronAPI {
   documents: {
     generate: (projectId: string, tier?: ModelTier, options?: { sourcePath?: string; force?: boolean; granularity?: IndexGranularity }) => Promise<DocumentContextResult>
     generateAll: (options?: { resume?: boolean; tier?: ModelTier; projectIds?: string[]; force?: boolean; granularity?: IndexGranularity }) => Promise<DocumentIndexAllResult>
+    regenerateNode: (projectId: string, target: RegenerateContextTarget, tier?: ModelTier) => Promise<RegenerateContextResult>
     estimate: (projectId: string, tier?: ModelTier, options?: { sourcePath?: string; force?: boolean; granularity?: IndexGranularity }) => Promise<IndexEstimate>
     estimateAll: (tier?: ModelTier, options?: { projectIds?: string[]; force?: boolean; granularity?: IndexGranularity }) => Promise<IndexEstimate>
     getSummaries: () => Promise<ProjectIndexSummary[]>
@@ -2753,6 +3076,16 @@ export interface ElectronAPI {
     get: () => Promise<HomeIdeasResult>
     refresh: (force?: boolean) => Promise<HomeIdeasResult>
   }
+  play: {
+    get: () => Promise<PlayFeed>
+    refresh: (force?: boolean) => Promise<PlayFeed>
+    react: (id: string, reaction: PlayReaction | null) => Promise<PlayFeed>
+    stop: () => Promise<PlayRunState>
+    getState: () => Promise<PlayRunState>
+    setProgress: (id: string, positionSeconds: number, durationSeconds: number | null) => Promise<PlayWatchState | null>
+    archive: (id: string) => Promise<PlayFeed>
+    onState: (callback: (state: PlayRunState) => void) => () => void
+  }
   callHistory: {
     list: (filter?: ProviderCallFilter) => Promise<ProviderCallSummary[]>
     get: (id: string) => Promise<ProviderCall | null>
@@ -2768,6 +3101,15 @@ export interface ElectronAPI {
     revokeDevice: (deviceId: string) => Promise<void>
     renameDevice: (deviceId: string, name: string) => Promise<void>
     onStatus: (callback: (status: RemoteServerStatus) => void) => () => void
+  }
+  work: {
+    saveDocument: (request: WorkSaveRequest) => Promise<WorkSaveResult>
+    /** The kind rides along so main offers the matching tool set — the office
+     *  work_* tools, or the raster/vector design_* tools. */
+    setEditorOpen: (open: boolean, kind?: WorkDocumentKind) => Promise<{ open: boolean }>
+    respondToEditor: (response: WorkEditorResponse) => Promise<{ settled: boolean }>
+    onOpenDocument: (callback: (request: WorkEditorRequest) => void) => () => void
+    onEditorRequest: (callback: (request: WorkEditorRequest) => void) => () => void
   }
   fs: {
     readFile: (path: string, options?: { encoding?: 'utf8' | 'base64'; maxBytes?: number }) => Promise<FsReadResult>

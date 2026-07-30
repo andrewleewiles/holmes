@@ -12,14 +12,15 @@ import type { RemoteClientSettings, RemoteDevice, RemotePairingOffer, RemoteServ
 import { randomUUID } from 'crypto'
 import { userInfo } from 'os'
 import { join } from 'path'
-import { readFile, writeFile, readdir, stat, mkdir, open } from 'fs/promises'
-import { existsSync } from 'fs'
+import { readFile, writeFile, readdir, stat, mkdir, open, rename } from 'fs/promises'
+import { existsSync, statSync } from 'fs'
 import path from 'path'
 import { pathToFileURL } from 'url'
 import { IPC } from './ipcChannels'
 import * as database from './database'
 import * as settings from './settings'
-import { assertPathAllowed, getResolvedRoots, isPathEverywhere } from './fileScope'
+import { assertPathAllowed, getResolvedRoots, isPathAllowed, isPathEverywhere } from './fileScope'
+import { editorKind, setEditorOpen, settleEditorRequest } from './officeBridge'
 import { streamChatCompletion, listModels, analyzePsychology, analyzeHealth, answerRecallQuestion, expandRecallQuery, researchProducts, extractMemoryCandidates, generateImage, generateVideo, generateConversationTitle, fallbackConversationTitle } from './provider'
 import { describeProvider, hasProviderCredentials } from './providerEndpoint'
 import { clearProviderCreditBlock, getProviderCreditState, isProviderCreditBlocked, onProviderCreditChange } from './providerCredit'
@@ -64,8 +65,19 @@ import { fetchWeatherHistory, tickWeatherHourly } from './activityWeather'
 import { syncPhotosMetadata } from './activityPhotos'
 import { detectSubscriptionsFromEmail, ingestSubscriptionFile } from './activitySubscriptions'
 import { generateActivitySummary, shouldUpdateActivitySummary, getActivitySummary, estimateActivityAnalysis } from './activitySummary'
-import { generateDocumentContexts, getDocumentContextTree, listProjectIndexSummaries, generateUserSuperContext, getUserSuperContext, createSpendTracker, resolveProvenanceChain, readSourceExcerpt } from './documentContext'
+import { generateDocumentContexts, getDocumentContextTree, listProjectIndexSummaries, generateUserSuperContext, getUserSuperContext, createSpendTracker, regenerateContextNode, resolveProvenanceChain, readSourceExcerpt } from './documentContext'
+import { hasGeneratedContexts } from './contextSearch'
 import { getHomeIdeas, refreshHomeIdeas } from './homeIdeas'
+import {
+  archivePlayItemById,
+  getPlayFeed,
+  getPlayRunStateForRenderer,
+  reactToPlayItem,
+  recordPlayProgress,
+  refreshPlayFeed,
+  requestPlayRunStop,
+} from './playFeed'
+import { subscribePlayRunState } from './playRuns'
 import { estimateProjectIndex, combineEstimates } from './indexEstimate'
 import { getPriceTable } from './modelPricing'
 import {
@@ -76,6 +88,7 @@ import {
   INDEX_IDLE_TIMEOUT_MINUTES,
   INDEX_IDLE_TIMEOUT_MS,
   getDocumentIndexState,
+  isDocumentIndexRunActive,
   reportDocumentIndexProgress,
   requestDocumentIndexPause,
   requestDocumentIndexStop,
@@ -132,7 +145,7 @@ import {
 } from './speech'
 import { annotationFocus, type AnnotationFocusKey } from '../shared/bookFocuses'
 import { buildLibraryManifest, generateBooksContext } from './booksContext'
-import { applyOrganizePlan, planOrganize, type OrganizePlan, type OrganizeResult } from './bookOrganize'
+import { applyOrganizePlan, autoOrganizeNewBooks, planOrganize, type OrganizePlan, type OrganizeResult } from './bookOrganize'
 import { estimateTokens } from '../shared/tokenEstimate'
 import { priceCall } from './modelPricing'
 import { createRateLimiter, estimateSecondsForCalls } from './rateLimit'
@@ -171,8 +184,9 @@ import { setAmazonCookies, clearAmazonCookies, setSecret, clearSecret } from './
 import { listAccounts, syncAccount, importAccountExport, scanAccountWatchFolders } from './activityAccounts'
 import { activityProviderOrNull } from '../shared/activityProviders'
 import { fetchCurrentLocation, isHolmesSidecarAvailable } from './sidecarLive'
+import { applyPaperChoice } from './workPaper'
 import { isActivitySourceType, normalizeIndexGranularity } from '../shared/types'
-import type { AccountEvent, ActivityAccountConfig, ActivityAccountUpdate } from '../shared/types'
+import type { AccountEvent, ActivityAccountConfig, ActivityAccountUpdate, WorkSaveRequest, WorkSaveResult } from '../shared/types'
 import type { ChatAttachment, StreamChunk, ReasoningEffort, Project, ProjectInput, PsychologyAnalysis, HealthAnalysis, HealthRecord, HealthObservation, HealthSummary, HealthIngestProgress, HealthLiveStatus, HealthLiveSyncProgress, HealthSyncResult, PsychologicalTestId, ClaudeImportProgress, MemoryMode, ContextSelection, FsReadResult, FsWriteRequest, FsWriteResult, FsListItem, ToolCall, ToolResult, ProviderConfig, WebSearchRequest, ActivityRecord, ActivitySourceType, ActivityIngestProgress, ActivityEventsBySource, ActivitySummary, ActivityLiveStatus, ActivityLiveStatusSource, ActivitySyncResult, ActivitySyncResultItem, BrowserEvent, YoutubeEvent, AmazonEvent, EmailEvent, KnowledgeEvent, PhotoEvent, LocationEvent, WeatherEvent, SubscriptionEvent, DocumentContextProgress, DocumentIndexState, SystemPromptEntry, TimelineEvent, TimelineEventInput, TimelineFilter, TimelineRebuildProgress, TimelineRunState, ContextVersionFilter, ProviderCallFilter, PeopleFilter, PeopleRebuildProgress, PersonRelation, Book, BookChapter, BookChapterContent, BookReadingState, BookReadingStatus, BookResource, LibraryBook, LibraryRunState, LibraryScanProgress, LibraryScanResult, IndexEstimate, BookAnnotation, BookAnnotationRun, BookLesson, BookLessonAttempt, BookConversationLink, BookDiscussionScope, Audiobook, AudiobookChapter, AudiobookEstimate, SpeechModel, SpeechProviderInfo, SpeechVoice, RecallSearchResponse, RecallHistorySource } from '../shared/types'
 
 let abortController: AbortController | null = null
@@ -409,7 +423,15 @@ async function runChatWithTools(
       if (signal.aborted) throw new Error('Stream aborted')
 
       const webSearchEnabled = settings.getWebSearchSettings().enabled
-      const toolDefinitions = getToolDefinitions({ webSearchEnabled })
+      // Recomputed each round: what is open decides which editor tools exist —
+      // the office work_* set, or the raster/vector design_* set, never both.
+      const openEditor = editorKind()
+      const toolDefinitions = getToolDefinitions({
+        webSearchEnabled,
+        workEditorOpen: openEditor === 'office',
+        designEditorKind: openEditor === 'image' || openEditor === 'vector' ? openEditor : null,
+        contextSearchAvailable: hasGeneratedContexts(),
+      })
 
       const result = await streamOneRound(
         providerConfig, apiMessages, model, effort, signal, toolDefinitions,
@@ -2610,6 +2632,62 @@ export function registerIpcHandlers(): void {
     }
   })
 
+  // Re-synthesizes ONE stored context node (folder super-context or the
+  // project-level combined synthesis) at the chosen tier. One or two model
+  // calls, seconds not hours — so it manages its own abort timeout instead of
+  // the run registry, and simply refuses to start while a real index run owns
+  // the same rows.
+  handle(IPC.DOCUMENTS.REGENERATE_NODE, async (event, projectId: unknown, target: unknown, tierArg: unknown) => {
+    assertTrustedSender(event, 'Document context')
+    if (typeof projectId !== 'string' || !projectId.trim()) throw new Error('Project ID is required')
+    if (!settings.getSettings().documentContextEnabled) {
+      throw new Error('Document context is disabled in settings')
+    }
+    const kind = (target as { kind?: unknown })?.kind
+    const folderPath = (target as { folderPath?: unknown })?.folderPath
+    if (kind !== 'project' && !(kind === 'folder' && typeof folderPath === 'string' && folderPath.trim())) {
+      throw new Error('A context node (folder path or project) is required')
+    }
+    const providerConfig = settings.getProvider()
+    if (!hasProviderCredentials(providerConfig)) {
+      throw new Error('No API key configured. Please set your API key in Settings.')
+    }
+    if (isDocumentIndexRunActive()) {
+      throw new Error('An index run is in progress — wait for it to finish before regenerating a single context.')
+    }
+    const tier = settings.normalizeModelTier(tierArg ?? settings.getDefaultTier())
+    const model = settings.getTextModel(tier)
+    const spend = createSpendTracker(await getPriceTable(providerConfig))
+    const controller = new AbortController()
+    const abortOnDestroy = () => controller.abort()
+    event.sender.once('destroyed', abortOnDestroy)
+    // A couple of synthesis calls with retries; anything past this is a dead
+    // request, not a slow one.
+    const timeout = setTimeout(() => controller.abort(), 300_000)
+    try {
+      const result = await regenerateContextNode(
+        projectId,
+        kind === 'project' ? { kind: 'project' } : { kind: 'folder', folderPath: folderPath as string },
+        providerConfig,
+        model,
+        controller.signal,
+        { spend }
+      )
+      // Hash-gated: only spends a call when the regenerated node actually
+      // changed what the unified profile reads (i.e. it was a project root).
+      try {
+        await generateUserSuperContext(providerConfig, model, controller.signal)
+      } catch { /* User super-context refresh is best-effort. */ }
+      return result
+    } catch (error) {
+      if (controller.signal.aborted) throw new Error('Context regeneration cancelled or timed out.')
+      throw error
+    } finally {
+      clearTimeout(timeout)
+      event.sender.removeListener('destroyed', abortOnDestroy)
+    }
+  })
+
   handle(IPC.DOCUMENTS.GENERATE_ALL, async (event, options: unknown) => {
     assertTrustedSender(event, 'Document context')
     if (!settings.getSettings().documentContextEnabled) {
@@ -3078,6 +3156,61 @@ export function registerIpcHandlers(): void {
   handle(IPC.IDEAS.REFRESH, (event, force: unknown) => {
     assertTrustedSender(event, 'Ideas')
     return refreshHomeIdeas(settings.getProvider(), settings.getTextModel('budget'), undefined, force === true)
+  })
+
+  // The Play feed. GET never calls a model; REFRESH makes at most two mid-tier
+  // calls plus real YouTube retrieval, and refuses at every gate that would make
+  // the run pointless (no key, no profile, no credit, quota spent) before
+  // spending anything. REACT writes locally and may offer one memory candidate.
+  handle(IPC.PLAY.GET, (event) => {
+    assertTrustedSender(event, 'Play')
+    return getPlayFeed()
+  })
+
+  handle(IPC.PLAY.REFRESH, (event, force: unknown) => {
+    assertTrustedSender(event, 'Play')
+    const model = settings.getTextModel('mid')
+    return refreshPlayFeed(settings.getProvider(), { planner: model, curator: model }, undefined, force === true)
+  })
+
+  handle(IPC.PLAY.REACT, (event, id: unknown, reaction: unknown) => {
+    assertTrustedSender(event, 'Play')
+    if (typeof id !== 'string' || !id.trim()) throw new Error('A play item id is required')
+    if (reaction !== 'up' && reaction !== 'down' && reaction !== null) {
+      throw new Error('A reaction must be "up", "down" or null')
+    }
+    return reactToPlayItem(id, reaction)
+  })
+
+  handle(IPC.PLAY.STOP, (event) => {
+    assertTrustedSender(event, 'Play')
+    return requestPlayRunStop()
+  })
+
+  handle(IPC.PLAY.GET_STATE, (event) => {
+    assertTrustedSender(event, 'Play')
+    return getPlayRunStateForRenderer()
+  })
+
+  // Written from the player as it ticks, so it is deliberately cheap: one upsert
+  // and no feed rebuild. The renderer throttles the calls.
+  handle(IPC.PLAY.SET_PROGRESS, (event, id: unknown, positionSeconds: unknown, durationSeconds: unknown) => {
+    assertTrustedSender(event, 'Play')
+    if (typeof id !== 'string' || !id.trim()) throw new Error('A play item id is required')
+    if (typeof positionSeconds !== 'number' || !Number.isFinite(positionSeconds)) {
+      throw new Error('A playback position is required')
+    }
+    return recordPlayProgress(
+      id,
+      positionSeconds,
+      typeof durationSeconds === 'number' && Number.isFinite(durationSeconds) ? durationSeconds : null
+    )
+  })
+
+  handle(IPC.PLAY.ARCHIVE, async (event, id: unknown) => {
+    assertTrustedSender(event, 'Play')
+    if (typeof id !== 'string' || !id.trim()) throw new Error('A play item id is required')
+    return archivePlayItemById(id)
   })
 
   handle(IPC.CONTEXT_VERSIONS.LIST, (event, filter: unknown) => {
@@ -3622,6 +3755,127 @@ export function registerIpcHandlers(): void {
     }
   })
 
+  const WORK_SAVE_EXTENSIONS = new Set(['.docx', '.xlsx', '.pptx', '.png', '.svg'])
+
+  /**
+   * The folder a project's documents belong in: its own path if it has one,
+   * otherwise its first source folder. A project with neither (one built only
+   * from individual files) has nowhere obvious to put a NEW document, so the
+   * caller falls back to asking.
+   */
+  function workSaveDirectory(projectId: string): string | null {
+    const project = database.getProjectById(projectId)
+    if (!project) return null
+    const candidates = [project.path, ...project.sources.map((source) => source.path)]
+    for (const candidate of candidates) {
+      if (!candidate) continue
+      try {
+        const resolved = path.resolve(candidate)
+        if (statSync(resolved).isDirectory() && isPathAllowed(resolved)) return resolved
+      } catch { /* an unmounted or deleted source is not a save target */ }
+    }
+    return null
+  }
+
+  /** "Untitled document.docx" -> "Untitled document 2.docx" when taken. */
+  function uniqueFilePath(desired: string): string {
+    if (!existsSync(desired)) return desired
+    const directory = path.dirname(desired)
+    const extension = path.extname(desired)
+    const stem = path.basename(desired, extension)
+    for (let n = 2; n < 1000; n += 1) {
+      const candidate = path.join(directory, `${stem} ${n}${extension}`)
+      if (!existsSync(candidate)) return candidate
+    }
+    throw new Error('Could not find an unused file name')
+  }
+
+  // --- Work documents -----------------------------------------------------
+  // Where a document lands is decided by the project selected in the sidebar
+  // filter, not by a dialog: that selection already scopes the conversation
+  // list, so a document saved while it is active belongs with that material and
+  // gets picked up by the next index pass. General has no folder, so that is
+  // the one case that asks.
+  // The Work page reports whether a document is open, which decides whether the
+  // work_* tools are offered to the model at all.
+  handle(IPC.WORK.SET_EDITOR_OPEN, async (event, open: unknown, kind: unknown) => {
+    assertTrustedSender(event, 'Work')
+    setEditorOpen(Boolean(open), typeof kind === 'string' ? kind : undefined)
+    return { open: Boolean(open) }
+  })
+
+  handle(IPC.WORK.EDITOR_RESPONSE, async (event, raw: unknown) => {
+    assertTrustedSender(event, 'Work')
+    const response = (raw ?? {}) as { requestId?: unknown; ok?: unknown; value?: unknown }
+    if (typeof response.requestId !== 'string') throw new Error('A request id is required')
+    settleEditorRequest(response.requestId, response.ok === true, response.value)
+    return { settled: true }
+  })
+
+  handle(IPC.WORK.SAVE_DOCUMENT, async (event, rawRequest: unknown): Promise<WorkSaveResult> => {
+    assertTrustedSender(event, 'Work')
+    const request = (rawRequest ?? {}) as Partial<WorkSaveRequest>
+    if (!(request.bytes instanceof Uint8Array) || request.bytes.byteLength === 0) {
+      throw new Error('Document bytes are required')
+    }
+    if (typeof request.fileName !== 'string' || !request.fileName.trim()) {
+      throw new Error('A file name is required')
+    }
+    // Only the basename is ever used: a name carrying separators could otherwise
+    // walk out of the project folder before assertPathAllowed ever sees it.
+    const fileName = path.basename(request.fileName.trim())
+    const extension = path.extname(fileName).toLowerCase()
+    if (!WORK_SAVE_EXTENSIONS.has(extension)) {
+      throw new Error(`Not an editable document: ${extension || '(no extension)'}`)
+    }
+
+    // Paper mode is a view treatment, so what the editor exported is a plain
+    // white-paper document. Whichever way the user answered the save dialog is
+    // applied to those bytes here, before anything reaches the disk.
+    const bytes = request.paper === 'keep' || request.paper === 'plain'
+      ? applyPaperChoice(request.bytes, request.paper)
+      : request.bytes
+
+    const projectId = typeof request.projectId === 'string' ? request.projectId : null
+    let target: string | null = null
+    let chosenByUser = false
+
+    // Re-saving the same document overwrites in place rather than making a
+    // second copy every time the user hits Save.
+    if (typeof request.existingPath === 'string' && request.existingPath.trim()) {
+      target = path.resolve(request.existingPath)
+    } else {
+      const directory = projectId ? workSaveDirectory(projectId) : null
+      if (directory) {
+        target = uniqueFilePath(path.join(directory, fileName))
+      } else {
+        const picked = await dialog.showSaveDialog({
+          title: 'Save document',
+          defaultPath: fileName,
+          buttonLabel: 'Save',
+        })
+        if (picked.canceled || !picked.filePath) {
+          const err = new Error('Save cancelled') as Error & { code?: string }
+          err.code = 'ECANCELED'
+          throw err
+        }
+        target = path.resolve(picked.filePath)
+        chosenByUser = true
+      }
+    }
+
+    assertPathAllowed(target)
+    await mkdir(path.dirname(target), { recursive: true })
+
+    // Write beside, then rename: a crash mid-write must not leave a truncated
+    // .docx where the user's document used to be.
+    const temporary = `${target}.holmes-tmp`
+    await writeFile(temporary, bytes)
+    await rename(temporary, target)
+
+    return { path: target, bytes: bytes.byteLength, projectId, chosenByUser }
+  })
+
   handle(IPC.FS.WRITE_FILE, async (_event, rawRequest: unknown): Promise<FsWriteResult> => {
     if (!rawRequest || typeof rawRequest !== 'object') throw new Error('Write request is required')
     const request = rawRequest as FsWriteRequest
@@ -3747,6 +4001,39 @@ export function registerIpcHandlers(): void {
 
     try {
       const result = await scanLibrary(projectId, controller.signal, sendProgress)
+
+      // Auto-filing. The scanner's own contract is local-I/O-only, so the paid,
+      // file-moving pass lives here, after it — and a shelf that did not get
+      // filed is still a scanned shelf, so nothing in here fails the scan.
+      if (settings.isLibraryAutoOrganizeEnabled()) {
+        const providerConfig = settings.getProvider()
+        // No offline auto-filing: string-surgery names are good enough to show
+        // in the Organise dialog, not to move files nobody reviews.
+        if (hasProviderCredentials(providerConfig)) {
+          try {
+            const filed = await autoOrganizeNewBooks(projectId, {
+              config: providerConfig,
+              model: settings.getTextModel(settings.getDefaultTier()),
+              spend: createSpendTracker(await getPriceTable(providerConfig)),
+              limiter: createRateLimiter(settings.getRequestsPerMinute()),
+              signal: controller.signal,
+              onProgress: (current, total) =>
+                sendProgress({ phase: 'filing', message: 'Filing new books into folders', current, total }),
+            })
+            if (filed) {
+              result.booksFiled = filed.moved
+              result.filingSkipped = filed.skipped
+              sendProgress({
+                phase: 'complete',
+                message: filed.moved > 0 ? `Filed ${filed.moved} book${filed.moved === 1 ? '' : 's'}` : 'Library up to date',
+                current: result.booksFound,
+                total: result.booksFound,
+              })
+            }
+          } catch { /* the scan result stands on its own */ }
+        }
+      }
+
       finishLibraryRun(run)
       return result
     } catch (error) {
@@ -4487,7 +4774,9 @@ export function registerIpcHandlers(): void {
 
   // --- Organising files ----------------------------------------------------
   // Moves the user's actual files, so it is always plan-then-apply and never
-  // runs from a timer.
+  // runs from a timer. The scan handler above auto-applies the unambiguous
+  // part of a plan for books it has never asked about; these two handlers are
+  // the reviewed flow for everything else.
 
   handle(IPC.LIBRARY.PLAN_ORGANIZE, async (event, projectId: unknown, tierArg: unknown): Promise<OrganizePlan> => {
     assertTrustedSender(event, 'Library')

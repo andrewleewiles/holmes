@@ -1,4 +1,4 @@
-import { app, BrowserWindow, shell, Menu } from 'electron'
+import { app, BrowserWindow, protocol, shell, Menu } from 'electron'
 import { join } from 'path'
 import type { DocumentContextProgress } from '../shared/types'
 import {
@@ -14,8 +14,10 @@ import { initRemoteServer, stopRemoteServer } from './remoteServer'
 import { installProviderCallLog, withProviderCallFeature } from './callLog'
 import { isAllowedExternalUrl } from './externalUrls'
 import { isLibraryProject } from '../shared/defaultProjects'
-import { installAudioProtocol, registerAudioScheme } from './audioProtocol'
-import { OFFICE_SCHEME, installOfficeProtocol, registerOfficeScheme } from './officeProtocol'
+import { AUDIO_SCHEME_PRIVILEGES, installAudioProtocol } from './audioProtocol'
+import { OFFICE_SCHEME, OFFICE_SCHEME_PRIVILEGES, installOfficeProtocol } from './officeProtocol'
+import { DESIGN_SCHEME, DESIGN_SCHEME_PRIVILEGES, installDesignProtocol } from './designProtocol'
+import { MEDIA_SCHEME_PRIVILEGES, installPlayMediaProtocol } from './playProtocol'
 import * as settings from './settings'
 // Every background pass is gated on this rather than on the key alone: a key
 // the provider is answering with 402 buys nothing, and a pass that starts anyway
@@ -52,6 +54,7 @@ import { rebuildTimeline } from './timeline'
 import { beginTimelineRun, finishTimelineRun, isTimelineRunActive, reportTimelineRunProgress } from './timelineRuns'
 import { rebuildPeople } from './people'
 import { beginPeopleRun, finishPeopleRun, isPeopleRunActive, isPeopleRunPaused, reportPeopleRunProgress } from './peopleRuns'
+import { checkForUpdates } from './updater'
 
 let mainWindow: BrowserWindow | null = null
 let summaryTimer: NodeJS.Timeout | null = null
@@ -62,11 +65,19 @@ let activityWeatherTimer: NodeJS.Timeout | null = null
 let documentContextTimer: NodeJS.Timeout | null = null
 let timelineTimer: NodeJS.Timeout | null = null
 let peopleTimer: NodeJS.Timeout | null = null
+let updateTimer: NodeJS.Timeout | null = null
 
 // Must run before app ready: Chromium reads the privileged-scheme table when
-// the renderer process is set up, not when the handler is installed.
-registerAudioScheme()
-registerOfficeScheme()
+// the renderer process is set up, not when the handler is installed. One call
+// for every scheme, never one per scheme — a second registerSchemesAsPrivileged
+// call silently strips privileges granted by the first (verified on Electron
+// 39: the earlier scheme loses its secure context).
+protocol.registerSchemesAsPrivileged([
+  AUDIO_SCHEME_PRIVILEGES,
+  OFFICE_SCHEME_PRIVILEGES,
+  DESIGN_SCHEME_PRIVILEGES,
+  MEDIA_SCHEME_PRIVILEGES,
+])
 
 function createMenu(): void {
   const isMac = process.platform === 'darwin'
@@ -77,6 +88,10 @@ function createMenu(): void {
             label: app.name,
             submenu: [
               { role: 'about' as const },
+              {
+                label: 'Check for Updates…',
+                click: () => void checkForUpdates(true),
+              },
               { type: 'separator' as const },
               { role: 'services' as const },
               { type: 'separator' as const },
@@ -168,6 +183,34 @@ function createWindow(): void {
     mainWindow?.show()
   })
 
+  // The embedded YouTube player refuses to start without a Referer it considers
+  // valid, and answers "Error 153 — Video player configuration error" when it
+  // does not get one. Neither of the app's two renderer origins produces one:
+  //
+  //   dev       http://localhost:<port>  — sent, but refused as non-https
+  //   packaged  file://                  — an opaque origin, so NO Referer at all
+  //
+  // So the header is supplied here instead. The filter is deliberately narrow:
+  // this must never touch the provider calls that callLog.ts wraps.
+  //
+  // ONLY ONE onBeforeSendHeaders listener can exist per session — a second
+  // registration silently REPLACES this one rather than running alongside it.
+  // Anything else needing request headers has to extend this handler.
+  mainWindow.webContents.session.webRequest.onBeforeSendHeaders(
+    {
+      urls: [
+        'https://www.youtube-nocookie.com/*',
+        'https://www.youtube.com/*',
+        // The player pulls the actual media from here once it starts.
+        'https://*.googlevideo.com/*',
+      ],
+    },
+    (details, callback) => {
+      details.requestHeaders['Referer'] = 'https://www.youtube.com/'
+      callback({ requestHeaders: details.requestHeaders })
+    }
+  )
+
   mainWindow.webContents.setWindowOpenHandler((details) => {
     if (isAllowedExternalUrl(details.url)) void shell.openExternal(details.url)
     return { action: 'deny' }
@@ -180,6 +223,12 @@ function createWindow(): void {
   mainWindow.webContents.on('will-frame-navigate', (event) => {
     if (event.isMainFrame) return
     if (event.url.startsWith(`${OFFICE_SCHEME}://editor/`)) return
+    if (event.url.startsWith(`${DESIGN_SCHEME}://graphite/`)) return
+    // The Play feed's embedded player. Written as an origin prefix rather than
+    // an exact URL because the player navigates itself internally as it plays;
+    // without this the frame comes up blank with nothing in the console naming
+    // the cause, since a preventDefault here is silent.
+    if (event.url.startsWith('https://www.youtube-nocookie.com/')) return
     event.preventDefault()
   })
 
@@ -208,6 +257,8 @@ app.whenReady().then(() => {
   // not be able to answer a request before there is anything to resolve against.
   installAudioProtocol()
   installOfficeProtocol()
+  installDesignProtocol()
+  installPlayMediaProtocol()
   // Before the handlers: installing it wraps ipcMain.handle, so a channel
   // registered earlier would go unlabelled.
   installProviderCallLog()
@@ -226,6 +277,11 @@ app.whenReady().then(() => {
   // Only listens if the user turned remote access on. Detached: binding a port
   // must not delay the window.
   void initRemoteServer()
+
+  // Quiet update check shortly after launch, then every 6 hours; only ever
+  // interrupts the user when a newer GitHub release actually exists.
+  setTimeout(() => void checkForUpdates(false), 15 * 1000)
+  updateTimer = setInterval(() => void checkForUpdates(false), 6 * 60 * 60 * 1000)
 
   // Background: refresh abridged summary hourly (actual regeneration is gated by 24h + field-hash change)
   summaryTimer = setInterval(tick('timer:memory-summary', async () => {
@@ -637,6 +693,7 @@ app.on('will-quit', () => {
   if (documentContextTimer) clearInterval(documentContextTimer)
   if (timelineTimer) clearInterval(timelineTimer)
   if (peopleTimer) clearInterval(peopleTimer)
+  if (updateTimer) clearInterval(updateTimer)
   void stopRemoteServer()
   closeDatabase()
 })

@@ -1,5 +1,12 @@
 appId: com.holmes.app
 productName: Holmes
+# Feed for src/main/updater.ts (custom GitHub-releases updater; Squirrel.Mac
+# can't be used because the build is ad-hoc signed). Publish a release with
+# `GH_TOKEN=... electron-builder --mac --publish always` or `gh release create`.
+publish:
+  provider: github
+  owner: andrewleewiles
+  repo: holmes
 directories:
   buildResources: assets
   output: release
@@ -17,6 +24,13 @@ extraResources:
     to: healthkit-sidecar.app
   - from: node_modules/.holmes/holmes-sidecar.app
     to: holmes-sidecar.app
+  # The design editor bundle (designProtocol.ts looks for resourcesPath/design
+  # when packaged; the directory is GRAPHITE_COMMIT's first 8 chars — keep in
+  # step with src/main/designProtocol.ts). NOTE: the 745 MB onlyoffice bundle
+  # has no entry here yet, so a packaged build still lacks the office editor —
+  # a known, separate gap that also blocks on the app.asar size problem.
+  - from: node_modules/.holmes/design/graphite/5927eff0
+    to: design/graphite/5927eff0
 mac:
   extendInfo:
     NSPhotoLibraryUsageDescription: Holmes reads photo metadata (dates, locations) to build your activity timeline.

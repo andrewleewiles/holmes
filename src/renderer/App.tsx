@@ -1,8 +1,9 @@
-import { type FC, useEffect, useState } from 'react'
+import { type FC, useEffect, useRef, useState } from 'react'
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
 import { faGear, faHeart, faHouse, faTableColumns } from '@fortawesome/free-solid-svg-icons'
-import type { ChatAttachment, ReasoningEffort, Project, PsychologicalTestId } from '@shared/types'
+import type { ChatAttachment, ContextSelection, ReasoningEffort, Project, PsychologicalTestId } from '@shared/types'
 import { hasProviderCredentials } from '@shared/providerConfig'
+import { stackedProjectIds } from '@shared/contextSelection'
 import { Sidebar } from './components/Sidebar'
 import { ChatView } from './components/ChatView'
 import { WelcomeScreen } from './components/WelcomeScreen'
@@ -19,9 +20,14 @@ import { ActivityPage } from './components/ActivityPage'
 import { DataPage } from './components/DataPage'
 import { TimelinePage } from './components/TimelinePage'
 import { WorkPage } from './components/WorkPage'
-import type { WorkDocumentKind } from '@shared/workDocuments'
+import { WorkspaceView } from './components/WorkspaceView'
+import type { EditorFrameHandle } from './components/WorkspaceView'
+import { PaperSaveDialog } from './components/PaperSaveDialog'
+import type { PaperState } from './components/OfficeEditorFrame'
+import { isWorkDocumentKind, type WorkDocumentKind } from '@shared/workDocuments'
 import { getWorkRole } from '@shared/workRoles'
 import { LibraryPage } from './components/LibraryPage'
+import { PlayPage } from './components/PlayPage'
 import { CallHistoryPage } from './components/CallHistoryPage'
 import { ChatHistoryPage } from './components/ChatHistoryPage'
 import { SettingsPanel } from './components/SettingsPanel'
@@ -96,11 +102,36 @@ const App: FC = () => {
   const [showMemory, setShowMemory] = useState(false)
   const [showTimeline, setShowTimeline] = useState(false)
   const [showLibrary, setShowLibrary] = useState(false)
+  const [showPlay, setShowPlay] = useState(false)
   const [showWork, setShowWork] = useState(false)
   // Which "New …" the sidebar asked for; null means Work was opened on its own.
   const [workKind, setWorkKind] = useState<WorkDocumentKind | null>(null)
   // The role and tool the sidebar last invoked, so the page can name them.
   const [workTool, setWorkTool] = useState<{ tool: string; roleId: string } | null>(null)
+  // The sidebar's project filter. It scopes the conversation list AND decides
+  // where a Work document is saved, so it lives here rather than in Sidebar.
+  const [filterProjectId, setFilterProjectId] = useState<string | null>(null)
+  // A work_create_document tool call, waiting on the editor to come up. The
+  // answer is deferred until the frame reports ready so the model's next call
+  // lands on a live document instead of racing a cold start.
+  const pendingWorkOpen = useRef<string | null>(null)
+  // The conversation that asked for the document, shown alongside it.
+  const [workConversationId, setWorkConversationId] = useState<string | null>(null)
+  const workEditorRef = useRef<EditorFrameHandle>(null)
+  const [workSaving, setWorkSaving] = useState(false)
+  const [workSavedPath, setWorkSavedPath] = useState<string | null>(null)
+  const [workSaveError, setWorkSaveError] = useState<string | null>(null)
+  const [workDirty, setWorkDirty] = useState(false)
+  // Non-null while the save dialog is up; holds what the shell reported.
+  const [workPaperPrompt, setWorkPaperPrompt] = useState<PaperState | null>(null)
+  // The answer, kept for every later save of the same document — the dialog
+  // asks once, but the rewrite has to be applied to every export after it.
+  const [workPaperChoice, setWorkPaperChoice] = useState<'keep' | 'plain' | null>(null)
+  // What counts as work in flight: a turn Holmes is midway through (which may
+  // be mid tool-call against the document), a save partway through, or edits
+  // that are not on disk yet. Tearing the editor down in any of those states
+  // destroys something; tearing it down otherwise just frees a wasm heap.
+  const workBusy = isStreaming || workSaving || workDirty
   const [showCallHistory, setShowCallHistory] = useState(false)
   const [showHistory, setShowHistory] = useState(false)
   // A draft opened with its settings already chosen (Mental Coach) rather than
@@ -159,6 +190,50 @@ const App: FC = () => {
   useEffect(() => {
     window.electronAPI.projects.list().then(setProjects)
   }, [])
+
+  // Holmes asking to open a document — from a conversation anywhere in the app.
+  useEffect(() => {
+    return window.electronAPI.work.onOpenDocument((request) => {
+      const kind = request.payload?.kind
+      pendingWorkOpen.current = request.requestId
+      // Whatever the user is talking in right now is the conversation that
+      // routed here; it travels with the document.
+      setWorkConversationId(useChatStore.getState().currentConversationId)
+      handleWork(isWorkDocumentKind(kind) ? kind : 'document')
+    })
+  }, [])
+
+  // Once the workspace is torn down, forget it. Otherwise returning to Work
+  // would remount and open a NEW blank document while still looking like the
+  // one that was there — the picker is the honest thing to show instead.
+  useEffect(() => {
+    if (showWork || workBusy || !workKind) return
+    setWorkKind(null)
+    setWorkTool(null)
+    setWorkSavedPath(null)
+    setWorkSaveError(null)
+    setWorkConversationId(null)
+    setWorkDirty(false)
+    setWorkPaperPrompt(null)
+    setWorkPaperChoice(null)
+  }, [showWork, workBusy, workKind])
+
+  // Answer the tool call once the editor can actually take an edit.
+  const handleWorkEditorReady = (ready: boolean) => {
+    const requestId = pendingWorkOpen.current
+    if (!ready || !requestId) return
+    pendingWorkOpen.current = null
+    void (async () => {
+      // Order matters: main gates the work_* editing tools on isEditorOpen(),
+      // and recomputes them at the top of each tool round. Answering first
+      // would let the next round start before main knows the editor is live,
+      // so the model would be told the document exists and simultaneously be
+      // offered no way to write to it. The kind rides along so main offers the
+      // right tool set — office, raster or vector.
+      await window.electronAPI.work.setEditorOpen(true, workKind ?? undefined)
+      await window.electronAPI.work.respondToEditor({ requestId, ok: true, value: { opened: true } })
+    })()
+  }
 
   const handleProjectUpdate = async (id: string, data: Partial<Omit<Project, 'id' | 'createdAt' | 'updatedAt'>>) => {
     await window.electronAPI.projects.update(id, data)
@@ -242,6 +317,7 @@ const App: FC = () => {
     setShowMemory(false)
     setShowTimeline(false)
     setShowLibrary(false)
+    setShowPlay(false)
     setShowWork(false)
     setShowCallHistory(false)
     setShowHistory(false)
@@ -260,6 +336,7 @@ const App: FC = () => {
     setShowMemory(false)
     setShowTimeline(false)
     setShowLibrary(false)
+    setShowPlay(false)
     setShowWork(false)
     setShowCallHistory(false)
     setShowHistory(false)
@@ -279,6 +356,7 @@ const App: FC = () => {
     setShowMemory(false)
     setShowTimeline(false)
     setShowLibrary(false)
+    setShowPlay(false)
     setShowWork(false)
     setShowCallHistory(false)
     setShowHistory(false)
@@ -305,6 +383,7 @@ const App: FC = () => {
     setShowMemory(false)
     setShowTimeline(false)
     setShowLibrary(false)
+    setShowPlay(false)
     setShowWork(false)
     setShowCallHistory(false)
     setShowHistory(false)
@@ -323,6 +402,7 @@ const App: FC = () => {
     setShowMemory(false)
     setShowTimeline(false)
     setShowLibrary(false)
+    setShowPlay(false)
     setShowWork(false)
     setShowCallHistory(false)
     setShowHistory(false)
@@ -342,6 +422,7 @@ const App: FC = () => {
     setShowMemory(false)
     setShowTimeline(false)
     setShowLibrary(false)
+    setShowPlay(false)
     setShowWork(false)
     setShowCallHistory(false)
     setShowHistory(false)
@@ -360,6 +441,7 @@ const App: FC = () => {
     setShowWebSearch(false)
     setShowTimeline(false)
     setShowLibrary(false)
+    setShowPlay(false)
     setShowWork(false)
     setShowCallHistory(false)
     setShowHistory(false)
@@ -378,6 +460,7 @@ const App: FC = () => {
     setShowWebSearch(false)
     setShowMemory(false)
     setShowLibrary(false)
+    setShowPlay(false)
     setShowWork(false)
     setShowCallHistory(false)
     setShowHistory(false)
@@ -398,6 +481,7 @@ const App: FC = () => {
     setShowMemory(false)
     setShowTimeline(false)
     setShowLibrary(false)
+    setShowPlay(false)
     setShowWork(false)
     setShowCallHistory(false)
     setShowHistory(false)
@@ -409,6 +493,60 @@ const App: FC = () => {
   const handleWorkTool = (tool: string, roleId: string) => {
     handleWork(null)
     setWorkTool({ tool, roleId })
+  }
+
+  /**
+   * Saving a document that is being shown in paper mode asks first.
+   *
+   * The question has to be answered before the export, not after: `exportDocument`
+   * runs the in-memory document through x2t, so whichever way the user answers
+   * has to already be in the document by then. Hence the two-step — this opens
+   * the dialog and returns, and `handleWorkPaperChoice` restarts the save.
+   */
+  const handleWorkSave = async () => {
+    if (!workEditorRef.current || workSaving || workPaperPrompt) return
+    const paper = await workEditorRef.current.paperState?.()
+    if (paper?.paper && !paper.settled) {
+      setWorkPaperPrompt(paper)
+      return
+    }
+    await writeWorkDocument()
+  }
+
+  const handleWorkPaperChoice = async (keep: boolean) => {
+    const editor = workEditorRef.current
+    const choice = keep ? 'keep' : 'plain'
+    setWorkPaperPrompt(null)
+    setWorkPaperChoice(choice)
+    // Tells the shell to stop asking and, for 'plain', to stop showing the
+    // document as Holmes. The rewrite itself happens in main, on the bytes.
+    if (keep) void editor?.keepPaper?.()
+    else void editor?.dropPaper?.()
+    await writeWorkDocument(choice)
+  }
+
+  const writeWorkDocument = async (paper: 'keep' | 'plain' | null = workPaperChoice) => {
+    if (!workEditorRef.current || workSaving) return
+    setWorkSaving(true)
+    setWorkSaveError(null)
+    try {
+      const { bytes, fileName } = await workEditorRef.current.exportDocument()
+      const result = await window.electronAPI.work.saveDocument({
+        projectId: filterProjectId,
+        fileName,
+        bytes,
+        ...(paper ? { paper } : {}),
+        ...(workSavedPath ? { existingPath: workSavedPath } : {}),
+      })
+      setWorkSavedPath(result.path)
+      setWorkDirty(false)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      // Backing out of the system dialog is not a failure worth reporting.
+      if (!/cancel/i.test(message)) setWorkSaveError(message)
+    } finally {
+      setWorkSaving(false)
+    }
   }
 
   const handleLibrary = () => {
@@ -426,7 +564,27 @@ const App: FC = () => {
     setShowCallHistory(false)
     setShowHistory(false)
     setShowWork(false)
+    setShowPlay(false)
     setShowLibrary(true)
+  }
+
+  const handlePlay = () => {
+    setPsychologyProjectId(null)
+    setHealthProjectId(null)
+    setActivityProjectId(null)
+    setShowData(false)
+    setShowRecall(false)
+    setShowProjects(false)
+    setShowDashboard(false)
+    setShowProductSearch(false)
+    setShowWebSearch(false)
+    setShowMemory(false)
+    setShowTimeline(false)
+    setShowCallHistory(false)
+    setShowHistory(false)
+    setShowWork(false)
+    setShowLibrary(false)
+    setShowPlay(true)
   }
 
   const handleCallHistory = () => {
@@ -442,6 +600,7 @@ const App: FC = () => {
     setShowMemory(false)
     setShowTimeline(false)
     setShowLibrary(false)
+    setShowPlay(false)
     setShowWork(false)
     setShowHistory(false)
     setShowCallHistory(true)
@@ -460,6 +619,7 @@ const App: FC = () => {
     setShowMemory(false)
     setShowTimeline(false)
     setShowLibrary(false)
+    setShowPlay(false)
     setShowWork(false)
     setShowCallHistory(false)
     setShowHistory(true)
@@ -487,6 +647,7 @@ const App: FC = () => {
     setShowMemory(false)
     setShowTimeline(false)
     setShowLibrary(false)
+    setShowPlay(false)
     setShowWork(false)
     setShowCallHistory(false)
     setShowHistory(false)
@@ -517,6 +678,7 @@ const App: FC = () => {
     setShowMemory(false)
     setShowTimeline(false)
     setShowLibrary(false)
+    setShowPlay(false)
     setShowWork(false)
     setShowCallHistory(false)
     setShowHistory(false)
@@ -541,6 +703,7 @@ const App: FC = () => {
     setShowMemory(false)
     setShowTimeline(false)
     setShowLibrary(false)
+    setShowPlay(false)
     setShowWork(false)
     setShowCallHistory(false)
     setShowHistory(false)
@@ -560,6 +723,7 @@ const App: FC = () => {
     setShowMemory(false)
     setShowTimeline(false)
     setShowLibrary(false)
+    setShowPlay(false)
     setShowWork(false)
     setShowCallHistory(false)
     setShowHistory(false)
@@ -585,6 +749,7 @@ const App: FC = () => {
     setShowMemory(false)
     setShowTimeline(false)
     setShowLibrary(false)
+    setShowPlay(false)
     setShowWork(false)
     setShowCallHistory(false)
     setShowHistory(false)
@@ -606,6 +771,7 @@ const App: FC = () => {
     setShowMemory(false)
     setShowTimeline(false)
     setShowLibrary(false)
+    setShowPlay(false)
     setShowWork(false)
     setShowCallHistory(false)
     setShowHistory(false)
@@ -632,6 +798,16 @@ const App: FC = () => {
   const handlePreferenceEffortChange = async (effort: ReasoningEffort) => {
     setSelectedEffort(effort)
     await updateSettings({ defaultEffort: effort })
+  }
+
+  // The home screen's Context pill also aims the sidebar: choosing a project's
+  // context there switches the conversation list to that project, so the list
+  // shows the conversations the new one will join. A context with no project of
+  // its own (Life, a category) goes back to General — which is exactly where a
+  // conversation started under it gets filed. The first project wins in a stack.
+  const handleHomeContextChange = (context: ContextSelection) => {
+    setSelectedContext(context)
+    setFilterProjectId(stackedProjectIds(context)[0] ?? null)
   }
 
   const handleModelChange = async (modelId: string) => {
@@ -698,6 +874,7 @@ const App: FC = () => {
     setShowMemory(false)
     setShowTimeline(false)
     setShowLibrary(false)
+    setShowPlay(false)
     setShowWork(false)
     setShowCallHistory(false)
     setShowHistory(false)
@@ -740,6 +917,7 @@ const App: FC = () => {
     setShowMemory(false)
     setShowTimeline(false)
     setShowLibrary(false)
+    setShowPlay(false)
     setShowWork(false)
     setShowCallHistory(false)
     setShowHistory(false)
@@ -768,6 +946,7 @@ const App: FC = () => {
     setShowMemory(false)
     setShowTimeline(false)
     setShowLibrary(false)
+    setShowPlay(false)
     setShowWork(false)
     setShowCallHistory(false)
     setShowHistory(false)
@@ -796,6 +975,7 @@ const App: FC = () => {
     setShowMemory(false)
     setShowTimeline(false)
     setShowLibrary(false)
+    setShowPlay(false)
     setShowWork(false)
     setShowCallHistory(false)
     setShowHistory(false)
@@ -855,6 +1035,38 @@ const App: FC = () => {
       void loadConversations()
     })
   }, [])
+
+  const workConversationPanel = (
+    <ChatView
+      messages={messages}
+      isStreaming={isStreaming}
+      streamingText={streamingText}
+      streamingReasoning={streamingReasoning}
+      streamingToolInteractions={streamingToolInteractions}
+      error={error}
+      models={models}
+      selectedModel={activeModel}
+      selectedEffort={activeEffort}
+      memoryMode={memoryMode}
+      selectedContext={selectedContext}
+      selectedRoleId={selectedRoleId}
+      lastSystemPrompt={lastSystemPrompt}
+      onSend={handleSend}
+      onAbort={abortStream}
+      onModelChange={handleModelChange}
+      onEffortChange={handleEffortChange}
+      onMemoryModeChange={setMemoryMode}
+      onContextChange={setSelectedContext}
+      onRoleChange={setSelectedRole}
+      onClearError={clearError}
+      title={currentConversation?.title || 'New Chat'}
+      onRename={(title) => void renameConversation(currentConversationId!, title)}
+      onEditMessage={(messageId, newContent) => void editMessage(messageId, newContent, activeModel, activeEffort)}
+      onRetryMessage={(messageId) => void retryMessage(messageId, activeModel, activeEffort)}
+      onSetActiveBranch={(messageId) => void setActiveBranch(messageId)}
+      onWebSearchCommand={(query) => handleWebSearch(query)}
+    />
+  )
 
   return (
     <div className="flex flex-col h-screen bg-holmes-bg text-white">
@@ -923,8 +1135,12 @@ onSelect={handleSelectFromDashboard}
             onMemory={handleMemory}
             onTimeline={handleTimeline}
             onLibrary={handleLibrary}
+            onPlay={handlePlay}
             onWork={handleWork}
             onWorkTool={handleWorkTool}
+            selectedRoleId={selectedRoleId}
+            filterProjectId={filterProjectId}
+            onFilterProjectChange={setFilterProjectId}
             onCallHistory={handleCallHistory}
             onHistory={handleHistory}
             onOpenIndexRun={handleOpenIndexRun}
@@ -947,6 +1163,8 @@ onSelect={handleSelectFromDashboard}
                           ? 'call-history'
                           : showLibrary
                           ? 'library'
+                          : showPlay
+                          ? 'play'
                           : showWork
                           ? 'work'
                           : showTimeline
@@ -960,7 +1178,7 @@ onSelect={handleSelectFromDashboard}
           />
         )}
 
-        <div className="min-w-0 flex-1 flex flex-col">
+        <div className="relative min-w-0 flex-1 flex flex-col">
           {psychologyProject ? (
             <PsychologyPage
               project={psychologyProject}
@@ -1062,6 +1280,11 @@ onSelect={handleSelectFromDashboard}
             />
           ) : showCallHistory ? (
             <CallHistoryPage />
+          ) : showPlay ? (
+            <PlayPage
+              onOpenSettings={() => useSettingsStore.setState({ showSettings: true })}
+              onOpenData={handleData}
+            />
           ) : showLibrary ? (
             <LibraryPage
               onBack={() => setShowLibrary(false)}
@@ -1069,12 +1292,15 @@ onSelect={handleSelectFromDashboard}
               onDiscuss={handleBookConversation}
             />
           ) : showWork ? (
-            <WorkPage
-              requestedKind={workKind}
-              onRequestKind={(kind) => { setWorkKind(kind); setWorkTool(null) }}
-              role={getWorkRole(workTool?.roleId ?? null)}
-              tool={workTool?.tool ?? null}
-            />
+            // Only the picker lives in the cascade. Once a document is open the
+            // workspace overlays this whole area, and rendering the picker
+            // underneath it just leaves an invisible click target.
+            workKind ? null : (
+              <WorkPage
+                onRequestKind={(kind) => { setWorkKind(kind) }}
+                designFirst={workTool?.roleId === 'designer'}
+              />
+            )
           ) : showRecall ? (
             <RecallPage
               onSelectConversation={handleSelectFromDashboard}
@@ -1184,7 +1410,7 @@ onSelect={handleSelectFromDashboard}
               memoryMode={memoryMode}
               onMemoryModeChange={setMemoryMode}
               selectedContext={selectedContext}
-              onContextChange={setSelectedContext}
+              onContextChange={handleHomeContextChange}
               selectedRoleId={selectedRoleId}
               onRoleChange={setSelectedRole}
             />
@@ -1199,12 +1425,58 @@ onSelect={handleSelectFromDashboard}
               memoryMode={memoryMode}
               onMemoryModeChange={setMemoryMode}
               selectedContext={selectedContext}
-              onContextChange={setSelectedContext}
+              onContextChange={handleHomeContextChange}
               selectedRoleId={selectedRoleId}
               onRoleChange={setSelectedRole}
             />
           )}
+
+        {/* The embedded-document workspace.
+            Mounted outside the page cascade so that navigating away does not
+            unmount it WHILE THERE IS WORK IN FLIGHT — unmounting destroys the
+            iframe, which would kill a run Holmes is midway through. Once
+            everything is idle it is torn down on leaving rather than kept
+            alive: it holds a 63 MB wasm heap and an editor process, which is
+            not something to leave running for a document nobody is touching.
+            The same rule should govern any future embedded app. */}
+        {workKind && (showWork || workBusy) && (
+          <div
+            className={
+              showWork
+                ? 'absolute inset-0 z-10 flex flex-col bg-holmes-bg'
+                : // visibility, not display: display:none collapses the editor
+                  // to zero and it comes back blank until something resizes it.
+                  'pointer-events-none invisible absolute inset-0 -z-10 flex flex-col'
+            }
+            aria-hidden={!showWork}
+          >
+            <WorkspaceView
+              ref={workEditorRef}
+              kind={workKind}
+              role={getWorkRole(workTool?.roleId ?? null)}
+              tool={workTool?.tool ?? null}
+              projectName={projects.find((project) => project.id === filterProjectId)?.name ?? null}
+              saving={workSaving}
+              savedPath={workSavedPath}
+              saveError={workSaveError}
+              onSave={() => void handleWorkSave()}
+              onClose={() => setShowWork(false)}
+              onEditorReady={handleWorkEditorReady}
+              onDirtyChange={setWorkDirty}
+              conversation={workConversationId ? workConversationPanel : undefined}
+            />
+          </div>
+        )}
         </div>
+
+        {workPaperPrompt && (
+          <PaperSaveDialog
+            font={workPaperPrompt.font}
+            onKeep={() => void handleWorkPaperChoice(true)}
+            onDrop={() => void handleWorkPaperChoice(false)}
+            onCancel={() => setWorkPaperPrompt(null)}
+          />
+        )}
 
         {showSettings && (
           <SettingsPanel

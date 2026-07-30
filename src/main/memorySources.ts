@@ -43,6 +43,9 @@ const SOURCE_TYPE_BUDGETS: Record<MemorySourceType, number> = {
   'activity-events': 12_000,
   'super-context': 24_000,
   manual: 0,
+  // Zero for the same reason as `manual`: a reaction is the provenance of a
+  // stored field, not a corpus to re-scan for evidence.
+  'play-reaction': 0,
 }
 
 export interface CollectedMemoryEvidence {
@@ -430,6 +433,9 @@ export async function collectMemoryEvidence(
     'activity-events': 9,
     'super-context': 10,
     manual: 11,
+    // Last, and with a zero char budget above, so it never displaces real
+    // evidence — a reaction is provenance for a field, not a source to read.
+    'play-reaction': 12,
   }
   candidates.sort((left, right) => sourcePriority[left.type] - sourcePriority[right.type])
   let usedChars = 0

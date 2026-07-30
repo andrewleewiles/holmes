@@ -1,4 +1,4 @@
-// The three kinds of document the Work tab creates and edits.
+// The kinds of document the Work tab creates and edits.
 //
 // One list, shared by the renderer and the main process, because the kind has
 // to mean the same thing in three places that are easy to let drift: the
@@ -7,7 +7,10 @@
 //
 // Deliberately free of Electron and React imports so both sides can use it.
 
-export type WorkDocumentKind = 'document' | 'spreadsheet' | 'presentation'
+export type WorkDocumentKind = 'document' | 'spreadsheet' | 'presentation' | 'image' | 'vector'
+
+/** Which embedded app edits a kind — the office suite or the design editor. */
+export type WorkEditor = 'office' | 'graphite'
 
 export interface WorkDocumentType {
   kind: WorkDocumentKind
@@ -16,12 +19,14 @@ export interface WorkDocumentType {
   /** The sidebar entry. Spelled out rather than built from `label` so a
    *  future rename of one does not silently rename the other. */
   newLabel: string
-  /** The OOXML extension a new document of this kind is saved as. */
-  extension: '.docx' | '.xlsx' | '.pptx'
+  /** The extension a new document of this kind is saved as. */
+  extension: '.docx' | '.xlsx' | '.pptx' | '.png' | '.svg'
   /** Default basename, before the uniquifying suffix. */
   defaultBaseName: string
   /** One line describing what this kind is for, shown on the Work page. */
   description: string
+  /** The frame that hosts it: OfficeEditorFrame or DesignEditorFrame. */
+  editor: WorkEditor
 }
 
 export const WORK_DOCUMENT_TYPES: readonly WorkDocumentType[] = [
@@ -32,6 +37,7 @@ export const WORK_DOCUMENT_TYPES: readonly WorkDocumentType[] = [
     extension: '.docx',
     defaultBaseName: 'Untitled document',
     description: 'Letters, notes, reports — anything that is mostly prose.',
+    editor: 'office',
   },
   {
     kind: 'spreadsheet',
@@ -40,6 +46,7 @@ export const WORK_DOCUMENT_TYPES: readonly WorkDocumentType[] = [
     extension: '.xlsx',
     defaultBaseName: 'Untitled spreadsheet',
     description: 'Tables, budgets, models — anything with rows and formulas.',
+    editor: 'office',
   },
   {
     kind: 'presentation',
@@ -48,6 +55,25 @@ export const WORK_DOCUMENT_TYPES: readonly WorkDocumentType[] = [
     extension: '.pptx',
     defaultBaseName: 'Untitled presentation',
     description: 'Slides for a talk, a pitch, or a walkthrough.',
+    editor: 'office',
+  },
+  {
+    kind: 'image',
+    label: 'Image',
+    newLabel: 'New Image',
+    extension: '.png',
+    defaultBaseName: 'Untitled image',
+    description: 'Photographic and painterly work — composited layers, saved as pixels.',
+    editor: 'graphite',
+  },
+  {
+    kind: 'vector',
+    label: 'Vector design',
+    newLabel: 'New Vector',
+    extension: '.svg',
+    defaultBaseName: 'Untitled design',
+    description: 'Logos, layouts, diagrams — shapes that stay sharp at any size.',
+    editor: 'graphite',
   },
 ]
 

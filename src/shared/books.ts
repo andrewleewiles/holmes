@@ -159,7 +159,7 @@ export interface BookResource {
 // --- scanning --------------------------------------------------------------
 
 export interface LibraryScanProgress {
-  phase: 'scanning' | 'parsing' | 'complete'
+  phase: 'scanning' | 'parsing' | 'filing' | 'complete'
   message: string
   current: number
   total: number | null
@@ -190,6 +190,12 @@ export interface LibraryScanResult {
   pruned: number
   scanComplete: boolean
   unreadableRoots: string[]
+  /** Books auto-filed into `Author - Title` folders after this scan. Absent
+   *  when auto-filing is off, offline, or had nothing new to consider. */
+  booksFiled?: number
+  /** Books the auto-filing pass looked at and left in place — ambiguous names,
+   *  already filed, or a folder collision. They will not be asked about again. */
+  filingSkipped?: number
 }
 
 /** What a reading-record refresh did. `generated: false` is a cache hit, not a failure. */

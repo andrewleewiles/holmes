@@ -3,6 +3,7 @@ import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
 import {
   faArrowRight,
   faArrowUpRightFromSquare,
+  faBrain,
   faChevronDown,
   faClockRotateLeft,
   faComments,
@@ -42,7 +43,22 @@ const SOURCE_OPTIONS: Array<{ value: RecallSearchSource; label: string }> = [
   { value: 'all', label: 'Everything' },
   { value: 'conversations', label: 'Conversations' },
   { value: 'files', label: 'Files' },
+  { value: 'contexts', label: 'Analyses' },
 ]
+
+/**
+ * "Analyses" rather than "Contexts" on the chip: what this searches is what
+ * Holmes concluded about the user's files, one summary per file, folder, source
+ * and project. The badge on a result says which level it came from.
+ */
+const CONTEXT_LEVEL_BADGES: Record<string, string> = {
+  file: 'FILE ANALYSIS',
+  folder: 'FOLDER ANALYSIS',
+  sourceRoot: 'SOURCE ANALYSIS',
+  project: 'PROJECT ANALYSIS',
+  user: 'PROFILE',
+  conversation: 'CHAT ANALYSIS',
+}
 
 const EXAMPLE_QUERIES = [
   'notes about moving house',
@@ -194,7 +210,9 @@ export const RecallPage: FC<RecallPageProps> = ({ onSelectConversation, onFollow
 
   const openResult = async (result: RecallSearchResult) => {
     setError(null)
-    if (result.source === 'conversation' && result.conversationId) {
+    // A conversation analysis is a context result whose subject is a chat, so it
+    // opens the chat — not every context result has a path to open.
+    if (result.conversationId) {
       onSelectConversation(result.conversationId)
       return
     }
@@ -469,7 +487,7 @@ export const RecallPage: FC<RecallPageProps> = ({ onSelectConversation, onFollow
               <div>
                 <div className="text-xs font-medium text-white/60">{resultSummary}</div>
                 <div className="mt-1 text-[10px] text-white/25">
-                  {response.resultCounts.conversations} conversation matches, {response.resultCounts.files} file matches
+                  {response.resultCounts.conversations} conversation matches, {response.resultCounts.files} file matches, {response.resultCounts.contexts} analysis matches
                 </div>
               </div>
               {response.semanticApplied && (
@@ -512,15 +530,25 @@ export const RecallPage: FC<RecallPageProps> = ({ onSelectConversation, onFollow
                       <span className={`mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-xl ${
                         result.source === 'file'
                           ? 'bg-blue-400/[0.08] text-blue-200/55'
-                          : 'bg-holmes-primary/[0.1] text-holmes-primary-light/70'
+                          : result.source === 'context'
+                            ? 'bg-emerald-300/[0.08] text-emerald-200/55'
+                            : 'bg-holmes-primary/[0.1] text-holmes-primary-light/70'
                       }`}>
-                        <FontAwesomeIcon icon={result.source === 'file' ? faFileLines : faComments} />
+                        <FontAwesomeIcon icon={
+                          result.source === 'file'
+                            ? faFileLines
+                            : result.source === 'context' ? faBrain : faComments
+                        } />
                       </span>
                       <span className="min-w-0 flex-1">
                         <span className="flex flex-wrap items-center gap-2">
                           <span className="max-w-full truncate text-sm font-medium text-white/72">{result.title}</span>
                           <span className="rounded border border-white/[0.07] bg-white/[0.03] px-1.5 py-0.5 text-[8px] font-medium tracking-wider text-white/25">
-                            {result.source === 'file' ? result.fileType : 'CHAT'}
+                            {result.source === 'file'
+                              ? result.fileType
+                              : result.source === 'context'
+                                ? CONTEXT_LEVEL_BADGES[result.contextLevel ?? ''] ?? 'ANALYSIS'
+                                : 'CHAT'}
                           </span>
                           {response.answer?.sourceIds.includes(result.id) && (
                             <span className="rounded border border-holmes-primary/20 bg-holmes-primary/[0.08] px-1.5 py-0.5 text-[8px] font-medium tracking-wider text-holmes-primary-light/60">
@@ -536,7 +564,7 @@ export const RecallPage: FC<RecallPageProps> = ({ onSelectConversation, onFollow
                       </span>
                       <FontAwesomeIcon icon={faArrowUpRightFromSquare} className="mt-2 shrink-0 text-[10px] text-white/15 transition-colors group-hover:text-holmes-primary-light/55" />
                     </button>
-                    {result.source === 'file' && result.path && (
+                    {(result.source === 'file' || result.source === 'context') && result.path && (
                       <button
                         type="button"
                         onClick={() => void revealFile(result.path!)}

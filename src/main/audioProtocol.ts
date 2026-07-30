@@ -34,25 +34,24 @@ export function segmentUrl(segmentId: string): string {
 }
 
 /**
- * Must run BEFORE app ready. `stream: true` is what lets Chromium issue range
- * requests against the response, which is what makes seeking in a long chapter
- * work rather than forcing a full re-download on every scrub.
+ * Handed to the single registerSchemesAsPrivileged call in main.ts — a second
+ * call silently strips privileges granted by the first (verified on Electron
+ * 39: the earlier scheme loses its secure context), so every scheme must
+ * register together. `stream: true` is what lets Chromium issue range requests
+ * against the response, which is what makes seeking in a long chapter work
+ * rather than forcing a full re-download on every scrub.
  */
-export function registerAudioScheme(): void {
-  protocol.registerSchemesAsPrivileged([
-    {
-      scheme: AUDIO_SCHEME,
-      privileges: {
-        standard: true,
-        secure: true,
-        supportFetchAPI: true,
-        stream: true,
-        // Deliberately NOT bypassCSP: the scheme is named explicitly in the
-        // policy instead, so this cannot become a hole for anything else.
-        bypassCSP: false,
-      },
-    },
-  ])
+export const AUDIO_SCHEME_PRIVILEGES: Electron.CustomScheme = {
+  scheme: AUDIO_SCHEME,
+  privileges: {
+    standard: true,
+    secure: true,
+    supportFetchAPI: true,
+    stream: true,
+    // Deliberately NOT bypassCSP: the scheme is named explicitly in the
+    // policy instead, so this cannot become a hole for anything else.
+    bypassCSP: false,
+  },
 }
 
 /** Must run AFTER app ready. */

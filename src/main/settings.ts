@@ -34,6 +34,7 @@ const store = new Store<{
   webSearchEnabled?: boolean
   webSearchProvider?: WebSearchProvider
   webSearchApiKey?: string
+  youtubeApiKey?: string
   activityIngestEnabled?: boolean
   activitySyncEnabled?: boolean
   activityEmailAllowedAddress?: string
@@ -44,6 +45,7 @@ const store = new Store<{
   activityAmazonCookiesStored?: boolean
   documentContextEnabled?: boolean
   librarySnapshotEnabled?: boolean
+  libraryAutoOrganizeEnabled?: boolean
   superContextMemoryEnabled?: boolean
   timelineEnabled?: boolean
   peopleEnabled?: boolean
@@ -86,6 +88,7 @@ const store = new Store<{
     webSearchEnabled: false,
     webSearchProvider: 'tavily',
     webSearchApiKey: '',
+    youtubeApiKey: '',
     activityIngestEnabled: false,
     activitySyncEnabled: true,
     activityEmailAllowedAddress: '',
@@ -98,6 +101,10 @@ const store = new Store<{
     // Off by default, like document context: a reading-record snapshot is the
     // only paid thing the Library does, and reading works without it.
     librarySnapshotEnabled: false,
+    // On by default: filing new books into folders is the behavior the Library
+    // advertises, it only ever moves files within the connected source, and a
+    // shelf with no new books costs nothing.
+    libraryAutoOrganizeEnabled: true,
     superContextMemoryEnabled: false,
     timelineEnabled: true,
     peopleEnabled: true,
@@ -172,6 +179,7 @@ export function getSettings(): AppSettings {
     webSearchEnabled: store.get('webSearchEnabled') ?? false,
     webSearchProvider: store.get('webSearchProvider') ?? 'tavily',
     webSearchApiKey: store.get('webSearchApiKey') ?? '',
+    youtubeApiKey: store.get('youtubeApiKey') ?? '',
     activityIngestEnabled: store.get('activityIngestEnabled') ?? false,
     activitySyncEnabled: store.get('activitySyncEnabled') ?? true,
     activityEmailAllowedAddress: store.get('activityEmailAllowedAddress') ?? '',
@@ -182,6 +190,7 @@ export function getSettings(): AppSettings {
     activityAmazonCookiesStored: store.get('activityAmazonCookiesStored') ?? false,
     documentContextEnabled: store.get('documentContextEnabled') ?? false,
     librarySnapshotEnabled: store.get('librarySnapshotEnabled') ?? false,
+    libraryAutoOrganizeEnabled: isLibraryAutoOrganizeEnabled(),
     superContextMemoryEnabled: store.get('superContextMemoryEnabled') ?? false,
     timelineEnabled: store.get('timelineEnabled') ?? true,
     peopleEnabled: store.get('peopleEnabled') ?? true,
@@ -210,6 +219,7 @@ export function setSettings(partial: Partial<AppSettings>): void {
   if (partial.webSearchEnabled !== undefined) store.set('webSearchEnabled', partial.webSearchEnabled)
   if (partial.webSearchProvider !== undefined) store.set('webSearchProvider', partial.webSearchProvider)
   if (partial.webSearchApiKey !== undefined) store.set('webSearchApiKey', partial.webSearchApiKey)
+  if (partial.youtubeApiKey !== undefined) store.set('youtubeApiKey', partial.youtubeApiKey)
   if (partial.activityIngestEnabled !== undefined) store.set('activityIngestEnabled', partial.activityIngestEnabled)
   if (partial.activitySyncEnabled !== undefined) store.set('activitySyncEnabled', partial.activitySyncEnabled)
   if (partial.activityEmailAllowedAddress !== undefined) store.set('activityEmailAllowedAddress', partial.activityEmailAllowedAddress)
@@ -220,6 +230,7 @@ export function setSettings(partial: Partial<AppSettings>): void {
   if (partial.activityAmazonCookiesStored !== undefined) store.set('activityAmazonCookiesStored', partial.activityAmazonCookiesStored)
   if (partial.documentContextEnabled !== undefined) store.set('documentContextEnabled', partial.documentContextEnabled)
   if (partial.librarySnapshotEnabled !== undefined) store.set('librarySnapshotEnabled', partial.librarySnapshotEnabled)
+  if (partial.libraryAutoOrganizeEnabled !== undefined) store.set('libraryAutoOrganizeEnabled', partial.libraryAutoOrganizeEnabled)
   if (partial.superContextMemoryEnabled !== undefined) store.set('superContextMemoryEnabled', partial.superContextMemoryEnabled)
   if (partial.timelineEnabled !== undefined) store.set('timelineEnabled', partial.timelineEnabled)
   if (partial.peopleEnabled !== undefined) store.set('peopleEnabled', partial.peopleEnabled)
@@ -237,6 +248,11 @@ export function setSettings(partial: Partial<AppSettings>): void {
  */
 export function isAutomationPaused(): boolean {
   return store.get('automationPaused') ?? false
+}
+
+/** Read by the scan handler after every library scan; see AppSettings. */
+export function isLibraryAutoOrganizeEnabled(): boolean {
+  return store.get('libraryAutoOrganizeEnabled') ?? true
 }
 
 export function getDocumentIndexPause(): DocumentIndexPauseRecord | null {
@@ -434,6 +450,15 @@ export function getWebSearchSettings() {
     provider: store.get('webSearchProvider') ?? 'tavily',
     apiKey: store.get('webSearchApiKey') ?? '',
   }
+}
+
+/**
+ * The Play feed's retrieval key. Its own accessor rather than a `getSettings()`
+ * field read, matching the web-search pair above: the retrieval path consults it
+ * per refresh and has no reason to materialize the whole settings object.
+ */
+export function getYoutubeApiKey(): string {
+  return (store.get('youtubeApiKey') ?? '').trim()
 }
 
 // The provider's per-key requests-per-minute ceiling. Bulk indexing paces itself

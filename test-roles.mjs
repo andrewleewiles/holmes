@@ -13,6 +13,8 @@ import {
   rolesWithSessionAnalysis,
 } from './src/shared/roles.ts'
 import { extractTimelineBlock, parseTimelineBlock, stripTimelineBlock } from './src/shared/timeline.ts'
+import { WORK_ROLES, getWorkRole } from './src/shared/workRoles.ts'
+import { PROJECT_ICON_REGISTRY } from './src/renderer/projectIconRegistry.ts'
 
 let checks = 0
 function check(name, fn) {
@@ -56,6 +58,79 @@ check('isRoleId is the guard the IPC layer relies on', () => {
   assert.equal(isRoleId(null), false)
   assert.equal(isRoleId({ id: 'therapist' }), false)
 })
+
+console.log('roles: work roles and the spreadsheet')
+
+check('every role the Work tab gives tools to exists in the catalog', () => {
+  // The bug this exists for: the Work tab keyed its sidebar off WORK_ROLES while
+  // the pill listed ROLES, so a role could have a whole tool pipeline and still
+  // be unselectable — and `sanitizeRoleId` would drop it on the way to the DB.
+  for (const workRole of WORK_ROLES.filter((role) => role.tools.length > 0)) {
+    const role = getRole(workRole.id)
+    assert.ok(role, `${workRole.role} has ${workRole.tools.length} tools but no RoleDefinition`)
+    assert.equal(isRoleId(workRole.id), true, `${workRole.id} would be dropped by sanitizeRoleId`)
+  }
+})
+
+check('role ids and names agree with the spreadsheet', () => {
+  // Names are load-bearing, not decoration: `getCharacter` finds the character
+  // for a role by matching Character.role against RoleDefinition.name, so a
+  // renamed role silently loses its face, its colour and its greeting lines.
+  for (const role of ROLES) {
+    if (role.id === 'therapist') continue
+    const workRole = getWorkRole(role.id)
+    assert.ok(workRole, `${role.id} is not a row in the sheet — ids are its Role slugs`)
+    assert.equal(role.name, workRole.role, `${role.id} name drifted from the sheet`)
+    assert.equal(role.color, workRole.color, `${role.id} colour drifted from the sheet`)
+  }
+})
+
+check('every role icon resolves in the icon registry', () => {
+  // An unresolved name renders as nothing, and nothing about it looks broken in
+  // the source.
+  for (const role of ROLES) {
+    assert.ok(PROJECT_ICON_REGISTRY[role.icon], `${role.id} icon "${role.icon}" is not in the registry`)
+  }
+})
+
+check('every colour is a hex the pill can paint with', () => {
+  for (const role of ROLES) {
+    assert.match(role.color, /^#[0-9a-f]{6}$/i, `${role.id} colour is not a hex triplet`)
+  }
+})
+
+check('getRole and isRoleId accept every work role', () => {
+  for (const id of ['3d-modeler', 'designer', 'data-analyst', 'programmer', 'game-studio', 'writer']) {
+    assert.equal(isRoleId(id), true, `${id} is missing from RoleId`)
+    assert.equal(getRole(id)?.id, id)
+  }
+  // 'general' is the sheet's no-role row: Holmes himself, which the pill offers
+  // as "None" rather than as a role.
+  assert.equal(isRoleId('general'), false)
+})
+
+check('only the therapist writes a session note', () => {
+  assert.deepEqual(rolesWithSessionAnalysis().map((role) => role.id), ['therapist'])
+})
+
+check('every work role document is a document and admits what it cannot do', () => {
+  for (const role of ROLES) {
+    if (role.id === 'therapist') continue
+    assert.ok(role.document.startsWith(`ROLE: ${role.name.toUpperCase()}`), `${role.id} document lacks its header`)
+    assert.ok(
+      /THE NAME YOU WEAR/.test(role.document),
+      `${role.id} document does not ground the character the user sees`,
+    )
+    assert.ok(/\bnever\b/i.test(role.document), `${role.id} document states no limit`)
+  }
+})
+
+check('the analyst is told not to invent a number', () => {
+  // The one failure mode of this role that is indistinguishable from success.
+  assert.match(getRole('data-analyst').document, /Never invent a number/)
+})
+
+console.log('roles: therapist')
 
 check('the therapist document states its limits and its crisis duty', () => {
   const document = getRole('therapist').document.toLowerCase()

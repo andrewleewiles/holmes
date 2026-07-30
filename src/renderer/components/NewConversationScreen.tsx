@@ -17,6 +17,7 @@ import { useAssistantIdentity } from '../hooks/useAssistantIdentity'
 import { renderWelcomeLine } from '../welcomeLines'
 import { getCharacter, isDefaultCharacter } from '../characters'
 import { useSettingsStore } from '../store/settingsStore'
+import { boilFontsReady } from '../boil/boilFonts'
 import { hasProviderCredentials } from '@shared/providerConfig'
 
 interface NewConversationScreenProps {
@@ -60,6 +61,16 @@ const MAX_GREETING_PX = 38
 const MIN_GREETING_PX = 30
 
 /**
+ * Milliseconds per character of the greeting. A typical line lands in about two
+ * seconds — long enough to read as speech against the talking clip, short enough
+ * that the composer isn't waiting on it.
+ */
+const GREETING_TYPE_MS = 34
+
+const prefersReducedMotion = () =>
+  window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false
+
+/**
  * The screen a conversation starts from: greeting, the model/effort/memory/
  * context/role pills, and the composer. Rendered both as the home screen (via
  * WelcomeScreen, which adds the generated ideas) and on its own for a
@@ -82,8 +93,14 @@ export const NewConversationScreen: FC<NewConversationScreenProps> = ({
 }) => {
   const [input, setInput] = useState('')
   const [greeting, setGreeting] = useState('')
+  // How much of the greeting has been printed. The rest is still in the DOM but
+  // invisible, so the line never reflows as it types. The line it counts is
+  // stored with it: a re-roll (role change, edited lines) would otherwise paint
+  // the new greeting at the old line's count for one frame before resetting.
+  const [typed, setTyped] = useState({ line: '', count: 0 })
   const [isOverflowing, setIsOverflowing] = useState(false)
   const [firstName, setFirstName] = useState('')
+  const [identityLoaded, setIdentityLoaded] = useState(false)
   const [ideaPage, setIdeaPage] = useState(0)
   const [attaching, setAttaching] = useState(false)
   // Latched on the first keystroke: clearing the box hides the panel again, but
@@ -103,6 +120,7 @@ export const NewConversationScreen: FC<NewConversationScreenProps> = ({
   const columnRef = useRef<HTMLDivElement>(null)
   const { name: assistantName } = useAssistantIdentity()
   const customWelcomeLines = useSettingsStore((state) => state.settings?.welcomeLines)
+  const settingsLoaded = useSettingsStore((state) => state.settings !== null)
   const hasApiKey = useSettingsStore((state) => hasProviderCredentials(state.settings?.provider))
 
   // The role decides who is greeting you. Holmes is the app itself, so he keeps
@@ -126,13 +144,38 @@ export const NewConversationScreen: FC<NewConversationScreenProps> = ({
     ]).then(([info, prefName]) => {
       const first = prefName ? String(prefName) : info.firstName
       setFirstName(first)
-    })
+    }).finally(() => setIdentityLoaded(true))
     inputRef.current?.focus()
   }, [])
 
+  // Held until the name and the stored lines are both in: each of those arrives
+  // asynchronously and would otherwise re-roll the greeting a beat after mount,
+  // which the typewriter turns from an invisible swap into a visible restart.
   useEffect(() => {
+    if (!identityLoaded || !settingsLoaded) return
     setGreeting(pickWelcomeLine(welcomeLines, firstName))
-  }, [welcomeLines, firstName])
+  }, [identityLoaded, settingsLoaded, welcomeLines, firstName])
+
+  // Holmes speaks his line rather than having it already said: one character at
+  // a time, with the mark on its talking clip until the last one lands.
+  useEffect(() => {
+    if (!greeting) return
+    if (prefersReducedMotion()) {
+      setTyped({ line: greeting, count: greeting.length })
+      return
+    }
+    setTyped({ line: greeting, count: 0 })
+    let printed = 0
+    const timer = window.setInterval(() => {
+      printed += 1
+      setTyped({ line: greeting, count: printed })
+      if (printed >= greeting.length) window.clearInterval(timer)
+    }, GREETING_TYPE_MS)
+    return () => window.clearInterval(timer)
+  }, [greeting])
+
+  const typedCount = typed.line === greeting ? typed.count : 0
+  const isSpeaking = greeting.length > 0 && typedCount < greeting.length
 
   useLayoutEffect(() => {
     const heading = greetingRef.current
@@ -143,6 +186,9 @@ export const NewConversationScreen: FC<NewConversationScreenProps> = ({
     // scale perfectly linearly, and a borderline line landing on the wrong side
     // of the floor is the difference between one tidy line and a two-word orphan.
     const fitGreeting = () => {
+      // A late arrival (a font landing after the screen was left) would measure
+      // a detached node, where every size "fits".
+      if (!heading.isConnected) return
       heading.style.whiteSpace = 'nowrap'
       const fitsAt = (px: number) => {
         heading.style.fontSize = `${px}px`
@@ -168,13 +214,14 @@ export const NewConversationScreen: FC<NewConversationScreenProps> = ({
 
     fitGreeting()
 
-    // Until EB Garamond is actually loaded the browser measures the fallback
-    // face, which is wider — that alone decides whether a borderline line gets
-    // one tidy row or a two-word orphan. `fonts.ready` can resolve before the
-    // heading's own face is requested, so wait on that face by name too, and
+    // Until the display face is actually loaded the browser measures a fallback,
+    // which is wider — that alone decides whether a borderline line gets one
+    // tidy row or a two-word orphan. `fonts.ready` can resolve before the
+    // heading's own faces are requested, so wait on the boil faces by name
+    // (boilFontsReady does exactly that, and it is what un-hides this text), and
     // catch any later arrival through loadingdone.
     void document.fonts?.ready.then(fitGreeting)
-    void document.fonts?.load(`${MAX_GREETING_PX}px "EB Garamond"`).then(fitGreeting).catch(() => {})
+    void boilFontsReady().then(fitGreeting)
     document.fonts?.addEventListener('loadingdone', fitGreeting)
 
     // The column, not the heading: observing the heading would re-fire on every
@@ -259,10 +306,21 @@ export const NewConversationScreen: FC<NewConversationScreenProps> = ({
             {/* The mark boils gently at rest here rather than sitting static.
                 AnimatedMark falls back to AssistantMark when a custom assistant
                 icon is set, so a customised install is unaffected. */}
-            <AnimatedMark state="idle" className="h-10 w-10 shrink-0" color={character.color} />
+            <AnimatedMark
+              state={isSpeaking ? 'talking' : 'idle'}
+              className="h-10 w-10 shrink-0"
+              color={character.color}
+            />
             {/* flex-1, so the heading measures against the row's remaining space
-                rather than its own text — a content-sized box always "fits". */}
-            <div className="min-w-0 flex-1">
+                rather than its own text — a content-sized box always "fits".
+
+                boil-reveal keeps the lockup invisible until the display face is
+                loaded (index.css + boil/boilFonts.ts). This is the one piece of
+                display type on screen from the very first frame, and the ten
+                boil faces arriving one keyframe at a time made the wordmark
+                visibly re-set itself for the first second. Laid out either way,
+                so nothing around it moves when it appears. */}
+            <div className="boil-reveal min-w-0 flex-1">
               {/* Not a heading, so index.css's display-heading tracking rule
                   misses it — set the same tightening the greeting uses so the
                   two lines read as one lockup. */}
@@ -279,7 +337,16 @@ export const NewConversationScreen: FC<NewConversationScreenProps> = ({
                 ref={greetingRef}
                 className="-mt-1 font-serif-display text-[38px] font-normal leading-[1.05] text-[#afad9e] [--holmes-heading-tracking:-0.06em]"
               >
-                {greeting}
+                {greeting.slice(0, typedCount)}
+                {/* The unsaid remainder, invisible but still laid out: it keeps
+                    the fitted size and the line count fixed from the first
+                    character, so nothing under the greeting shifts as it prints,
+                    and it is what the size measurement below is taken against.
+                    Not aria-hidden — a screen reader should get the whole line
+                    at once rather than watch it appear. */}
+                {typedCount < greeting.length && (
+                  <span className="opacity-0">{greeting.slice(typedCount)}</span>
+                )}
               </h1>
             </div>
           </div>
@@ -331,7 +398,14 @@ export const NewConversationScreen: FC<NewConversationScreenProps> = ({
               onPaste={handlePaste}
               placeholder="Type your message here..."
               rows={6}
-              className={`h-36 max-h-60 w-full resize-none rounded-[18px] bg-[#3b3a3a] px-5 pt-4 pb-14 pr-14 text-sm text-white placeholder-white/25 outline-none transition-colors focus:bg-[#403f3f] ${
+              // `block` is load-bearing: a textarea is inline-block and sits on
+              // the text baseline, which leaves ~6px of line-box under it inside
+              // the relative wrapper. The Send and attach buttons are positioned
+              // against that wrapper, so `bottom-3` measured 6px from the box's
+              // visible edge while `right-3`/`left-3` measured the full 12px, and
+              // the corners looked lopsided. Taking the textarea out of the line
+              // box makes the wrapper exactly the box, and the insets equal.
+              className={`block h-36 max-h-60 w-full resize-none rounded-[18px] bg-[#3b3a3a] px-5 pt-4 pb-14 pr-14 text-sm text-white placeholder-white/25 outline-none transition-colors focus:bg-[#403f3f] ${
                 isOverflowing ? 'scrollbar-thin' : 'no-scrollbar'
               }`}
             />
@@ -351,12 +425,31 @@ export const NewConversationScreen: FC<NewConversationScreenProps> = ({
               onClick={handleSubmit}
               disabled={!input.trim() && attachments.length === 0}
               aria-label="Send"
-              className={`absolute right-3 bottom-3 p-2 bg-holmes-primary hover:bg-holmes-primary-dark disabled:bg-holmes-primary/40 disabled:cursor-not-allowed text-white rounded-lg transition-all duration-150 flex items-center justify-center ${
+              className={`group absolute right-3 bottom-3 p-2 bg-holmes-primary hover:bg-holmes-primary-dark disabled:bg-holmes-primary/40 disabled:cursor-not-allowed text-white rounded-lg transition-all duration-150 flex items-center justify-center ${
                 input.trim() || attachments.length > 0 ? 'opacity-100' : 'opacity-0 pointer-events-none'
               }`}
             >
-              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 12h14M12 5l7 7-7 7" />
+              {/* A closed block arrow rather than a stroked line, so the glyph
+                  has an inside: hollow at rest, flooded white on hover. The fill
+                  is `transparent` and not `none` because only the former can be
+                  transitioned, and a fill that snaps reads as a different icon
+                  swapping in rather than the same one filling up.
+
+                  `data-boil-always` opts the arrow into the icon boil. That
+                  effect finds its icons by their turquoise, and this one is white
+                  on a turquoise chip, so it has to ask. */}
+              <svg
+                data-boil-always
+                className="h-5 w-5 fill-transparent transition-[fill] duration-150 group-hover:fill-white"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={1.8}
+                  d="M4.4 10.1H12.3V5.6L19.6 12L12.3 18.4V13.9H4.4Z"
+                />
               </svg>
             </button>
             {/* Out of flow and only faded in, so the composer and everything

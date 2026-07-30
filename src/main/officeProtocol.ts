@@ -88,7 +88,8 @@ export function resolveOfficeAssetPath(root: string, urlPath: string): string | 
   return resolved
 }
 
-const MIME_BY_EXTENSION: Record<string, string> = {
+/** Shared with designProtocol.ts — the design bundles are a subset of these. */
+export const MIME_BY_EXTENSION: Record<string, string> = {
   '.html': 'text/html', '.htm': 'text/html',
   '.js': 'text/javascript', '.mjs': 'text/javascript',
   '.css': 'text/css',
@@ -136,7 +137,8 @@ const EDITOR_CSP = [
 ].join('; ')
 
 /**
- * Must run BEFORE app ready.
+ * Handed to the single registerSchemesAsPrivileged call in main.ts (a second
+ * call strips privileges from the first — see AUDIO_SCHEME_PRIVILEGES).
  *
  * `standard` gives the scheme a real (scheme, host) origin, which is what makes
  * Workers, blob URLs, storage and postMessage origin checks behave — and what
@@ -144,22 +146,18 @@ const EDITOR_CSP = [
  * then share an origin. `secure` puts it in a secure context, which WebAssembly
  * and the font cache both require.
  */
-export function registerOfficeScheme(): void {
-  protocol.registerSchemesAsPrivileged([
-    {
-      scheme: OFFICE_SCHEME,
-      privileges: {
-        standard: true,
-        secure: true,
-        supportFetchAPI: true,
-        corsEnabled: true,
-        stream: true,
-        // Named explicitly in the app's policy instead — same reasoning as
-        // audioProtocol.ts.
-        bypassCSP: false,
-      },
-    },
-  ])
+export const OFFICE_SCHEME_PRIVILEGES: Electron.CustomScheme = {
+  scheme: OFFICE_SCHEME,
+  privileges: {
+    standard: true,
+    secure: true,
+    supportFetchAPI: true,
+    corsEnabled: true,
+    stream: true,
+    // Named explicitly in the app's policy instead — same reasoning as
+    // audioProtocol.ts.
+    bypassCSP: false,
+  },
 }
 
 /** Must run AFTER app ready. */

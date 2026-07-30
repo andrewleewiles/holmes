@@ -1,6 +1,6 @@
 import { type FC, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
-import { faBagShopping, faBookOpen, faBriefcase, faCaretDown, faCirclePlus, faClockRotateLeft, faDatabase, faDiagramProject, faFileLines, faFilePowerpoint, faFloppyDisk, faFolderOpen, faGavel, faLeaf, faMagnifyingGlass, faPause, faReceipt, faRefresh, faSpa, faStop, faTable, faUmbrellaBeach, faXmark } from '@fortawesome/free-solid-svg-icons'
+import { faBagShopping, faBookOpen, faBriefcase, faCaretDown, faCirclePlus, faClockRotateLeft, faDatabase, faDiagramProject, faDownload, faFileLines, faFilePowerpoint, faFloppyDisk, faFolderOpen, faGavel, faImage, faLeaf, faMagnifyingGlass, faPause, faPenNib, faPlay, faReceipt, faRefresh, faSpa, faStop, faTable, faUmbrellaBeach, faXmark } from '@fortawesome/free-solid-svg-icons'
 import type { Conversation, DocumentIndexState, Project } from '@shared/types'
 import { WORK_DOCUMENT_TYPES, type WorkDocumentKind } from '@shared/workDocuments'
 import { WORK_ROLES, getWorkRole } from '@shared/workRoles'
@@ -12,14 +12,17 @@ import { useTimelineRunState } from '../hooks/useTimelineRun'
 import { usePeopleRunState } from '../hooks/usePeopleRun'
 import { useActivityRunState } from '../hooks/useActivityRun'
 import { useLibraryRun } from '../hooks/useLibraryRun'
+import { usePlayRun } from '../hooks/usePlayRun'
 
-type SidebarSection = 'recall' | 'projects' | 'dashboard' | 'data' | 'product-search' | 'mental-coach' | 'memory' | 'timeline' | 'library' | 'work' | 'call-history' | 'history' | null
+type SidebarSection = 'play' | 'recall' | 'projects' | 'dashboard' | 'data' | 'product-search' | 'mental-coach' | 'memory' | 'timeline' | 'library' | 'work' | 'call-history' | 'history' | null
 
 /** The icon for each work document kind, kept beside the shared type list. */
 const WORK_KIND_ICONS: Record<WorkDocumentKind, typeof faFileLines> = {
   document: faFileLines,
   spreadsheet: faTable,
   presentation: faFilePowerpoint,
+  image: faImage,
+  vector: faPenNib,
 }
 
 /**
@@ -53,10 +56,24 @@ interface SidebarProps {
   onMemory: () => void
   onTimeline: () => void
   onLibrary: () => void
+  onPlay: () => void
   /** Opens the Work page; a kind means "start a new one of these". */
   onWork: (kind: WorkDocumentKind | null) => void
   /** A role's tool was picked — the tool's label, and the role it came from. */
   onWorkTool: (tool: string, roleId: string) => void
+  /**
+   * The role chosen in the Role pill on the home screen. Picking a workplace
+   * role there is the same choice as picking one in the work role picker below,
+   * so the sidebar follows it — see the effect that mirrors it.
+   */
+  selectedRoleId: string | null
+  /**
+   * The project filter. Lifted out of this component because it no longer only
+   * scopes the conversation list — the Work tab saves documents into whichever
+   * project it names.
+   */
+  filterProjectId: string | null
+  onFilterProjectChange: (projectId: string | null) => void
   onCallHistory: () => void
   onHistory: () => void
   onOpenIndexRun: (projectId: string | null) => void
@@ -80,8 +97,12 @@ export const Sidebar: FC<SidebarProps> = ({
   onMemory,
   onTimeline,
   onLibrary,
+  onPlay,
   onWork,
   onWorkTool,
+  selectedRoleId,
+  filterProjectId,
+  onFilterProjectChange,
   onCallHistory,
   onHistory,
   onOpenIndexRun,
@@ -89,12 +110,12 @@ export const Sidebar: FC<SidebarProps> = ({
 }) => {
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editTitle, setEditTitle] = useState('')
-  // The conversation list is filtered by project: "General" is everything not
-  // tied to one, which is where a plain new chat lands.
-  const [filterProjectId, setFilterProjectId] = useState<string | null>(null)
+  // "General" is everything not tied to a project, which is where a plain new
+  // chat lands. Owned by App — see filterProjectId in the props above.
+  const setFilterProjectId = onFilterProjectChange
   const [filterOpen, setFilterOpen] = useState(false)
   const [mode, setMode] = useState<SidebarMode>(
-    activeSection === 'library' ? 'leisure' : activeSection === 'work' ? 'work' : 'life',
+    activeSection === 'library' || activeSection === 'play' ? 'leisure' : activeSection === 'work' ? 'work' : 'life',
   )
   // The Work role. Kept here beside the project filter it mirrors: both are
   // sidebar-local pickers that re-shape the nav rather than app-wide state.
@@ -112,14 +133,28 @@ export const Sidebar: FC<SidebarProps> = ({
   const peopleState = usePeopleRunState()
   const activityState = useActivityRunState()
   const libraryState = useLibraryRun()
+  const playState = usePlayRun()
 
   // Opening a page from anywhere else — the Dashboard, a deep link — moves the
   // pills to whichever mode owns it, so the nav never contradicts the page.
   useEffect(() => {
-    if (activeSection === 'library') setMode('leisure')
+    if (activeSection === 'library' || activeSection === 'play') setMode('leisure')
     else if (activeSection === 'work') setMode('work')
     else if (activeSection !== null) setMode('life')
   }, [activeSection])
+
+  // Choosing a workplace role in the Role pill is the same choice as choosing it
+  // in the picker below, so the sidebar switches to that role's view on Work.
+  // Only roles that carry tools count as workplace roles: one that only changes
+  // how the assistant behaves — the Therapist — must not drag the nav off Life.
+  // The mode only moves when the open page does not already own it, so the nav
+  // still never contradicts what is on screen.
+  useEffect(() => {
+    const role = getWorkRole(selectedRoleId)
+    if (!role || role.tools.length === 0) return
+    setWorkRoleId(role.id)
+    if (activeSection === null || activeSection === 'work') setMode('work')
+  }, [selectedRoleId])
 
   useLayoutEffect(() => {
     const element = listRef.current
@@ -246,6 +281,35 @@ export const Sidebar: FC<SidebarProps> = ({
   // so it gets its own row rather than competing for one.
   // Narration, annotation and lesson runs all report through the library run
   // registry, so one strip covers them — the message says which.
+  // The Play build and any archive downloads. Archives run alongside a build
+  // rather than queueing behind it, so both can be showing at once.
+  const playBuilding = playState?.status === 'building'
+  const playArchives = playState?.archives ?? []
+  const playVisible = playBuilding || playArchives.length > 0
+  const playPhase = playState?.progress?.phase ?? null
+  const playHeadline =
+    playPhase === 'planning'
+      ? 'Planning your feed'
+      : playPhase === 'retrieving'
+        ? 'Searching YouTube'
+        : playPhase === 'curating'
+          ? 'Choosing what to show you'
+          : playPhase === 'transcribing'
+            ? 'Fetching transcript'
+            : playPhase === 'analysing'
+              ? 'Checking claims'
+              : 'Building your feed'
+  const playCounts =
+    playState?.progress && playState.progress.total > 0
+      ? `${Math.min(playState.progress.completed + 1, playState.progress.total)}/${playState.progress.total}`
+      : null
+  const playFraction =
+    playState?.progress && playState.progress.total > 0
+      ? Math.min(1, playState.progress.completed / playState.progress.total)
+      : null
+  const playDetail = playState?.progress?.detail ?? ''
+  const playAriaLabel = `${playHeadline}${playCounts ? ` ${playCounts}` : ''}`
+
   const libraryRunning = libraryState?.status === 'scanning' || libraryState?.status === 'generating'
   const libraryProgress = libraryRunning ? libraryState?.progress ?? null : null
   const libraryHeadline =
@@ -455,6 +519,18 @@ export const Sidebar: FC<SidebarProps> = ({
           Recall
         </button>
         {mode === 'leisure' ? (
+          <>
+          <button
+            onClick={onPlay}
+            className={`${toolButtonClass} ${
+              activeSection === 'play'
+                ? 'bg-holmes-primary/10 text-holmes-primary-light'
+                : 'hover:bg-white/[0.04] hover:text-[#c7c0bb]'
+            } cursor-pointer`}
+          >
+            <FontAwesomeIcon icon={faPlay} className="w-4 shrink-0" />
+            Play
+          </button>
           <button
             onClick={onLibrary}
             className={`${toolButtonClass} ${
@@ -466,11 +542,13 @@ export const Sidebar: FC<SidebarProps> = ({
             <FontAwesomeIcon icon={faBookOpen} className="w-4 shrink-0" />
             Library
           </button>
+          </>
         ) : mode === 'work' ? (
         <>
-        {/* Creating is the whole entry point to Work today, so the three kinds
-            are the nav rather than sitting behind a menu on the page. */}
-        {WORK_DOCUMENT_TYPES.map((type) => (
+        {/* Creating is the whole entry point to Work today, so the office kinds
+            are the nav rather than sitting behind a menu on the page. The design
+            kinds live on the Work page, reached through the Designer's tools. */}
+        {WORK_DOCUMENT_TYPES.filter((type) => type.editor === 'office').map((type) => (
           <button
             key={type.kind}
             onClick={() => onWork(type.kind)}
@@ -822,6 +900,69 @@ export const Sidebar: FC<SidebarProps> = ({
               {timelineDetail}
             </span>
           </button>
+        </div>
+      )}
+
+      {playVisible && (
+        <div className={`shrink-0 bg-holmes-surface px-2 py-2 ${indexVisible || timelineRunning ? 'border-t border-white/[0.06]' : 'border-t border-white/10'}`}>
+          {playBuilding && (
+            <button
+              onClick={onPlay}
+              title={playAriaLabel}
+              aria-label={playAriaLabel}
+              className="flex w-full flex-col gap-1 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-white/[0.04] cursor-pointer"
+            >
+              <div className="flex w-full items-center gap-2">
+                <FontAwesomeIcon icon={faRefresh} className="w-3 shrink-0 animate-spin text-[10px] text-pink-300/70" />
+                <span className="min-w-0 flex-1 truncate text-[11px] text-white/55">{playHeadline}</span>
+                {playCounts && (
+                  <span className="shrink-0 text-[10px] tabular-nums text-white/40">{playCounts}</span>
+                )}
+              </div>
+              {playFraction !== null && (
+                <div className="h-[2px] w-full overflow-hidden rounded-full bg-white/10">
+                  <div
+                    className="h-full rounded-full bg-pink-300/60 transition-all"
+                    style={{ width: `${Math.round(playFraction * 100)}%` }}
+                  />
+                </div>
+              )}
+              <span className="w-full truncate text-[10px] text-white/30" title={playDetail}>
+                {playDetail}
+              </span>
+            </button>
+          )}
+          {playArchives.map((archive) => (
+            <button
+              key={archive.itemId}
+              onClick={onPlay}
+              title={archive.error ?? `Archiving ${archive.title}`}
+              className="flex w-full flex-col gap-1 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-white/[0.04] cursor-pointer"
+            >
+              <div className="flex w-full items-center gap-2">
+                <FontAwesomeIcon
+                  icon={archive.status === 'failed' ? faXmark : archive.status === 'done' ? faFloppyDisk : faDownload}
+                  className={`w-3 shrink-0 text-[10px] ${
+                    archive.status === 'failed'
+                      ? 'text-red-400/70'
+                      : archive.status === 'done'
+                        ? 'text-emerald-300/70'
+                        : 'text-sky-300/70 animate-pulse'
+                  }`}
+                />
+                <span className="min-w-0 flex-1 truncate text-[11px] text-white/55">{archive.title}</span>
+                <span className="shrink-0 text-[10px] tabular-nums text-white/40">{archive.detail}</span>
+              </div>
+              {archive.fraction !== null && archive.status === 'downloading' && (
+                <div className="h-[2px] w-full overflow-hidden rounded-full bg-white/10">
+                  <div
+                    className="h-full rounded-full bg-sky-300/60 transition-all"
+                    style={{ width: `${Math.round(archive.fraction * 100)}%` }}
+                  />
+                </div>
+              )}
+            </button>
+          ))}
         </div>
       )}
 

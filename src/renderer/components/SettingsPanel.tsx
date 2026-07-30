@@ -5,6 +5,7 @@ import {
   faDatabase,
   faFolderOpen,
   faGlobe,
+  faPlay,
   faImages,
   faLayerGroup,
   faShieldHalved,
@@ -83,9 +84,12 @@ export const SettingsPanel: FC<SettingsPanelProps> = ({
   const [webSearch, setWebSearch] = useState(false)
   const [webSearchProvider, setWebSearchProvider] = useState<WebSearchProvider>('tavily')
   const [webSearchApiKey, setWebSearchApiKey] = useState('')
+  const [youtubeApiKey, setYoutubeApiKey] = useState('')
+  const [showYoutubeKey, setShowYoutubeKey] = useState(false)
   const [activityIngest, setActivityIngest] = useState(false)
   const [documentContext, setDocumentContext] = useState(false)
   const [librarySnapshot, setLibrarySnapshot] = useState(false)
+  const [libraryAutoOrganize, setLibraryAutoOrganize] = useState(true)
   const [superContextMemory, setSuperContextMemory] = useState(false)
   const [timelineEnabled, setTimelineEnabled] = useState(true)
   const [peopleEnabled, setPeopleEnabled] = useState(true)
@@ -149,9 +153,11 @@ export const SettingsPanel: FC<SettingsPanelProps> = ({
       setWebSearch(settings.webSearchEnabled ?? false)
       setWebSearchProvider(settings.webSearchProvider ?? 'tavily')
       setWebSearchApiKey(settings.webSearchApiKey ?? '')
+      setYoutubeApiKey(settings.youtubeApiKey ?? '')
       setActivityIngest(settings.activityIngestEnabled ?? false)
       setDocumentContext(settings.documentContextEnabled ?? false)
       setLibrarySnapshot(settings.librarySnapshotEnabled ?? false)
+      setLibraryAutoOrganize(settings.libraryAutoOrganizeEnabled ?? true)
       setSuperContextMemory(settings.superContextMemoryEnabled ?? false)
       setTimelineEnabled(settings.timelineEnabled ?? true)
       setPeopleEnabled(settings.peopleEnabled ?? true)
@@ -207,9 +213,11 @@ export const SettingsPanel: FC<SettingsPanelProps> = ({
       webSearchEnabled: webSearch,
       webSearchProvider: webSearchProvider,
       webSearchApiKey: webSearchApiKey,
+      youtubeApiKey: youtubeApiKey,
       activityIngestEnabled: activityIngest,
       documentContextEnabled: documentContext,
       librarySnapshotEnabled: librarySnapshot,
+      libraryAutoOrganizeEnabled: libraryAutoOrganize,
       superContextMemoryEnabled: superContextMemory,
       timelineEnabled,
       peopleEnabled,
@@ -968,6 +976,43 @@ export const SettingsPanel: FC<SettingsPanelProps> = ({
             )}
           </div>
 
+          {/* Play feed retrieval */}
+          <div className="rounded-xl border border-white/10 bg-white/[0.03] p-4">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2 text-sm font-medium text-white/80">
+                <FontAwesomeIcon icon={faPlay} className="text-holmes-primary" />
+                Play feed
+              </div>
+              <p className="mt-1 text-xs leading-relaxed text-white/40">
+                The Play tab suggests videos chosen against your own profile. Holmes turns what it knows about you into search terms, YouTube answers them, and a second pass picks and explains the results. Search terms are redacted for API keys, passwords, and payment numbers before being sent.
+              </p>
+            </div>
+            <div className="mt-4">
+              <label className="block">
+                <span className="mb-1.5 block text-[10px] font-medium uppercase tracking-wider text-white/35">YouTube Data API key</span>
+                <div className="flex overflow-hidden rounded-lg border border-white/10 bg-black/15 focus-within:border-holmes-primary/40">
+                  <input
+                    type={showYoutubeKey ? 'text' : 'password'}
+                    value={youtubeApiKey}
+                    onChange={(e) => setYoutubeApiKey(e.target.value)}
+                    placeholder="AIza..."
+                    className="min-w-0 flex-1 bg-transparent px-3 py-2 text-xs text-white/70 outline-none placeholder:text-white/20"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowYoutubeKey((v) => !v)}
+                    className="border-l border-white/10 px-3 text-[10px] text-white/40 hover:text-white/70 cursor-pointer"
+                  >
+                    {showYoutubeKey ? 'Hide' : 'Show'}
+                  </button>
+                </div>
+                <span className="mt-1.5 block text-[10px] leading-relaxed text-white/25">
+                  Create one in the Google Cloud console and enable YouTube Data API v3. The free tier is 10,000 quota units per day, which is about nine feed refreshes; it resets at midnight Pacific time.
+                </span>
+              </label>
+            </div>
+          </div>
+
           {/* Activity AI analysis */}
           <div className="rounded-xl border border-white/10 bg-white/[0.03] p-4">
             <div className="flex items-start justify-between gap-3">
@@ -1160,6 +1205,27 @@ export const SettingsPanel: FC<SettingsPanelProps> = ({
                   type="checkbox"
                   checked={librarySnapshot}
                   onChange={(e) => setLibrarySnapshot(e.target.checked)}
+                  className="sr-only peer"
+                />
+                <div className="w-11 h-6 bg-white/10 rounded-full peer peer-checked:bg-violet-500 transition-colors after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-transform peer-checked:after:translate-x-5"></div>
+              </label>
+            </div>
+          </div>
+
+          {/* Auto-file new books */}
+          <div className="rounded-xl border border-white/10 bg-white/[0.03] p-4">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="text-sm font-medium text-white/80">File new books automatically</div>
+                <p className="mt-1 text-xs leading-relaxed text-white/40">
+                  After a library scan, moves newly found books into <span className="text-white/55">[Author] - [Title]</span> folders inside their connected folder, the same way the Organise button does. Only books whose author is confidently identified are moved — everything else stays put for a reviewed Organise — and each book is considered once, so rescanning an unchanged shelf costs nothing. Needs a configured provider; the folder names come from a model call over the book&apos;s metadata.
+                </p>
+              </div>
+              <label className="relative inline-flex items-center cursor-pointer shrink-0">
+                <input
+                  type="checkbox"
+                  checked={libraryAutoOrganize}
+                  onChange={(e) => setLibraryAutoOrganize(e.target.checked)}
                   className="sr-only peer"
                 />
                 <div className="w-11 h-6 bg-white/10 rounded-full peer peer-checked:bg-violet-500 transition-colors after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-transform peer-checked:after:translate-x-5"></div>

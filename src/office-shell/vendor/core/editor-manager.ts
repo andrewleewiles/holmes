@@ -534,10 +534,8 @@ export class EditorManager {
           change: false,
         },
       },
-      logo: {
-        image: OFFICE_EDITOR_LOGO.image,
-        imageDark: OFFICE_EDITOR_LOGO.imageDark,
-      },
+      // HOLMES PATCH: see OFFICE_EDITOR_LOGO — no logo rather than a CDN fetch.
+      logo: OFFICE_EDITOR_LOGO,
     };
   }
 

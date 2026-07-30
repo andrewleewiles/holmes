@@ -78,14 +78,14 @@ export const ASC_RESTRICTION_NONE = 0;
 export const ASC_RESTRICTION_VIEW = 128;
 
 /** OnlyOffice 编辑器左上角 logo（jsDelivr 固定版本，避免依赖站点本地资源） */
-export const OFFICE_EDITOR_LOGO = {
-  /** 浅色主题：Office 品牌色图标 */
-  image:
-    "https://cdn.jsdelivr.net/npm/simple-icons@9.21.0/icons/microsoftoffice.svg",
-  /** 深色主题：同图标（品牌色在深色背景上同样清晰） */
-  imageDark:
-    "https://cdn.jsdelivr.net/npm/simple-icons@9.21.0/icons/microsoftoffice.svg",
-} as const;
+/**
+ * HOLMES PATCH: upstream points this at a Microsoft Office icon on jsdelivr.
+ * The editor CSP has no `https:` in `img-src`, so it was blocked and rendered
+ * as a broken image in the toolbar — and unblocking it would mean the editor
+ * fetching from a CDN every time a document opens. Holmes shows no editor logo
+ * rather than borrowing someone else's brand.
+ */
+export const OFFICE_EDITOR_LOGO = { visible: false } as const;
 
 // ── 静态资源（SDK / x2t）────────────────────────────────────────
 

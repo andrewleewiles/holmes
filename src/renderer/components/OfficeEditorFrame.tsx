@@ -1,4 +1,4 @@
-import { type FC, useCallback, useEffect, useRef, useState } from 'react'
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react'
 import type { WorkDocumentKind } from '@shared/workDocuments'
 
 /**
@@ -17,11 +17,41 @@ const READY_TIMEOUT_MS = 20_000
 
 type ShellState = 'loading' | 'ready' | 'unavailable'
 
+/**
+ * Whether the document is being SHOWN differently from how it would be SAVED.
+ *
+ * `paper` is true while the Holmes treatment is on; `settled` is true once the
+ * user has answered the save dialog, or once there is nothing to answer. The
+ * pair is what decides whether Save asks.
+ */
+export interface PaperState {
+  paper: boolean
+  settled: boolean
+  /** The face the document is currently set in, for the dialog to name. */
+  font: string
+}
+
+/** What the page can ask the editor to do. */
+export interface OfficeEditorHandle {
+  /** The document as real OOXML bytes, converted back through x2t. */
+  exportDocument: () => Promise<{ bytes: Uint8Array; fileName: string }>
+  // Optional because WorkspaceView holds one ref type across both frames and
+  // the design editors have no paper mode — there is no page to take away.
+  /** What Save is about to write versus what is on screen. */
+  paperState?: () => Promise<PaperState>
+  /** Write the Holmes look into the document for real, then it is saveable. */
+  keepPaper?: () => Promise<void>
+  /** Put the default font back so the file is an ordinary document. */
+  dropPaper?: () => Promise<void>
+}
+
 interface OfficeEditorFrameProps {
   kind: WorkDocumentKind
   /** Bumped by the caller to reopen — a new document of the same kind. */
   openToken?: number
   onStateChange?: (state: ShellState) => void
+  /** Unsaved changes. Holmes counts these as work in flight. */
+  onDirtyChange?: (dirty: boolean) => void
 }
 
 interface PendingCall {
@@ -29,17 +59,31 @@ interface PendingCall {
   reject: (error: Error) => void
 }
 
-export const OfficeEditorFrame: FC<OfficeEditorFrameProps> = ({ kind, openToken = 0, onStateChange }) => {
+export const OfficeEditorFrame = forwardRef<OfficeEditorHandle, OfficeEditorFrameProps>(function OfficeEditorFrame(
+  { kind, openToken = 0, onStateChange, onDirtyChange },
+  ref,
+) {
   const frameRef = useRef<HTMLIFrameElement>(null)
   const pending = useRef(new Map<number, PendingCall>())
   const nextId = useRef(1)
   const shellReady = useRef(false)
   const [state, setState] = useState<ShellState>('loading')
 
+  // Held in a ref, not closed over. Callers pass an inline arrow, so depending
+  // on its identity would give `move` a new identity every render — and the
+  // open effect below depends on `move`, so the document would reopen in a
+  // loop: render -> new callback -> effect -> setState -> render.
+  const onStateChangeRef = useRef(onStateChange)
+  const onDirtyRef = useRef(onDirtyChange)
+  useEffect(() => {
+    onStateChangeRef.current = onStateChange
+    onDirtyRef.current = onDirtyChange
+  }, [onStateChange, onDirtyChange])
+
   const move = useCallback((next: ShellState) => {
     setState(next)
-    onStateChange?.(next)
-  }, [onStateChange])
+    onStateChangeRef.current?.(next)
+  }, [])
 
   const call = useCallback((action: string, payload: Record<string, unknown> = {}) => {
     const frame = frameRef.current
@@ -61,6 +105,10 @@ export const OfficeEditorFrame: FC<OfficeEditorFrameProps> = ({ kind, openToken 
 
       if (data.type === 'shell-ready') {
         shellReady.current = true
+        return
+      }
+      if (data.type === 'dirty') {
+        onDirtyRef.current?.(Boolean((data as { dirty?: unknown }).dirty))
         return
       }
       if (data.id === undefined) return
@@ -102,6 +150,56 @@ export const OfficeEditorFrame: FC<OfficeEditorFrameProps> = ({ kind, openToken 
     return () => { cancelled = true }
   }, [kind, openToken, call, move])
 
+  // The AI bridge: main broadcasts a request, this forwards it to the shell and
+  // sends the answer back. Subscribed once, here, rather than in the page —
+  // this is the only component that holds the frame.
+  useEffect(() => {
+    const stop = window.electronAPI.work.onEditorRequest((request) => {
+      call(request.action, request.payload)
+        .then((value) => window.electronAPI.work.respondToEditor({ requestId: request.requestId, ok: true, value }))
+        .catch((error: unknown) => window.electronAPI.work.respondToEditor({
+          requestId: request.requestId,
+          ok: false,
+          value: error instanceof Error ? error.message : String(error),
+        }))
+    })
+    return stop
+  }, [call])
+
+  // Main gates the work_* tools on this: no open document, no tools offered.
+  //
+  // Only ever reports `true` here. Reporting `false` while the editor is still
+  // booting told main the document had CLOSED — which rejected the very request
+  // that was waiting for it to open, so `work_create_document` came back
+  // "The document was closed before the edit could be applied" and the model
+  // burned its whole tool budget retrying.
+  useEffect(() => {
+    if (state !== 'ready') return
+    void window.electronAPI.work.setEditorOpen(true)
+  }, [state])
+
+  // Closing really is closing, and only on unmount.
+  useEffect(() => () => { void window.electronAPI.work.setEditorOpen(false) }, [])
+
+  useImperativeHandle(ref, () => ({
+    exportDocument: async () => {
+      const result = (await call('export')) as { bytes: Uint8Array; fileName: string }
+      if (!result?.bytes?.byteLength) throw new Error('The editor returned an empty document')
+      return result
+    },
+    // Failing closed: if the shell cannot say, Save treats the document as
+    // settled and writes it, rather than blocking behind a dialog it cannot fill in.
+    paperState: async () => {
+      try {
+        return (await call('paper')) as PaperState
+      } catch {
+        return { paper: false, settled: true, font: '' }
+      }
+    },
+    keepPaper: async () => { await call('paperBake') },
+    dropPaper: async () => { await call('paperStrip') },
+  }), [call])
+
   return (
     <div className="relative flex-1">
       <iframe
@@ -136,4 +234,4 @@ export const OfficeEditorFrame: FC<OfficeEditorFrameProps> = ({ kind, openToken 
       )}
     </div>
   )
-}
+})

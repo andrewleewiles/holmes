@@ -11,6 +11,8 @@ import type {
 } from '../shared/types'
 import { getAssistantName } from '../shared/assistantIdentity'
 import { extractDocxText, extractPptxText, extractXlsxText } from './documentText'
+import { getGeneratedContextForPath, searchGeneratedContexts } from './contextSearch'
+import type { ContextSearchLevel } from './contextSearch'
 import type { RecallConversationDocument } from './database'
 import * as database from './database'
 import type { Project } from '../shared/types'
@@ -184,7 +186,7 @@ export function parseRecallSearchRequest(raw: unknown): RecallSearchRequest {
     throw new Error(`Recall search query must be ${MAX_QUERY_LENGTH} characters or fewer`)
   }
 
-  if (raw.source !== 'all' && raw.source !== 'files' && raw.source !== 'conversations') {
+  if (raw.source !== 'all' && raw.source !== 'files' && raw.source !== 'conversations' && raw.source !== 'contexts') {
     throw new Error('Recall search source is invalid')
   }
   if (typeof raw.semantic !== 'boolean') throw new Error('Recall semantic setting is required')
@@ -370,6 +372,66 @@ export function rankRecallConversations(
     seenConversations.add(result.conversationId)
     return true
   })
+}
+
+/** How many generated contexts to retrieve before Recall re-ranks them. */
+const CONTEXT_RECALL_CANDIDATES = 40
+/** Enough of each context to score and snippet against; the full text is not needed to rank. */
+const CONTEXT_RECALL_CHARS = 8_000
+
+const CONTEXT_LEVEL_LABELS: Record<ContextSearchLevel, string> = {
+  file: 'File context',
+  folder: 'Folder super-context',
+  sourceRoot: 'Source super-context',
+  project: 'Project super-context',
+  user: 'Unified model',
+  conversation: 'Conversation context',
+}
+
+/**
+ * Recall over what Holmes concluded, rather than over what the user wrote.
+ *
+ * Retrieval is FTS5 through the context index — expansions widen it, since the
+ * match expression ORs every token — but the ranking is deliberately Recall's
+ * own `textMatchScore`, not the score the context engine returned. The two are
+ * different scales, and a converted score would decide how contexts place
+ * against files by whatever constant the conversion used.
+ */
+export function rankRecallContexts(query: string, expandedQueries: string[]): RecallSearchResult[] {
+  const outcome = searchGeneratedContexts([query, ...expandedQueries.slice(0, 3)].join(' '), {
+    limit: CONTEXT_RECALL_CANDIDATES,
+    maxContextChars: CONTEXT_RECALL_CHARS,
+  })
+  if (outcome.hits.length === 0) return []
+
+  const queries = weightedQueries(query, expandedQueries)
+  const snippetTerms = buildRecallCandidateTerms(query, expandedQueries)
+
+  return outcome.hits
+    .map((hit) => {
+      const title = hit.level === 'file' || hit.level === 'folder'
+        ? (hit.path ? path.basename(hit.path) || hit.label : hit.label)
+        : hit.label
+      const relevance = textMatchScore(`${hit.contextShort}\n${hit.context}`, `${title} ${hit.label}`, queries)
+      const updatedAtMs = Date.parse(hit.updatedAt) || 0
+      return {
+        id: `context:${hit.level}:${hit.path ?? hit.conversationId ?? hit.label}`,
+        source: 'context' as const,
+        title,
+        context: hit.projectName
+          ? `${hit.projectName} / ${CONTEXT_LEVEL_LABELS[hit.level]}`
+          : CONTEXT_LEVEL_LABELS[hit.level],
+        snippet: createRecallSnippet(hit.contextShort || hit.context, snippetTerms),
+        score: relevance,
+        modifiedAt: updatedAtMs,
+        ...(hit.path ? { path: hit.path } : {}),
+        ...(hit.conversationId ? { conversationId: hit.conversationId } : {}),
+        ...(hit.projectId ? { projectId: hit.projectId } : {}),
+        contextLevel: hit.level,
+      }
+    })
+    .filter((result) => result.score > 0)
+    .sort((left, right) => right.score - left.score || right.modifiedAt - left.modifiedAt)
 }
 
 interface ActivitySearchDocument {
@@ -925,6 +987,27 @@ export async function extractRecallFileText(
 // thirds of a list is wrong without ever looking wrong.
 const TOTAL_GROUNDING_CHARACTERS = 90_000
 
+/**
+ * The full text behind a context result, re-read from the database.
+ *
+ * A search result carries a snippet, not the synthesis it came from, and a
+ * grounded answer needs the whole thing. Re-reading costs one indexed lookup —
+ * unlike a file source, there is no parsing and no disk scan.
+ */
+function readContextGroundingText(result: RecallSearchResult): string {
+  if (result.contextLevel === 'conversation' && result.conversationId) {
+    return database.getConversationContext(result.conversationId)?.context ?? ''
+  }
+  if (result.contextLevel === 'user') {
+    return database.getUserSuperContext()?.context ?? ''
+  }
+  if (result.contextLevel === 'project' && result.projectId) {
+    return database.getProjectSuperContext(result.projectId)?.context ?? ''
+  }
+  if (!result.path) return ''
+  return getGeneratedContextForPath(result.path, { maxContextChars: TOTAL_GROUNDING_CHARACTERS }).node?.context ?? ''
+}
+
 export async function buildRecallGroundingSources(
   results: RecallSearchResult[],
   conversationDocuments: RecallConversationDocument[],
@@ -935,12 +1018,21 @@ export async function buildRecallGroundingSources(
   const candidates = [
     ...results.filter((result) => result.source === 'file').slice(0, 4),
     ...results.filter((result) => result.source === 'conversation').slice(0, 3),
+    // Contexts earn a place in every grounded answer they rank for: they are
+    // already-drawn conclusions about exactly this data, and reading one costs
+    // an indexed lookup rather than parsing a spreadsheet.
+    ...results.filter((result) => result.source === 'context').slice(0, 3),
   ]
     .sort((left, right) => right.score - left.score)
-    .slice(0, 5)
+    .slice(0, 6)
 
   const extracted = await mapWithConcurrency(candidates, 3, async (result) => {
     if (signal.aborted) throw abortError()
+    if (result.source === 'context') {
+      const content = readContextGroundingText(result)
+      if (!content.trim()) return null
+      return { resultId: result.id, title: `${result.title} — ${result.context}`, content }
+    }
     if (result.source === 'conversation' && result.messageId) {
       const document = documentsByMessageId.get(result.messageId)
       if (!document?.content.trim()) return null
@@ -1258,9 +1350,10 @@ export function selectBalancedResults(
   fileResults: RecallSearchResult[],
   conversationResults: RecallSearchResult[],
   activityResults: RecallSearchResult[],
+  contextResults: RecallSearchResult[],
   limit: number
 ): RecallSearchResult[] {
-  const allResults = [...fileResults, ...conversationResults, ...activityResults]
+  const allResults = [...fileResults, ...conversationResults, ...activityResults, ...contextResults]
   if (fileResults.length === 0 || conversationResults.length === 0) {
     return allResults
       .sort((left, right) => right.score - left.score || right.modifiedAt - left.modifiedAt)
@@ -1272,6 +1365,7 @@ export function selectBalancedResults(
     ...fileResults.slice(0, sourceQuota),
     ...conversationResults.slice(0, sourceQuota),
     ...activityResults.slice(0, sourceQuota),
+    ...contextResults.slice(0, sourceQuota),
   ]
   const selectedIds = new Set(selected.map((result) => result.id))
   const remainder = allResults
@@ -1327,13 +1421,19 @@ export async function searchRecall(
   initialNotices: string[] = [],
   scope: RecallFileScope = DEFAULT_RECALL_FILE_SCOPE
 ): Promise<RecallSearchResponse> {
-  const conversationResults = request.source === 'files'
-    ? []
-    : rankRecallConversations(conversationDocuments, request.query, expandedQueries)
-  const activityResults = request.source === 'files'
-    ? []
-    : rankRecallActivity(database.listProjects(), request.query, expandedQueries)
-  const fileSearch: FileSearchResult = request.source === 'conversations'
+  const conversationResults = request.source === 'all' || request.source === 'conversations'
+    ? rankRecallConversations(conversationDocuments, request.query, expandedQueries)
+    : []
+  const activityResults = request.source === 'all' || request.source === 'conversations'
+    ? rankRecallActivity(database.listProjects(), request.query, expandedQueries)
+    : []
+  // The generated contexts are Holmes's own reading of the user's files, so they
+  // belong to the everything search and to their own filter, not to "Files" —
+  // choosing Files means the documents themselves.
+  const contextResults = request.source === 'all' || request.source === 'contexts'
+    ? rankRecallContexts(request.query, expandedQueries)
+    : []
+  const fileSearch: FileSearchResult = request.source === 'conversations' || request.source === 'contexts'
     ? { results: [], available: await isSpotlightAvailable() }
     : await searchFiles(request, expandedQueries, signal, scope)
   if (signal.aborted) throw abortError()
@@ -1342,6 +1442,7 @@ export async function searchRecall(
     fileResults,
     conversationResults,
     activityResults,
+    contextResults,
     request.limit || DEFAULT_RESULT_LIMIT
   )
     .map((result) => ({ ...result, score: calibratedScore(result.score) }))
@@ -1357,6 +1458,7 @@ export async function searchRecall(
       files: fileResults.length,
       conversations: conversationResults.length,
       activity: activityResults.length,
+      contexts: contextResults.length,
     },
     expandedQueries,
     semanticApplied: expandedQueries.length > 0,
